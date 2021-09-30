@@ -1,0 +1,4 @@
+Binder based ofono plugin.
+
+Integrates Sailfish OS fork of ofono with Android adaptations
+which support IRadio family of binder interfaces.
