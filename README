@@ -2,3 +2,11 @@ Binder based ofono plugin.
 
 Integrates Sailfish OS fork of ofono with Android adaptations
 which support IRadio family of binder interfaces.
+
+This plugin is a replacement for ofono-ril-plugin.
+
+For reliable startup, /etc/ofono/binder.conf has to list all
+expected slots, for example:
+
+  [Settings]
+  ExpectSlots = slot1,slot2
