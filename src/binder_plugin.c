@@ -1183,14 +1183,29 @@ binder_plugin_create_slot(
     const char* name,
     GKeyFile* file)
 {
-    BinderSlot* slot = g_new0(BinderSlot, 1);
-    BinderSlotConfig* config = &slot->config;
-    BinderDataOptions* data_opt = &slot->data_opt;
+    BinderSlot* slot;
+    BinderSlotConfig* config;
+    BinderDataOptions* data_opt;
     GError* error = NULL;
     const char* group = name;
     GUtilInts* ints;
     char* sval;
     int ival;
+
+    /* path */
+    sval = g_key_file_get_string(file, group, BINDER_CONF_SLOT_PATH, NULL);
+    if (sval) {
+        slot = g_new0(BinderSlot, 1);
+        slot->path = sval;
+        DBG("%s: " BINDER_CONF_SLOT_PATH " %s", group, slot->path);
+    } else {
+        /* Path is really required */
+        ofono_error("Missing path for slot %s", name);
+        return NULL;
+    }
+
+    config = &slot->config;
+    data_opt = &slot->data_opt;
 
     config->slot = BINDER_SLOT_NUMBER_AUTOMATIC;
     config->techs = BINDER_DEFAULT_SLOT_TECHS;
@@ -1229,15 +1244,6 @@ binder_plugin_create_slot(
         BINDER_DEFAULT_SLOT_DATA_CALL_RETRY_LIMIT;
     data_opt->data_call_retry_delay_ms =
         BINDER_DEFAULT_SLOT_DATA_CALL_RETRY_DELAY_MS;
-
-    /* These two must be in the slot group */
-
-    /* path */
-    slot->path = g_key_file_get_string(file, group,
-        BINDER_CONF_SLOT_PATH, NULL);
-    if (slot->path) {
-        DBG("%s: " BINDER_CONF_SLOT_PATH " %s", group, slot->path);
-    }
 
     /* slot */
     ival = g_key_file_get_integer(file, group,
@@ -1433,6 +1439,15 @@ binder_plugin_add_slot(
 }
 
 static
+GSList*
+binder_plugin_try_add_slot(
+    GSList* slots,
+    BinderSlot* new_slot)
+{
+    return new_slot ? binder_plugin_add_slot(slots, new_slot) : slots;
+}
+
+static
 void
 binder_plugin_parse_identity(
     BinderPluginIdentity* id,
@@ -1603,12 +1618,14 @@ binder_plugin_parse_config_file(
     }
 
     /* ExpectSlots */
-    expect_slots = ofono_conf_get_strings(file, OFONO_COMMON_SETTINGS_GROUP,
-        BINDER_CONF_PLUGIN_EXPECT_SLOTS, BINDER_CONF_LIST_DELIMITER);
+    expect_slots = gutil_strv_remove_all(ofono_conf_get_strings(file,
+        OFONO_COMMON_SETTINGS_GROUP, BINDER_CONF_PLUGIN_EXPECT_SLOTS,
+        BINDER_CONF_LIST_DELIMITER), "");
 
     /* IgnoreSlots */
-    ignore_slots = ofono_conf_get_strings(file, OFONO_COMMON_SETTINGS_GROUP,
-        BINDER_CONF_PLUGIN_IGNORE_SLOTS, BINDER_CONF_LIST_DELIMITER);
+    ignore_slots = gutil_strv_remove_all(ofono_conf_get_strings(file,
+        OFONO_COMMON_SETTINGS_GROUP, BINDER_CONF_PLUGIN_IGNORE_SLOTS,
+        BINDER_CONF_LIST_DELIMITER), "");
 
     /*
      * The way to stop the plugin from even trying to find any slots is
@@ -1644,7 +1661,7 @@ binder_plugin_parse_config_file(
                 for (s = expect_slots; *s; s++) {
                     const char* slot = *s;
 
-                    list = binder_plugin_add_slot(list,
+                    list = binder_plugin_try_add_slot(list,
                         binder_plugin_create_slot(sm, slot, file));
                     slots = gutil_strv_remove_all(slots, slot);
                 }
@@ -1670,7 +1687,7 @@ binder_plugin_parse_config_file(
                         if (binder_plugin_pattern_match(ignore, slot)) {
                             DBG("skipping %s", slot);
                         } else {
-                            list = binder_plugin_add_slot(list,
+                            list = binder_plugin_try_add_slot(list,
                                 binder_plugin_create_slot(sm, slot, file));
                         }
                     }
@@ -1705,6 +1722,7 @@ binder_plugin_load_config(
     GSList* list;
     GKeyFile* file = g_key_file_new();
 
+    g_key_file_set_list_separator(file, BINDER_CONF_LIST_DELIMITER);
     ofono_conf_merge_files(file, path);
     list = binder_plugin_parse_config_file(file, ps);
     g_key_file_free(file);
