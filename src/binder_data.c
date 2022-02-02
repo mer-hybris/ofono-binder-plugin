@@ -2193,6 +2193,8 @@ binder_data_manager_get_phone_capability_done(
                     for (i = 0; i < n; i++) {
                         gutil_int_array_append(modem_ids, modem[i].modemId);
                     }
+
+                    gutil_ints_unref(dm->modem_ids);
                     dm->modem_ids = gutil_int_array_free_to_ints(modem_ids);
 
                     if (binder_data_debug_desc.flags & OFONO_DEBUG_FLAG_PRINT) {
@@ -2222,6 +2224,24 @@ binder_data_manager_get_phone_capability_done(
     }
 }
 
+static
+void
+binder_data_manager_request_phone_capability(
+    BinderDataManager* dm)
+{
+    if (radio_config_interface(dm->rc) >= RADIO_CONFIG_INTERFACE_1_1) {
+        RadioRequest* req = radio_config_request_new(dm->rc,
+            RADIO_CONFIG_REQ_GET_PHONE_CAPABILITY, NULL,
+            binder_data_manager_get_phone_capability_done, NULL, dm);
+
+        if (radio_request_submit(req)) {
+            dm->phone_cap_req = req; /* Keep the ref */
+        } else {
+            radio_request_unref(req);
+        }
+    }
+}
+
 BinderDataManager*
 binder_data_manager_new(
     RadioConfig* rc,
@@ -2234,17 +2254,7 @@ binder_data_manager_new(
     dm->flags = flags;
     dm->non_data_mode = ofono_radio_access_max_mode(non_data_mode);
     dm->rc = radio_config_ref(rc);
-    if (radio_config_interface(dm->rc) >= RADIO_CONFIG_INTERFACE_1_1) {
-        RadioRequest* req = radio_config_request_new(rc,
-            RADIO_CONFIG_REQ_GET_PHONE_CAPABILITY, NULL,
-            binder_data_manager_get_phone_capability_done, NULL, dm);
-
-        if (radio_request_submit(req)) {
-            dm->phone_cap_req = req; /* Keep the ref */
-        } else {
-            radio_request_unref(req);
-        }
-    }
+    binder_data_manager_request_phone_capability(dm);
     return dm;
 }
 
@@ -2272,6 +2282,22 @@ binder_data_manager_unref(
             gutil_ints_unref(dm->modem_ids);
             g_free(dm);
         }
+    }
+}
+
+void
+binder_data_manager_set_radio_config(
+    BinderDataManager* dm,
+    RadioConfig* rc)
+{
+    if (dm && dm->rc != rc) {
+        radio_config_unref(dm->rc);
+        dm->rc = radio_config_ref(rc);
+
+        /* Most likely modem ids wouldn't change, but let's double-check */
+        radio_request_drop(dm->phone_cap_req);
+        dm->phone_cap_req = NULL;
+        binder_data_manager_request_phone_capability(dm);
     }
 }
 
