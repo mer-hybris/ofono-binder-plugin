@@ -106,6 +106,12 @@ binder_data_manager_unref(
     BINDER_INTERNAL;
 
 void
+binder_data_manager_set_radio_config(
+    BinderDataManager* dm,
+    RadioConfig* rc)
+    BINDER_INTERNAL;
+
+void
 binder_data_manager_check_data(
     BinderDataManager* dm)
     BINDER_INTERNAL;

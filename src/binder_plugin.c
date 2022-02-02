@@ -192,6 +192,17 @@ typedef enum binder_devmon_opt {
     BINDER_DEVMON_ALL = BINDER_DEVMON_DS | BINDER_DEVMON_IF
 } BINDER_DEVMON_OPT;
 
+typedef enum binder_plugin_flags {
+    BINDER_PLUGIN_NO_FLAGS = 0x00,
+    BINDER_PLUGIN_HAVE_CONFIG_SERVICE = 0x01,
+    BINDER_PLUGIN_NEED_CONFIG_SERVICE = 0x02
+} BINDER_PLUGIN_FLAGS;
+
+typedef enum binder_plugin_slot_flags {
+    BINDER_PLUGIN_SLOT_NO_FLAGS = 0x00,
+    BINDER_PLUGIN_SLOT_HAVE_RADIO_SERVICE = 0x01
+} BINDER_PLUGIN_SLOT_FLAGS;
+
 typedef struct binder_plugin_identity {
     uid_t uid;
     gid_t gid;
@@ -206,6 +217,8 @@ typedef struct binder_plugin_settings {
 
 typedef struct ofono_slot_driver_data {
     struct ofono_slot_manager* slot_manager;
+    BINDER_PLUGIN_FLAGS flags;
+    GBinderServiceManager* svcmgr;
     GDBusConnection* system_bus;
     RadioConfig* radio_config;
     BinderLogger* radio_config_trace;
@@ -214,13 +227,16 @@ typedef struct ofono_slot_driver_data {
     BinderRadioCapsManager* caps_manager;
     BinderPluginSettings settings;
     gulong caps_manager_event_id;
+    gulong radio_config_watch_id;
+    gulong list_call_id;
     guint start_timeout_id;
     char* dev;
     GSList* slots;
 } BinderPlugin;
 
 typedef struct binder_slot {
-    GBinderServiceManager* sm;
+    BINDER_PLUGIN_SLOT_FLAGS flags;
+    GBinderServiceManager* svcmgr;
     RADIO_INTERFACE version;
     RadioInstance* instance;
     RadioClient* client;
@@ -245,7 +261,7 @@ typedef struct binder_slot {
     enum ofono_slot_flags slot_flags;
     RadioRequest* imei_req;
     RadioRequest* caps_check_req;
-    gulong name_watch_id;
+    gulong radio_watch_id;
     gulong list_call_id;
     gulong connected_id;
     gulong client_event_id[CLIENT_EVENT_COUNT];
@@ -306,13 +322,13 @@ binder_plugin_slot_check(
 
 static
 void
-binder_plugin_slot_init_client(
+binder_plugin_slot_check_radio_client(
     BinderSlot* slot);
 
 static
 void
-binder_plugin_slot_retry_init_client(
-    BinderSlot* slot);
+binder_plugin_check_config_client(
+    BinderPlugin* plugin);
 
 static
 void
@@ -548,8 +564,6 @@ binder_plugin_slot_shutdown(
             radio_request_drop(slot->imei_req);
             slot->caps_check_req = NULL;
             slot->imei_req = NULL;
-
-#pragma message("De-serialize requests?")
 
             radio_client_remove_all_handlers(slot->client,
                 slot->client_event_id);
@@ -1012,21 +1026,47 @@ binder_plugin_service_list_proc(
     char** services,
     void* data)
 {
+    BinderPlugin* plugin = data;
+
+    plugin->list_call_id = 0;
+
+    /* IRadioConfig 1.0 is of no use to us */
+    if (gutil_strv_contains(services, RADIO_CONFIG_1_1_FQNAME)) {
+        /* If it's there then we definitely need it */
+        plugin->flags |= (BINDER_PLUGIN_HAVE_CONFIG_SERVICE |
+                          BINDER_PLUGIN_NEED_CONFIG_SERVICE);
+    } else {
+        plugin->flags &= ~BINDER_PLUGIN_HAVE_CONFIG_SERVICE;
+    }
+
+    binder_plugin_check_config_client(plugin);
+
+    /* Return FALSE to free the service list */
+    return FALSE;
+}
+
+static
+gboolean
+binder_plugin_slot_service_list_proc(
+    GBinderServiceManager* sm,
+    char** services,
+    void* data)
+{
     BinderSlot* slot = data;
+    char* fqname = g_strconcat(binder_radio_ifaces[slot->version], "/",
+        slot->name, NULL);
 
     slot->list_call_id = 0;
-    if (!slot->client) {
-        char* fqname = g_strconcat(binder_radio_ifaces[slot->version], "/",
-            slot->name, NULL);
-
-        if (gutil_strv_contains(services, fqname)) {
-            DBG("found %s", fqname);
-            binder_plugin_slot_init_client(slot);
-        } else {
-            DBG("not found %s", fqname);
-        }
-        g_free(fqname);
+    if (gutil_strv_contains(services, fqname)) {
+        DBG("found %s", fqname);
+        slot->flags |= BINDER_PLUGIN_SLOT_HAVE_RADIO_SERVICE;
+    } else {
+        DBG("not found %s", fqname);
+        slot->flags &= ~BINDER_PLUGIN_SLOT_HAVE_RADIO_SERVICE;
     }
+
+    binder_plugin_slot_check_radio_client(slot);
+    g_free(fqname);
 
     /* Return FALSE to free the service list */
     return FALSE;
@@ -1034,12 +1074,22 @@ binder_plugin_service_list_proc(
 
 static
 void
+binder_plugin_service_check(
+    BinderPlugin* plugin)
+{
+    gbinder_servicemanager_cancel(plugin->svcmgr, plugin->list_call_id);
+    plugin->list_call_id = gbinder_servicemanager_list(plugin->svcmgr,
+        binder_plugin_service_list_proc, plugin);
+}
+
+static
+void
 binder_plugin_slot_check(
     BinderSlot* slot)
 {
-    gbinder_servicemanager_cancel(slot->sm, slot->list_call_id);
-    slot->list_call_id = gbinder_servicemanager_list(slot->sm,
-        binder_plugin_service_list_proc, slot);
+    gbinder_servicemanager_cancel(slot->svcmgr, slot->list_call_id);
+    slot->list_call_id = gbinder_servicemanager_list(slot->svcmgr,
+        binder_plugin_slot_service_list_proc, slot);
 }
 
 static
@@ -1047,10 +1097,65 @@ void
 binder_plugin_service_registration_proc(
     GBinderServiceManager* sm,
     const char* name,
+    void* plugin)
+{
+    DBG("%s is there", name);
+    binder_plugin_service_check((BinderPlugin*) plugin);
+}
+
+static
+void
+binder_plugin_slot_service_registration_proc(
+    GBinderServiceManager* sm,
+    const char* name,
     void* slot)
 {
     DBG("%s is there", name);
     binder_plugin_slot_check((BinderSlot*) slot);
+}
+
+static
+void
+binder_plugin_drop_radio_config(
+    BinderPlugin* plugin)
+{
+    binder_data_manager_set_radio_config(plugin->data_manager, NULL);
+    binder_logger_free(plugin->radio_config_trace);
+    binder_logger_free(plugin->radio_config_dump);
+    radio_config_unref(plugin->radio_config);
+    plugin->radio_config_trace = NULL;
+    plugin->radio_config_dump = NULL;
+    plugin->radio_config = NULL;
+}
+
+static
+void
+binder_plugin_check_config_client(
+    BinderPlugin* plugin)
+{
+    if (plugin->flags & BINDER_PLUGIN_HAVE_CONFIG_SERVICE) {
+        if (!plugin->radio_config) {
+            plugin->radio_config = radio_config_new_with_version
+                (RADIO_CONFIG_INTERFACE_1_1);
+            binder_radio_config_trace_update(plugin);
+            binder_radio_config_dump_update(plugin);
+            if (plugin->data_manager) {
+                /* Pass new RadioConfig to BinderDataManager */
+                binder_data_manager_set_radio_config(plugin->data_manager,
+                    plugin->radio_config);
+            } else {
+                const BinderPluginSettings* ps = &plugin->settings;
+
+                /* Once we have seen it, we need it */
+                plugin->flags |= BINDER_PLUGIN_NEED_CONFIG_SERVICE;
+                plugin->data_manager = binder_data_manager_new(plugin->
+                    radio_config, ps->dm_flags, ps->non_data_mode);
+            }
+        }
+    } else {
+        binder_plugin_drop_radio_config(plugin);
+    }
+    binder_plugin_foreach_slot(plugin, binder_plugin_slot_check_radio_client);
 }
 
 static
@@ -1068,12 +1173,19 @@ binder_plugin_slot_connected_cb(
 
 static
 void
-binder_plugin_slot_init_client(
+binder_plugin_slot_check_radio_client(
     BinderSlot* slot)
 {
-    if (!slot->client) {
-        const char* dev = gbinder_servicemanager_device(slot->sm);
+    BinderPlugin* plugin = slot->plugin;
+    const gboolean need_client =
+        (slot->flags & BINDER_PLUGIN_SLOT_HAVE_RADIO_SERVICE) &&
+        ((plugin->flags & BINDER_PLUGIN_HAVE_CONFIG_SERVICE) ||
+         !(plugin->flags & BINDER_PLUGIN_NEED_CONFIG_SERVICE));
 
+    if (!slot->client && need_client) {
+        const char* dev = gbinder_servicemanager_device(slot->svcmgr);
+
+        DBG("Bringing up %s", slot->name);
         slot->instance = radio_instance_new_with_modem_slot_and_version(dev,
             slot->name, slot->path, slot->config.slot, slot->version);
         slot->client = radio_client_new(slot->instance);
@@ -1087,8 +1199,6 @@ binder_plugin_slot_init_client(
             binder_logger_dump_update_slot(slot);
             binder_logger_trace_update_slot(slot);
 
-#pragma message("Serialize requests at startup?")
-
             if (radio_client_connected(slot->client)) {
                 binder_plugin_slot_connected(slot);
             } else {
@@ -1100,6 +1210,9 @@ binder_plugin_slot_init_client(
             radio_instance_unref(slot->instance);
             slot->instance = NULL;
         }
+    } else if (slot->client && !need_client) {
+        DBG("Shutting down %s", slot->name);
+        binder_plugin_slot_shutdown(slot, TRUE);
     }
 }
 
@@ -1234,7 +1347,7 @@ binder_plugin_create_slot(
         BINDER_DEFAULT_SLOT_CELL_INFO_INTERVAL_LONG_MS;
 
     slot->name = g_strdup(name);
-    slot->sm = gbinder_servicemanager_ref(sm);
+    slot->svcmgr = gbinder_servicemanager_ref(sm);
     slot->version = BINDER_DEFAULT_RADIO_INTERFACE;
     slot->req_timeout_ms = BINDER_DEFAULT_SLOT_REQ_TIMEOUT_MS;
     slot->slot_flags = BINDER_DEFAULT_SLOT_FLAGS;
@@ -1371,8 +1484,6 @@ binder_plugin_create_slot(
     }
     gutil_ints_unref(ints);
 
-#pragma message("Make more things configurable")
-
     return slot;
 }
 
@@ -1394,9 +1505,9 @@ binder_plugin_slot_free(
     binder_sim_settings_unref(slot->sim_settings);
     gutil_ints_unref(slot->config.local_hangup_reasons);
     gutil_ints_unref(slot->config.remote_hangup_reasons);
-    gbinder_servicemanager_remove_handler(slot->sm, slot->name_watch_id);
-    gbinder_servicemanager_cancel(slot->sm, slot->list_call_id);
-    gbinder_servicemanager_unref(slot->sm);
+    gbinder_servicemanager_remove_handler(slot->svcmgr, slot->radio_watch_id);
+    gbinder_servicemanager_cancel(slot->svcmgr, slot->list_call_id);
+    gbinder_servicemanager_unref(slot->svcmgr);
     g_free(slot->name);
     g_free(slot->path);
     g_free(slot->imei);
@@ -1564,6 +1675,7 @@ static
 GSList*
 binder_plugin_parse_config_file(
     GKeyFile* file,
+    GBinderServiceManager* sm,
     BinderPluginSettings* ps)
 {
     GSList* list = NULL;
@@ -1634,78 +1746,55 @@ binder_plugin_parse_config_file(
      */
     ignore_all = gutil_strv_contains(ignore_slots, "*");
     if (gutil_strv_length(expect_slots) || !ignore_all) {
-        GBinderServiceManager* sm;
-        const char* dev;
-        char* cfg_dev;
+        char** s;
+        char** slots = ignore_all ? NULL : binder_plugin_find_slots(sm);
 
-        /* Device */
-        cfg_dev = g_key_file_get_string(file, OFONO_COMMON_SETTINGS_GROUP,
-            BINDER_CONF_PLUGIN_DEVICE, NULL);
+        /*
+         * Create the expected slots and remove them from the list.
+         * The ignore list doesn't apply to the expected slots.
+         */
+        if (expect_slots) {
+            for (s = expect_slots; *s; s++) {
+                const char* slot = *s;
 
-        /* If device is not configured, then try the default one */
-        dev = cfg_dev ? cfg_dev : BINDER_DEFAULT_PLUGIN_DEVICE;
-        sm = gbinder_servicemanager_new(dev);
-
-        if (sm) {
-            char** slots;
-            char** s;
-
-            DBG("using %sbinder device %s", cfg_dev ? "" : "default ", dev);
-            slots = ignore_all ? NULL : binder_plugin_find_slots(sm);
-
-            /*
-             * Create the expected slots and remove them from the list.
-             * The ignore list doesn't apply to the expected slots.
-             */
-            if (expect_slots) {
-                for (s = expect_slots; *s; s++) {
-                    const char* slot = *s;
-
-                    list = binder_plugin_try_add_slot(list,
-                        binder_plugin_create_slot(sm, slot, file));
-                    slots = gutil_strv_remove_all(slots, slot);
-                }
+                list = binder_plugin_try_add_slot(list,
+                    binder_plugin_create_slot(sm, slot, file));
+                slots = gutil_strv_remove_all(slots, slot);
             }
-
-            /* Then check the remaining auto-discovered slots */
-            if (!ignore_all) {
-                const guint np = gutil_strv_length(ignore_slots);
-                GPatternSpec** ignore = g_new(GPatternSpec*, np + 1);
-                guint i;
-
-                /* Compile ignore patterns */
-                for (i = 0; i < np; i++) {
-                    ignore[i] = g_pattern_spec_new(ignore_slots[i]);
-                }
-                ignore[i] = NULL;
-
-                /* Run the remaining slots through the ignore patterns */
-                if (slots) {
-                    for (s = slots; *s; s++) {
-                        const char* slot = *s;
-
-                        if (binder_plugin_pattern_match(ignore, slot)) {
-                            DBG("skipping %s", slot);
-                        } else {
-                            list = binder_plugin_try_add_slot(list,
-                                binder_plugin_create_slot(sm, slot, file));
-                        }
-                    }
-                }
-
-                for (i = 0; i < np; i++) {
-                    g_pattern_spec_free(ignore[i]);
-                }
-                g_free(ignore);
-                g_strfreev(slots);
-            }
-        } else {
-            ofono_warn("Can't open %sbinder device %s",
-                cfg_dev ? "" : "default ", dev);
         }
 
-        gbinder_servicemanager_unref(sm);
-        g_free(cfg_dev);
+        /* Then check the remaining auto-discovered slots */
+        if (!ignore_all) {
+            const guint np = gutil_strv_length(ignore_slots);
+            GPatternSpec** ignore = g_new(GPatternSpec*, np + 1);
+            guint i;
+
+            /* Compile ignore patterns */
+            for (i = 0; i < np; i++) {
+                ignore[i] = g_pattern_spec_new(ignore_slots[i]);
+            }
+            ignore[i] = NULL;
+
+            /* Run the remaining slots through the ignore patterns */
+            if (slots) {
+                for (s = slots; *s; s++) {
+                    const char* slot = *s;
+
+                    if (binder_plugin_pattern_match(ignore, slot)) {
+                        DBG("skipping %s", slot);
+                    } else {
+                        list = binder_plugin_try_add_slot(list,
+                            binder_plugin_create_slot(sm, slot, file));
+                    }
+                }
+            }
+
+            for (i = 0; i < np; i++) {
+                g_pattern_spec_free(ignore[i]);
+            }
+            g_free(ignore);
+            g_strfreev(slots);
+        }
     }
 
     g_strfreev(expect_slots);
@@ -1714,19 +1803,35 @@ binder_plugin_parse_config_file(
 }
 
 static
-GSList*
+void
 binder_plugin_load_config(
+    BinderPlugin* plugin,
     const char* path,
     BinderPluginSettings* ps)
 {
-    GSList* list;
+    const char* dev;
+    char* cfg_dev;
     GKeyFile* file = g_key_file_new();
 
     g_key_file_set_list_separator(file, BINDER_CONF_LIST_DELIMITER);
     ofono_conf_merge_files(file, path);
-    list = binder_plugin_parse_config_file(file, ps);
+
+    /* Device */
+    cfg_dev = g_key_file_get_string(file, OFONO_COMMON_SETTINGS_GROUP,
+        BINDER_CONF_PLUGIN_DEVICE, NULL);
+
+    /* If device is not configured, then try the default one */
+    dev = cfg_dev ? cfg_dev : BINDER_DEFAULT_PLUGIN_DEVICE;
+    if ((plugin->svcmgr = gbinder_servicemanager_new(dev)) != NULL) {
+        DBG("using %sbinder device %s", cfg_dev ? "" : "default ", dev);
+        plugin->slots = binder_plugin_parse_config_file(file,
+            plugin->svcmgr, ps);
+    } else {
+        ofono_warn("Can't open %sbinder device %s",
+            cfg_dev ? "" : "default ", dev);
+    }
+    g_free(cfg_dev);
     g_key_file_free(file);
-    return list;
 }
 
 static
@@ -1841,6 +1946,27 @@ binder_plugin_manager_start_timeout(
 
     DBG("");
     plugin->start_timeout_id = 0;
+
+    /*
+     * If we haven't found any IRadioConfig (even 1.0) then still create
+     * the data manager.
+     */
+    if (!plugin->data_manager) {
+        const BinderPluginSettings* ps = &plugin->settings;
+
+        GASSERT(plugin->radio_config);
+        plugin->data_manager = binder_data_manager_new(NULL, ps->dm_flags,
+            ps->non_data_mode);
+    }
+
+    /*
+     * If we haven't seen IRadioConfig before startup timeout has expired
+     * then assume that we don't need it.
+     */
+    if (!(plugin->flags & BINDER_PLUGIN_HAVE_CONFIG_SERVICE)) {
+        plugin->flags &= ~BINDER_PLUGIN_NEED_CONFIG_SERVICE;
+    }
+
     binder_plugin_manager_started(plugin);
     return G_SOURCE_REMOVE;
 }
@@ -1913,11 +2039,13 @@ void
 binder_logger_slot_start(
     BinderSlot* slot)
 {
-    /* Check if the service is there */
-    slot->name_watch_id =
-        gbinder_servicemanager_add_registration_handler(slot->sm,
+    /* Watch the radio service */
+    slot->radio_watch_id =
+        gbinder_servicemanager_add_registration_handler(slot->svcmgr,
             binder_radio_ifaces[slot->version],
-            binder_plugin_service_registration_proc, slot);
+            binder_plugin_slot_service_registration_proc, slot);
+
+    /* They could be already there */
     binder_plugin_slot_check(slot);
 }
 
@@ -1944,7 +2072,6 @@ binder_plugin_slot_driver_init(
     ps->set_radio_cap = BINDER_SET_RADIO_CAP_AUTO;
     ps->dm_flags = BINDER_DEFAULT_PLUGIN_DM_FLAGS;
     ps->non_data_mode = BINDER_DEFAULT_MAX_NON_DATA_MODE;
-    plugin->slots = binder_plugin_load_config(config_file, ps);
 
     /* Connect to system bus before we switch the identity */
     plugin->system_bus = g_bus_get_sync(G_BUS_TYPE_SYSTEM, NULL, &error);
@@ -1952,6 +2079,9 @@ binder_plugin_slot_driver_init(
         ofono_error("Failed to connect system bus: %s", error->message);
         g_error_free(error);
     }
+
+    /* This populates plugin->slots */
+    binder_plugin_load_config(plugin, config_file, ps);
 
     /*
      * Finish slot initialization. Some of them may not have path and
@@ -2035,17 +2165,7 @@ binder_plugin_slot_driver_start(
     /* Switch the user to the one expected by the radio subsystem */
     binder_plugin_switch_identity(&ps->identity);
 
-    /* IRadioConfig service may check the identity too */
-    plugin->radio_config = radio_config_new_with_version
-        (RADIO_CONFIG_INTERFACE_1_1);
-    binder_radio_config_trace_update(plugin);
-    binder_radio_config_dump_update(plugin);
-
-    /* Now we can create the data manager */
-    plugin->data_manager = binder_data_manager_new(plugin->radio_config,
-        ps->dm_flags, ps->non_data_mode);
-
-   /* Pick the shortest timeout */
+    /* Pick the shortest timeout */
     binder_plugin_foreach_slot_param(plugin,
         binder_plugin_slot_check_timeout_cb, &start_timeout);
 
@@ -2057,8 +2177,25 @@ binder_plugin_slot_driver_start(
 
     DBG("start timeout %u ms id %u", start_timeout, plugin->start_timeout_id);
 
-    /* Check if the service is there */
+    /*
+     * Keep and eye on IRadioConfig service. Note that we're watching
+     * IRadioConfig 1.0 even though it's of no use to us.
+     *
+     * But if IRadioConfig 1.0 is there and IRadioConfig 1.1 isn't,
+     * then there's no point in waiting for IRadioConfig 1.1.
+     *
+     * At startup, assume that we need IRadioConfig
+     */
+    plugin->flags |= BINDER_PLUGIN_NEED_CONFIG_SERVICE;
+    plugin->radio_config_watch_id =
+        gbinder_servicemanager_add_registration_handler(plugin->svcmgr,
+            RADIO_CONFIG_1_0, binder_plugin_service_registration_proc, plugin);
+    binder_plugin_service_check(plugin);
+
+    /* And per-slot IRadio services too */
     binder_plugin_foreach_slot(plugin, binder_logger_slot_start);
+
+    /* Return the timeout id that can be used for cancelling the startup */
     return plugin->start_timeout_id;
 }
 
@@ -2089,13 +2226,15 @@ binder_plugin_slot_driver_cleanup(
         if (plugin->system_bus) {
             g_object_unref(plugin->system_bus);
         }
+        binder_plugin_drop_radio_config(plugin);
+        gbinder_servicemanager_cancel(plugin->svcmgr, plugin->list_call_id);
+        gbinder_servicemanager_remove_handler(plugin->svcmgr,
+            plugin->radio_config_watch_id);
+        gbinder_servicemanager_unref(plugin->svcmgr);
         binder_data_manager_unref(plugin->data_manager);
         binder_radio_caps_manager_remove_handler(plugin->caps_manager,
             plugin->caps_manager_event_id);
         binder_radio_caps_manager_unref(plugin->caps_manager);
-        binder_logger_free(plugin->radio_config_trace);
-        binder_logger_free(plugin->radio_config_dump);
-        radio_config_unref(plugin->radio_config);
         g_free(plugin);
     }
 }
