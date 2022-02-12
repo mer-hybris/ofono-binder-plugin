@@ -31,6 +31,7 @@
 #include <ofono/cell-info.h>
 #include <ofono/devinfo.h>
 #include <ofono/gprs.h>
+#include <ofono/ims.h>
 #include <ofono/message-waiting.h>
 #include <ofono/modem.h>
 #include <ofono/netmon.h>
@@ -376,6 +377,9 @@ binder_modem_post_online(
     }
     if (features & BINDER_FEATURE_USSD) {
         ofono_ussd_create(ofono, 0, BINDER_DRIVER, ofono);
+    }
+    if (features & BINDER_FEATURE_IMS) {
+        ofono_ims_create(ofono, BINDER_DRIVER, ofono);
     }
     ofono_netmon_create(ofono, 0, "cellinfo", ofono);
 }

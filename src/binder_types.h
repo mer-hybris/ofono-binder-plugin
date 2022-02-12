@@ -45,7 +45,8 @@ typedef enum binder_feature_mask {
     BINDER_FEATURE_STK            = 0x0080, /* stk */
     BINDER_FEATURE_USSD           = 0x0100, /* ussd */
     BINDER_FEATURE_VOICE          = 0x0200, /* voice */
-    BINDER_FEATURE_ALL            = 0x03ff  /* all */
+    BINDER_FEATURE_IMS            = 0x0400, /* ims */
+    BINDER_FEATURE_ALL            = 0x07ff  /* all */
 } BINDER_FEATURE_MASK;
 
 typedef struct binder_slot_config {

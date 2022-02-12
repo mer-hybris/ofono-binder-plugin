@@ -51,6 +51,7 @@ SRC = \
   binder_devmon_if.c \
   binder_gprs.c \
   binder_gprs_context.c \
+  binder_ims.c \
   binder_logger.c \
   binder_modem.c \
   binder_netreg.c \

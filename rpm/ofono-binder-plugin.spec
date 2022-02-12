@@ -11,7 +11,7 @@ Source: %{name}-%{version}.tar.bz2
 %define libgbinder_version 1.1.15
 %define libgbinder_radio_version 1.4.8
 %define libmce_version 1.0.6
-%define ofono_version 1.28+git2
+%define ofono_version 1.28+git3
 
 BuildRequires: pkgconfig
 BuildRequires: ofono-devel >= %{ofono_version}
