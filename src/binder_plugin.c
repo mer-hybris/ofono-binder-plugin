@@ -24,6 +24,7 @@
 #include "binder_devmon.h"
 #include "binder_gprs.h"
 #include "binder_gprs_context.h"
+#include "binder_ims.h"
 #include "binder_log.h"
 #include "binder_logger.h"
 #include "binder_modem.h"
@@ -292,6 +293,7 @@ static const BinderPluginModule binder_plugin_modules[] = {
     { binder_devinfo_init, binder_devinfo_cleanup },
     { binder_gprs_context_init, binder_gprs_context_cleanup },
     { binder_gprs_init, binder_gprs_cleanup },
+    { binder_ims_init, binder_ims_cleanup },
     { binder_modem_init, binder_modem_cleanup },
     { binder_netreg_init, binder_netreg_cleanup },
     { binder_radio_settings_init, binder_radio_settings_cleanup },
@@ -1406,6 +1408,7 @@ binder_plugin_create_slot(
         "stk", BINDER_FEATURE_STK,
         "ussd", BINDER_FEATURE_USSD,
         "voice", BINDER_FEATURE_VOICE,
+        "ims", BINDER_FEATURE_IMS,
         "all", BINDER_FEATURE_ALL, NULL) && ival) {
         config->features &= ~ival;
         DBG("%s: " BINDER_CONF_SLOT_DISABLE_FEATURES " 0x%04x", group, ival);
