@@ -30,6 +30,7 @@ struct binder_modem {
     struct ofono_cell_info* cell_info;
     struct ofono_watch* watch;
     BinderData* data;
+    BinderImsReg* ims;
     BinderNetwork* network;
     BinderRadio* radio;
     BinderSimCard* sim_card;

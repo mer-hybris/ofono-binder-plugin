@@ -23,6 +23,7 @@
 typedef struct binder_data BinderData;
 typedef struct binder_data_manager BinderDataManager;
 typedef struct binder_devmon BinderDevmon;
+typedef struct binder_ims_reg BinderImsReg;
 typedef struct binder_logger BinderLogger;
 typedef struct binder_modem BinderModem;
 typedef struct binder_network BinderNetwork;

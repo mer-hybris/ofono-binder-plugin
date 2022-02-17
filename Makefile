@@ -52,6 +52,7 @@ SRC = \
   binder_gprs.c \
   binder_gprs_context.c \
   binder_ims.c \
+  binder_ims_reg.c \
   binder_logger.c \
   binder_modem.c \
   binder_netreg.c \
