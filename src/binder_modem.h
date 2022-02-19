@@ -17,6 +17,7 @@
 #define BINDER_MODEM_H
 
 #include "binder_types.h"
+#include "binder_ext_types.h"
 
 #include <ofono/modem.h>
 
@@ -29,6 +30,7 @@ struct binder_modem {
     struct ofono_modem* ofono;
     struct ofono_cell_info* cell_info;
     struct ofono_watch* watch;
+    BinderExtSlot* ext;
     BinderData* data;
     BinderImsReg* ims;
     BinderNetwork* network;
@@ -57,6 +59,7 @@ binder_modem_create(
     const char* imei,
     const char* imeisv,
     const BinderSlotConfig* config,
+    BinderExtSlot* ext,
     BinderRadio* radio,
     BinderNetwork* network,
     BinderSimCard* card,

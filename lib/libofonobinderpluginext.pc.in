@@ -1,0 +1,10 @@
+name=ofonobinderpluginext
+libdir=@libdir@
+includedir=/usr/include
+
+Name: libofonobinderpluginext
+Description: Extension framework for ofono binder plugin
+Version: @version@
+Requires.private: glib-2.0 libglibutil libgbinder-radio
+Libs: -L${libdir} -l${name}
+Cflags: -I${includedir} -I${includedir}/${name}

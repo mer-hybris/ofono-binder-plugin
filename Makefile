@@ -3,6 +3,7 @@
 .PHONY: clean all debug release test
 .PHONY: debug_lib release_lib coverage_lib
 .PHONY: print_debug_lib print_release_lib print_coverage_lib
+.PHONY: debug_ext_so release_ext_so
 
 #
 # Required packages
@@ -75,6 +76,7 @@ SRC = \
 #
 
 SRC_DIR = src
+EXTLIB_DIR = lib
 BUILD_DIR = build
 DEBUG_BUILD_DIR = $(BUILD_DIR)/debug
 RELEASE_BUILD_DIR = $(BUILD_DIR)/release
@@ -89,7 +91,7 @@ LD = $(CC)
 WARNINGS = -Wall
 BASE_FLAGS = -fPIC -fvisibility=hidden
 FULL_CFLAGS = $(BASE_FLAGS) $(CFLAGS) $(DEFINES) $(WARNINGS) -MMD -MP \
-  $(shell pkg-config --cflags $(PKGS))
+  $(shell pkg-config --cflags $(PKGS)) -I$(EXTLIB_DIR)/include
 FULL_LDFLAGS = $(BASE_FLAGS) $(LDFLAGS) -shared \
   $(shell pkg-config --libs $(LDPKGS))
 DEBUG_FLAGS = -g
@@ -122,6 +124,9 @@ DEBUG_LIB = $(DEBUG_BUILD_DIR)/$(STATIC_LIB)
 RELEASE_LIB = $(RELEASE_BUILD_DIR)/$(STATIC_LIB)
 COVERAGE_LIB = $(COVERAGE_BUILD_DIR)/$(STATIC_LIB)
 
+DEBUG_LIBS = $(EXTLIB_DIR)/$(shell $(MAKE) --no-print-directory -C $(EXTLIB_DIR) print_debug_so)
+RELEASE_LIBS = $(EXTLIB_DIR)/$(shell $(MAKE) --no-print-directory -C $(EXTLIB_DIR) print_release_so)
+
 #
 # Dependencies
 #
@@ -136,6 +141,8 @@ endif
 $(DEBUG_OBJS) $(DEBUG_SO): | $(DEBUG_BUILD_DIR)
 $(RELEASE_OBJS) $(RELEASE_SO): | $(RELEASE_BUILD_DIR)
 $(COVERAGE_OBJS) $(COVERAGE_LIB): | $(COVERAGE_BUILD_DIR)
+$(DEBUG_SO): | debug_ext_so
+$(RELEASE_SO): | release_ext_so
 
 #
 # Rules
@@ -160,8 +167,15 @@ print_release_lib:
 print_coverage_lib:
 	@echo $(COVERAGE_LIB)
 
+debug_ext_so:
+	$(MAKE) -C $(EXTLIB_DIR) debug
+
+release_ext_so:
+	$(MAKE) -C $(EXTLIB_DIR) release
+
 clean:
 	make -C unit clean
+	make -C $(EXTLIB_DIR) clean
 	rm -f *~ $(SRC_DIR)/*~ rpm/*~
 	rm -fr $(BUILD_DIR)
 
@@ -187,10 +201,10 @@ $(COVERAGE_BUILD_DIR)/%.o : $(SRC_DIR)/%.c
 	$(CC) -c $(COVERAGE_CFLAGS) -MT"$@" -MF"$(@:%.o=%.d)" $< -o $@
 
 $(DEBUG_SO): $(DEBUG_OBJS)
-	$(LD) $(DEBUG_OBJS) $(DEBUG_LDFLAGS) -o $@
+	$(LD) $(DEBUG_OBJS) $(DEBUG_LDFLAGS) $(DEBUG_LIBS) -o $@
 
 $(RELEASE_SO): $(RELEASE_OBJS)
-	$(LD) $(RELEASE_OBJS) $(RELEASE_LDFLAGS) -o $@
+	$(LD) $(RELEASE_OBJS) $(RELEASE_LDFLAGS) $(RELEASE_LIBS) -o $@
 ifeq ($(KEEP_SYMBOLS),0)
 	$(STRIP) $@
 endif

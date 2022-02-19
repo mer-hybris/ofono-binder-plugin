@@ -19,6 +19,7 @@
 #include "binder_sim_card.h"
 #include "binder_sim_settings.h"
 #include "binder_cell_info.h"
+#include "binder_ext_slot.h"
 #include "binder_ims_reg.h"
 #include "binder_data.h"
 #include "binder_util.h"
@@ -488,6 +489,7 @@ binder_modem_remove(
         g_source_remove(self->set_offline.timeout_id);
     }
 
+    binder_ext_slot_unref(modem->ext);
     binder_ims_reg_unref(modem->ims);
     binder_network_unref(modem->network);
     binder_sim_card_unref(modem->sim_card);
@@ -542,6 +544,7 @@ binder_modem_create(
     const char* imei,
     const char* imeisv,
     const BinderSlotConfig* config,
+    BinderExtSlot* ext,
     BinderRadio* radio,
     BinderNetwork* network,
     BinderSimCard* card,
@@ -578,6 +581,7 @@ binder_modem_create(
         modem->watch = ofono_watch_new(path);
         modem->client = radio_client_ref(client);
         modem->ims = binder_ims_reg_new(client, log_prefix);
+        modem->ext = binder_ext_slot_ref(ext);
         self->g = radio_request_group_new(client);
         self->last_known_iccid = g_strdup(modem->watch->iccid);
 

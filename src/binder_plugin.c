@@ -42,6 +42,9 @@
 #include "binder_util.h"
 #include "binder_voicecall.h"
 
+#include "binder_ext_plugin.h"
+#include "binder_ext_slot.h"
+
 #include <ofono/conf.h>
 #include <ofono/log.h>
 #include <ofono/plugin.h>
@@ -112,8 +115,10 @@ static const char* const binder_radio_ifaces[] = {
 #define BINDER_CONF_PLUGIN_EXPECT_SLOTS       "ExpectSlots"
 #define BINDER_CONF_PLUGIN_IGNORE_SLOTS       "IgnoreSlots"
 
-#define BINDER_CONF_SLOT_PATH                 "path" /* Slot specific */
-#define BINDER_CONF_SLOT_NUMBER               "slot" /* Slot specific */
+/* Slot specific */
+#define BINDER_CONF_SLOT_PATH                 "path"
+#define BINDER_CONF_SLOT_NUMBER               "slot"
+#define BINDER_CONF_SLOT_EXT_PLUGIN           "extPlugin"
 #define BINDER_CONF_SLOT_RADIO_INTERFACE      "radioInterface"
 #define BINDER_CONF_SLOT_START_TIMEOUT_MS     "startTimeout"
 #define BINDER_CONF_SLOT_REQUEST_TIMEOUT_MS   "timeout"
@@ -241,6 +246,9 @@ typedef struct binder_slot {
     RADIO_INTERFACE version;
     RadioInstance* instance;
     RadioClient* client;
+    GHashTable* ext_params;
+    BinderExtPlugin* ext_plugin;
+    BinderExtSlot* ext_slot;
     BinderPlugin* plugin;
     BinderLogger* log_trace;
     BinderLogger* log_dump;
@@ -574,6 +582,9 @@ binder_plugin_slot_shutdown(
             radio_client_unref(slot->client);
             slot->instance = NULL;
             slot->client = NULL;
+
+            binder_ext_slot_drop(slot->ext_slot);
+            slot->ext_slot = NULL;
         }
     }
 }
@@ -669,8 +680,9 @@ binder_plugin_modem_check(
 
         DBG("%s registering modem", slot->name);
         modem = binder_modem_create(slot->client, slot->name, slot->path,
-            slot->imei, slot->imeisv, &slot->config, slot->radio, slot->network,
-            slot->sim_card, slot->data, slot->sim_settings, slot->cell_info);
+            slot->imei, slot->imeisv, &slot->config, slot->ext_slot,
+            slot->radio, slot->network, slot->sim_card, slot->data,
+            slot->sim_settings, slot->cell_info);
 
         if (modem) {
             slot->modem = modem;
@@ -1208,6 +1220,10 @@ binder_plugin_slot_check_radio_client(
                     radio_client_add_connected_handler(slot->client,
                         binder_plugin_slot_connected_cb, slot);
             }
+
+            /* binder_ext_slot_new just returns NULL if plugin is NULL */
+            slot->ext_slot = binder_ext_slot_new(slot->ext_plugin,
+                slot->instance, slot->ext_params);
         } else {
             radio_instance_unref(slot->instance);
             slot->instance = NULL;
@@ -1291,6 +1307,59 @@ binder_plugin_parse_radio_interface(
     return BINDER_DEFAULT_RADIO_INTERFACE;
 }
 
+/*
+ * Parse the spec according to the following grammar:
+ *
+ *   spec: name | name ':' parameters
+ *   params: param | params ';' param
+ *   param: key '=' value
+ *   transport: STRING
+ *   key: STRING
+ *   value: STRING
+ *
+ * Returns the name, hashtable is filled with key-value pairs.
+ */
+static
+char*
+binder_plugin_parse_spec_params(
+    const char* spec,
+    GHashTable* params)
+{
+    char* name = NULL;
+    char* sep = strchr(spec, ':');
+
+    if (sep) {
+        name = g_strstrip(g_strndup(spec, sep - spec));
+        if (name[0]) {
+            char** list = g_strsplit(sep + 1, ";", 0);
+            char** ptr;
+
+            for (ptr = list; *ptr; ptr++) {
+                const char* p = *ptr;
+
+                sep = strchr(p, '=');
+                if (sep) {
+                    char* key = g_strndup(p, sep - p);
+                    char* value = g_strdup(sep + 1);
+
+                    g_hash_table_insert(params, g_strstrip(key),
+                        g_strstrip(value));
+                }
+            }
+            g_strfreev(list);
+            return name;
+        }
+    } else {
+        /* Use default name attributes */
+        name = g_strstrip(g_strdup(spec));
+        if (name[0]) {
+            return name;
+        }
+    }
+    g_free(name);
+    return NULL;
+}
+
 static
 BinderSlot*
 binder_plugin_create_slot(
@@ -1354,6 +1423,7 @@ binder_plugin_create_slot(
     slot->req_timeout_ms = BINDER_DEFAULT_SLOT_REQ_TIMEOUT_MS;
     slot->slot_flags = BINDER_DEFAULT_SLOT_FLAGS;
     slot->start_timeout_ms = BINDER_DEFAULT_SLOT_START_TIMEOUT_MS;
+
     data_opt->allow_data = BINDER_DEFAULT_SLOT_ALLOW_DATA;
     data_opt->data_call_retry_limit =
         BINDER_DEFAULT_SLOT_DATA_CALL_RETRY_LIMIT;
@@ -1371,6 +1441,30 @@ binder_plugin_create_slot(
     }
 
     /* Everything else may be in the [Settings] section */
+
+    /* extPlugin */
+    sval = ofono_conf_get_string(file, group, BINDER_CONF_SLOT_EXT_PLUGIN);
+    if (sval) {
+        GHashTable* params = g_hash_table_new_full(g_str_hash, g_str_equal,
+            g_free, g_free);
+        char* name = binder_plugin_parse_spec_params(sval, params);
+
+        if (name) {
+            slot->ext_plugin = binder_ext_plugin_get(name);
+            if (slot->ext_plugin) {
+                DBG("%s: " BINDER_CONF_SLOT_EXT_PLUGIN " %s", group, sval);
+                slot->ext_params = g_hash_table_ref(params);
+                binder_ext_plugin_ref(slot->ext_plugin);
+            } else {
+                ofono_warn("Unknown extension plugin `%s`", name);
+            }
+            g_free(name);
+        } else {
+            ofono_warn("Failed to parse extension spec `%s`", sval);
+        }
+        g_hash_table_unref(params);
+        g_free(sval);
+    }
 
     /* radioInterface */
     sval = ofono_conf_get_string(file, group,
@@ -1499,6 +1593,7 @@ binder_plugin_slot_free(
 
     DBG("%s", slot->name);
     binder_plugin_slot_shutdown(slot, TRUE);
+    binder_ext_plugin_unref(slot->ext_plugin);
     plugin->slots = g_slist_remove(plugin->slots, slot);
     ofono_watch_remove_all_handlers(slot->watch, slot->watch_event_id);
     ofono_watch_unref(slot->watch);
@@ -1511,6 +1606,9 @@ binder_plugin_slot_free(
     gbinder_servicemanager_remove_handler(slot->svcmgr, slot->radio_watch_id);
     gbinder_servicemanager_cancel(slot->svcmgr, slot->list_call_id);
     gbinder_servicemanager_unref(slot->svcmgr);
+    if (slot->ext_params) {
+        g_hash_table_unref(slot->ext_params);
+    }
     g_free(slot->name);
     g_free(slot->path);
     g_free(slot->imei);
@@ -1675,12 +1773,13 @@ binder_plugin_pattern_match(
 }
 
 static
-GSList*
+void
 binder_plugin_parse_config_file(
-    GKeyFile* file,
-    GBinderServiceManager* sm,
-    BinderPluginSettings* ps)
+    BinderPlugin* plugin,
+    GKeyFile* file)
 {
+    GBinderServiceManager* sm = plugin->svcmgr;
+    BinderPluginSettings* ps = &plugin->settings;
     GSList* list = NULL;
     int ival;
     char* sval;
@@ -1802,15 +1901,14 @@ binder_plugin_parse_config_file(
 
     g_strfreev(expect_slots);
     g_strfreev(ignore_slots);
-    return list;
+    plugin->slots = list;
 }
 
 static
 void
 binder_plugin_load_config(
     BinderPlugin* plugin,
-    const char* path,
-    BinderPluginSettings* ps)
+    const char* path)
 {
     const char* dev;
     char* cfg_dev;
@@ -1827,8 +1925,7 @@ binder_plugin_load_config(
     dev = cfg_dev ? cfg_dev : BINDER_DEFAULT_PLUGIN_DEVICE;
     if ((plugin->svcmgr = gbinder_servicemanager_new(dev)) != NULL) {
         DBG("using %sbinder device %s", cfg_dev ? "" : "default ", dev);
-        plugin->slots = binder_plugin_parse_config_file(file,
-            plugin->svcmgr, ps);
+        binder_plugin_parse_config_file(plugin, file);
     } else {
         ofono_warn("Can't open %sbinder device %s",
             cfg_dev ? "" : "default ", dev);
@@ -2084,7 +2181,7 @@ binder_plugin_slot_driver_init(
     }
 
     /* This populates plugin->slots */
-    binder_plugin_load_config(plugin, config_file, ps);
+    binder_plugin_load_config(plugin, config_file);
 
     /*
      * Finish slot initialization. Some of them may not have path and
