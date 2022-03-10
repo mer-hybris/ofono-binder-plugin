@@ -1456,11 +1456,11 @@ binder_plugin_create_slot(
                 slot->ext_params = g_hash_table_ref(params);
                 binder_ext_plugin_ref(slot->ext_plugin);
             } else {
-                ofono_warn("Unknown extension plugin `%s`", name);
+                ofono_warn("Unknown extension plugin '%s'", name);
             }
             g_free(name);
         } else {
-            ofono_warn("Failed to parse extension spec `%s`", sval);
+            ofono_warn("Failed to parse extension spec '%s'", sval);
         }
         g_hash_table_unref(params);
         g_free(sval);
