@@ -19,7 +19,11 @@
 #include "binder_modem.h"
 #include "binder_util.h"
 
+#include "binder_ext_slot.h"
+#include "binder_ext_ims_sms.h"
+
 #include <ofono/ims.h>
+#include <ofono/log.h>
 
 enum binder_ims_events {
     EVENT_IMS_REGISTRATION_CHANGED,
@@ -32,6 +36,7 @@ typedef struct binder_ims {
     BinderImsReg* reg;
     gulong event_id[EVENT_COUNT];
     guint start_id;
+    int caps;
 } BinderIms;
 
 #define DBG_(self,fmt,args...) DBG("%s" fmt, (self)->log_prefix, ##args)
@@ -41,7 +46,7 @@ static inline BinderIms* binder_ims_get_data(struct ofono_ims* ims)
 static gboolean binder_ims_registered(BinderIms* self)
     { return self->reg && self->reg->registered; }
 static int binder_ims_flags(BinderIms* self)
-    { return binder_ims_registered(self) ? OFONO_IMS_SMS_CAPABLE : 0; }
+    { return binder_ims_registered(self) ? self->caps : 0; }
 
 static
 void
@@ -105,6 +110,14 @@ binder_ims_probe(
 
     self->reg = binder_ims_reg_ref(modem->ims);
     self->ims = ims;
+
+    if (modem->ext) {
+        if (binder_ext_slot_get_interface(modem->ext,
+            BINDER_EXT_TYPE_IMS_SMS)) {
+            DBG_(self, "ims sms is supported");
+            self->caps |= OFONO_IMS_SMS_CAPABLE;
+        }
+    }
 
     self->start_id = g_idle_add(binder_ims_start, self);
     ofono_ims_set_data(ims, self);
