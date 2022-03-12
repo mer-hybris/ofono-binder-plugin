@@ -13,17 +13,18 @@
  *  GNU General Public License for more details.
  */
 
-#include "binder_ext_ims_sms_impl.h"
+#include "binder_ext_sms_impl.h"
 
-G_DEFINE_INTERFACE(BinderExtImsSms, binder_ext_ims_sms, G_TYPE_OBJECT)
+G_DEFINE_INTERFACE(BinderExtSms, binder_ext_sms, G_TYPE_OBJECT)
+#define GET_IFACE(obj) BINDER_EXT_SMS_GET_IFACE(obj)
 
 /*==========================================================================*
  * API
  *==========================================================================*/
 
-BinderExtImsSms*
-binder_ext_ims_sms_ref(
-    BinderExtImsSms* self)
+BinderExtSms*
+binder_ext_sms_ref(
+    BinderExtSms* self)
 {
     if (G_LIKELY(self)) {
         g_object_ref(self);
@@ -32,31 +33,39 @@ binder_ext_ims_sms_ref(
 }
 
 void
-binder_ext_ims_sms_unref(
-    BinderExtImsSms* self)
+binder_ext_sms_unref(
+    BinderExtSms* self)
 {
     if (G_LIKELY(self)) {
         g_object_unref(self);
     }
 }
 
+BINDER_EXT_SMS_INTERFACE_FLAGS
+binder_ext_sms_get_interface_flags(
+    BinderExtSms* self)
+{
+    return G_LIKELY(self) ? GET_IFACE(self)->flags :
+        BINDER_EXT_SMS_INTERFACE_NO_FLAGS;
+}
+
 guint
-binder_ext_ims_sms_send(
-    BinderExtImsSms* self,
+binder_ext_sms_send(
+    BinderExtSms* self,
     const char* smsc,
     const void* pdu,
     gsize pdu_len,
     guint msg_ref,
-    gboolean retry,
-    BinderExtImsSmsSendFunc complete,
+    BINDER_EXT_SMS_SEND_FLAGS flags,
+    BinderExtSmsSendFunc complete,
     GDestroyNotify destroy,
     void* user_data)
 {
     if (G_LIKELY(self)) {
-        BinderExtImsSmsInterface* iface = BINDER_EXT_IMS_SMS_GET_IFACE(self);
+        BinderExtSmsInterface* iface = GET_IFACE(self);
 
         if (iface->send) {
-            return iface->send(self, smsc, pdu, pdu_len, msg_ref, retry,
+            return iface->send(self, smsc, pdu, pdu_len, msg_ref, flags,
                 complete, destroy, user_data);
         }
     }
@@ -64,27 +73,27 @@ binder_ext_ims_sms_send(
 }
 
 void
-binder_ext_ims_sms_cancel_send(
-    BinderExtImsSms* self,
+binder_ext_sms_cancel(
+    BinderExtSms* self,
     guint id)
 {
     if (G_LIKELY(self) && G_LIKELY(id)) {
-        BinderExtImsSmsInterface* iface = BINDER_EXT_IMS_SMS_GET_IFACE(self);
+        BinderExtSmsInterface* iface = GET_IFACE(self);
 
-        if (iface->cancel_send) {
-            iface->cancel_send(self, id);
+        if (iface->cancel) {
+            iface->cancel(self, id);
         }
     }
 }
 
 gulong
-binder_ext_ims_sms_add_report_handler(
-    BinderExtImsSms* self,
-    BinderExtImsSmsReportFunc cb,
+binder_ext_sms_add_report_handler(
+    BinderExtSms* self,
+    BinderExtSmsReportFunc cb,
     void* user_data)
 {
     if (G_LIKELY(self) && G_LIKELY(cb)) {
-        BinderExtImsSmsInterface* iface = BINDER_EXT_IMS_SMS_GET_IFACE(self);
+        BinderExtSmsInterface* iface = GET_IFACE(self);
 
         if (iface->add_report_handler) {
             return iface->add_report_handler(self, cb, user_data);
@@ -94,13 +103,13 @@ binder_ext_ims_sms_add_report_handler(
 }
 
 gulong
-binder_ext_ims_sms_add_incoming_handler(
-    BinderExtImsSms* self,
-    BinderExtImsSmsIncomingFunc cb,
+binder_ext_sms_add_incoming_handler(
+    BinderExtSms* self,
+    BinderExtSmsIncomingFunc cb,
     void* user_data)
 {
     if (G_LIKELY(self) && G_LIKELY(cb)) {
-        BinderExtImsSmsInterface* iface = BINDER_EXT_IMS_SMS_GET_IFACE(self);
+        BinderExtSmsInterface* iface = GET_IFACE(self);
 
         if (iface->add_incoming_handler) {
             return iface->add_incoming_handler(self, cb, user_data);
@@ -110,13 +119,13 @@ binder_ext_ims_sms_add_incoming_handler(
 }
 
 void
-binder_ext_ims_sms_ack_report(
-    BinderExtImsSms* self,
+binder_ext_sms_ack_report(
+    BinderExtSms* self,
     guint msg_ref,
     gboolean ok)
 {
     if (G_LIKELY(self)) {
-        BinderExtImsSmsInterface* iface = BINDER_EXT_IMS_SMS_GET_IFACE(self);
+        BinderExtSmsInterface* iface = GET_IFACE(self);
 
         if (iface->ack_report) {
             iface->ack_report(self, msg_ref, ok);
@@ -125,12 +134,12 @@ binder_ext_ims_sms_ack_report(
 }
 
 void
-binder_ext_ims_sms_ack_incoming(
-    BinderExtImsSms* self,
+binder_ext_sms_ack_incoming(
+    BinderExtSms* self,
     gboolean ok)
 {
     if (G_LIKELY(self)) {
-        BinderExtImsSmsInterface* iface = BINDER_EXT_IMS_SMS_GET_IFACE(self);
+        BinderExtSmsInterface* iface = GET_IFACE(self);
 
         if (iface->ack_incoming) {
             iface->ack_incoming(self, ok);
@@ -139,8 +148,8 @@ binder_ext_ims_sms_ack_incoming(
 }
 
 void
-binder_ext_ims_sms_remove_handler(
-    BinderExtImsSms* self,
+binder_ext_sms_remove_handler(
+    BinderExtSms* self,
     gulong id)
 {
     if (G_LIKELY(self) && G_LIKELY(id)) {
@@ -148,18 +157,18 @@ binder_ext_ims_sms_remove_handler(
          * Since we provide the default callback, we can safely assume
          * that remove_handler is always there.
          */
-        BINDER_EXT_IMS_SMS_GET_IFACE(self)->remove_handler(self, id);
+        GET_IFACE(self)->remove_handler(self, id);
     }
 }
 
 void
-binder_ext_ims_sms_remove_handlers(
-    BinderExtImsSms* self,
+binder_ext_sms_remove_handlers(
+    BinderExtSms* self,
     gulong* ids,
     guint count)
 {
     if (G_LIKELY(self) && G_LIKELY(ids) && G_LIKELY(count)) {
-        BinderExtImsSmsInterface* iface = BINDER_EXT_IMS_SMS_GET_IFACE(self);
+        BinderExtSmsInterface* iface = GET_IFACE(self);
         int i;
 
         /*
@@ -181,8 +190,8 @@ binder_ext_ims_sms_remove_handlers(
 
 static
 void
-binder_ext_ims_sms_default_remove_handler(
-    BinderExtImsSms* self,
+binder_ext_sms_default_remove_handler(
+    BinderExtSms* self,
     gulong id)
 {
     if (id) {
@@ -192,16 +201,16 @@ binder_ext_ims_sms_default_remove_handler(
 
 static
 void
-binder_ext_ims_sms_default_init(
-    BinderExtImsSmsInterface* iface)
+binder_ext_sms_default_init(
+    BinderExtSmsInterface* iface)
 {
     /*
      * Assume the smallest interface version. Implementation must overwrite
-     * iface->version with BINDER_EXT_IMS_SMS_INTERFACE_VERSION known to it
-     * at the compile time.
+     * iface->version with BINDER_EXT_SMS_INTERFACE_VERSION known to it at
+     * the compile time.
      */
     iface->version = 1;
-    iface->remove_handler = binder_ext_ims_sms_default_remove_handler;
+    iface->remove_handler = binder_ext_sms_default_remove_handler;
 }
 
 /*

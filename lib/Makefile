@@ -46,9 +46,9 @@ LIB = $(LIB_NAME).a
 #
 
 SRC = \
-  binder_ext_ims_sms.c \
   binder_ext_plugin.c \
-  binder_ext_slot.c
+  binder_ext_slot.c \
+  binder_ext_sms.c
 
 #
 # Directories

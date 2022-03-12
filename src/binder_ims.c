@@ -20,7 +20,7 @@
 #include "binder_util.h"
 
 #include "binder_ext_slot.h"
-#include "binder_ext_ims_sms.h"
+#include "binder_ext_sms.h"
 
 #include <ofono/ims.h>
 #include <ofono/log.h>
@@ -111,12 +111,11 @@ binder_ims_probe(
     self->reg = binder_ims_reg_ref(modem->ims);
     self->ims = ims;
 
-    if (modem->ext) {
-        if (binder_ext_slot_get_interface(modem->ext,
-            BINDER_EXT_TYPE_IMS_SMS)) {
-            DBG_(self, "ims sms is supported");
-            self->caps |= OFONO_IMS_SMS_CAPABLE;
-        }
+    if (binder_ext_sms_get_interface_flags
+       (binder_ext_slot_get_interface(modem->ext, BINDER_EXT_TYPE_SMS)) &
+        BINDER_EXT_SMS_INTERFACE_FLAG_IMS) {
+        DBG_(self, "ims sms seems to be supported");
+        self->caps |= OFONO_IMS_SMS_CAPABLE;
     }
 
     self->start_id = g_idle_add(binder_ims_start, self);
