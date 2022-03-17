@@ -20,7 +20,7 @@
 #include "binder_util.h"
 
 #include "binder_ext_slot.h"
-#include "binder_ext_ims_sms.h"
+#include "binder_ext_sms.h"
 
 #include <ofono/log.h>
 #include <ofono/misc.h>
@@ -54,9 +54,9 @@ enum binder_sms_events {
 };
 
 enum binder_sms_ext_events {
-    SMS_IMS_EVENT_INCOMING_SMS,
-    SMS_IMS_EVENT_STATUS_REPORT,
-    SMS_IMS_EVENT_COUNT
+    SMS_EXT_EVENT_INCOMING_SMS,
+    SMS_EXT_EVENT_STATUS_REPORT,
+    SMS_EXT_EVENT_COUNT
 };
 
 /*
@@ -77,11 +77,11 @@ typedef struct binder_sms {
     struct ofono_sim_context* sim_context;
     char* log_prefix;
     gboolean use_standard_ims_sms_api;
-    guint ims_send_id;
-    BinderExtImsSms* ims_sms;
+    guint ext_send_id;
+    BinderExtSms* sms_ext;
     BinderImsReg* ims_reg;
     RadioRequestGroup* g;
-    gulong ims_event[SMS_IMS_EVENT_COUNT];
+    gulong ext_event[SMS_EXT_EVENT_COUNT];
     gulong radio_event[SMS_RADIO_EVENT_COUNT];
     guint register_id;
 } BinderSms;
@@ -128,6 +128,9 @@ binder_sms_send(
     void* data);
 
 #define DBG_(self,fmt,args...) DBG("%s" fmt, (self)->log_prefix, ##args)
+#define SMS_TYPE_STR(ext) \
+    ((binder_ext_sms_get_interface_flags(ext) & \
+      BINDER_EXT_SMS_INTERFACE_FLAG_IMS) ? "ims " : "")
 
 static inline BinderSms* binder_sms_get_data(struct ofono_sms *sms)
     { return ofono_sms_get_data(sms); }
@@ -425,8 +428,8 @@ binder_sms_submit_cb(
 static
 void
 binder_sms_submit_ext_cb(
-    BinderExtImsSms* ims,
-    BINDER_EXT_IMS_SMS_SEND_RESULT result,
+    BinderExtSms* ext,
+    BINDER_EXT_SMS_SEND_RESULT result,
     guint msg_ref,
     void* user_data)
 {
@@ -434,21 +437,30 @@ binder_sms_submit_ext_cb(
     BinderSms* self = cbd->self;
     struct ofono_error err;
 
-    self->ims_send_id = 0;
+    self->ext_send_id = 0;
     switch (result) {
-    case BINDER_EXT_IMS_SMS_SEND_OK:
-        /* SMS has been sent over IMS */
+    case BINDER_EXT_SMS_SEND_RESULT_OK:
+        /* SMS has been sent */
         cbd->cb(binder_error_ok(&err), msg_ref, cbd->data);
         return;
-    case BINDER_EXT_IMS_SMS_SEND_RETRY:
-    case BINDER_EXT_IMS_SMS_SEND_ERROR_RADIO_OFF:
-    case BINDER_EXT_IMS_SMS_SEND_ERROR_NO_SERVICE:
+    case BINDER_EXT_SMS_SEND_RESULT_RETRY:
+    case BINDER_EXT_SMS_SEND_RESULT_ERROR_RADIO_OFF:
+    case BINDER_EXT_SMS_SEND_RESULT_ERROR_NO_SERVICE:
         /* Failed to send SMS over IMS, try GSM */
         binder_sms_send(cbd->self, cbd->pdu, cbd->pdu_len,
             cbd->tpdu_len, BINDER_SMS_SEND_FLAG_FORCE_GSM,
             cbd->cb, cbd->data);
         return;
-    case BINDER_EXT_IMS_SMS_SEND_ERROR:
+    case BINDER_EXT_SMS_SEND_RESULT_ERROR_NETWORK_TIMEOUT:
+        /*
+         * 332 (network timeout) defined in 3GPP 27.005, 3.2.5
+         * is the only one actually handled by the ofono core.
+         */
+        err.type = OFONO_ERROR_TYPE_CMS;
+        err.error = 332; /* network timeout */
+        cbd->cb(&err, 0, cbd->data);
+        return;
+    case BINDER_EXT_SMS_SEND_RESULT_ERROR:
         break;
     }
 
@@ -539,6 +551,26 @@ binder_sms_send(
     struct ofono_error err;
 
     DBG("pdu_len: %d, tpdu_len: %d flags: 0x%02x", pdu_len, tpdu_len, flags);
+    if (self->sms_ext && !(flags & BINDER_SMS_SEND_FLAG_FORCE_GSM)) {
+        const int smsc_len = pdu_len - tpdu_len;
+        const void* tpdu = pdu + smsc_len;
+        char* smsc = (smsc_len > 1) ? g_strndup((char*)pdu, smsc_len) : NULL;
+
+        /* Vendor specific mechanism */
+        binder_ext_sms_cancel(self->sms_ext, self->ext_send_id);
+        self->ext_send_id = binder_ext_sms_send(self->sms_ext, smsc,
+            tpdu, tpdu_len, 0, (flags & BINDER_SMS_SEND_FLAG_EXPECT_MORE) ?
+            BINDER_EXT_SMS_SEND_EXPECT_MORE : BINDER_EXT_SMS_SEND_NO_FLAGS,
+            binder_sms_submit_ext_cb, binder_sms_submit_cbd_free,
+            /* Copy the PDU for GSM SMS fallback */
+            binder_sms_submit_cbd_new(self, pdu, pdu_len, tpdu_len, cb, data));
+        g_free(smsc);
+        if (self->ext_send_id) {
+            /* Request submitted */
+            return;
+        }
+    }
+
     if ((flags & BINDER_SMS_SEND_FLAG_FORCE_GSM) ||
         !binder_sms_can_send_ims_message(self)) {
         /*
@@ -574,22 +606,6 @@ binder_sms_send(
         binder_sms_ims_message(self, &writer, pdu, pdu_len, tpdu_len);
         if (radio_request_submit(req)) {
             radio_request_unref(req);
-            /* Request submitted */
-            return;
-        }
-    } else if (self->ims_sms) {
-        const int smsc_len = pdu_len - tpdu_len;
-        const void* tpdu = pdu + smsc_len;
-        char* smsc = (smsc_len > 1) ? g_strndup((char*)pdu, smsc_len) : NULL;
-
-        /* Vendor specific mechanism */
-        binder_ext_ims_sms_cancel_send(self->ims_sms, self->ims_send_id);
-        self->ims_send_id = binder_ext_ims_sms_send(self->ims_sms,
-            smsc, tpdu, tpdu_len, 0, FALSE,
-            binder_sms_submit_ext_cb, binder_sms_submit_cbd_free,
-            /* Copy the PDU for GSM SMS fallback */
-            binder_sms_submit_cbd_new(self, pdu, pdu_len, tpdu_len, cb, data));
-        if (self->ims_send_id) {
             /* Request submitted */
             return;
         }
@@ -669,7 +685,7 @@ binder_sms_ack(
 
 static
 void
-binder_sms_notify(
+binder_sms_incoming(
     RadioClient* client,
     RADIO_IND code,
     const GBinderReader* args,
@@ -721,7 +737,7 @@ binder_sms_notify(
 
 static
 gboolean
-binder_sms_ims_notify(
+binder_sms_notify(
     BinderSms* self,
     const guchar* pdu,
     guint pdu_len,
@@ -748,38 +764,38 @@ binder_sms_ims_notify(
 
 static
 void
-binder_sms_ims_incoming(
-    BinderExtImsSms* ims,
+binder_sms_ext_incoming(
+    BinderExtSms* ext,
     const void* pdu,
     guint pdu_len,
     void* user_data)
 {
-    ofono_info("incoming ims sms, %u bytes", pdu_len);
-    if (binder_sms_ims_notify((BinderSms*) user_data, pdu, pdu_len,
+    ofono_info("incoming %ssms, %u bytes", SMS_TYPE_STR(ext), pdu_len);
+    if (binder_sms_notify((BinderSms*) user_data, pdu, pdu_len,
         ofono_sms_deliver_notify)) {
-        binder_ext_ims_sms_ack_incoming(ims, TRUE);
+        binder_ext_sms_ack_incoming(ext, TRUE);
     } else {
-        ofono_error("Unable to parse IMS SMS notification");
-        binder_ext_ims_sms_ack_incoming(ims, FALSE);
+        ofono_error("Unable to parse %sSMS notification", SMS_TYPE_STR(ext));
+        binder_ext_sms_ack_incoming(ext, FALSE);
     }
 }
 
 static
 void
-binder_sms_ims_status_report(
-    BinderExtImsSms* ims,
+binder_sms_ext_status_report(
+    BinderExtSms* ext,
     const void* pdu,
     guint pdu_len,
     guint msg_ref,
     void* user_data)
 {
-    ofono_info("incoming ims sms status report, %u bytes", pdu_len);
-    if (binder_sms_ims_notify((BinderSms*) user_data, pdu, pdu_len,
+    ofono_info("incoming %ssms report, %u bytes", SMS_TYPE_STR(ext), pdu_len);
+    if (binder_sms_notify((BinderSms*) user_data, pdu, pdu_len,
         ofono_sms_status_notify)) {
-        binder_ext_ims_sms_ack_report(ims, msg_ref, TRUE);
+        binder_ext_sms_ack_report(ext, msg_ref, TRUE);
     } else {
-        ofono_error("Unable to parse IMS SMS status report");
-        binder_ext_ims_sms_ack_report(ims, msg_ref, FALSE);
+        ofono_error("Unable to parse %sSMS report", SMS_TYPE_STR(ext));
+        binder_ext_sms_ack_report(ext, msg_ref, FALSE);
     }
 }
 
@@ -910,22 +926,22 @@ gboolean binder_sms_register(
     /* Register event handlers */
     self->radio_event[SMS_RADIO_EVENT_NEW_SMS] =
         radio_client_add_indication_handler(client,
-            RADIO_IND_NEW_SMS, binder_sms_notify, self);
+            RADIO_IND_NEW_SMS, binder_sms_incoming, self);
     self->radio_event[SMS_RADIO_EVENT_NEW_STATUS_REPORT] =
         radio_client_add_indication_handler(client,
-            RADIO_IND_NEW_SMS_STATUS_REPORT, binder_sms_notify, self);
+            RADIO_IND_NEW_SMS_STATUS_REPORT, binder_sms_incoming, self);
     self->radio_event[SMS_RADIO_EVENT_NEW_SMS_ON_SIM] =
         radio_client_add_indication_handler(client,
             RADIO_IND_NEW_SMS_ON_SIM, binder_sms_on_sim, self);
 
-    if (self->ims_sms) {
-        /* IMS extension */
-        self->ims_event[SMS_IMS_EVENT_INCOMING_SMS] =
-            binder_ext_ims_sms_add_incoming_handler(self->ims_sms,
-                binder_sms_ims_incoming, self);
-        self->ims_event[SMS_IMS_EVENT_STATUS_REPORT] =
-            binder_ext_ims_sms_add_report_handler(self->ims_sms,
-                binder_sms_ims_status_report, self);
+    if (self->sms_ext) {
+        /* Extension */
+        self->ext_event[SMS_EXT_EVENT_INCOMING_SMS] =
+            binder_ext_sms_add_incoming_handler(self->sms_ext,
+                binder_sms_ext_incoming, self);
+        self->ext_event[SMS_EXT_EVENT_STATUS_REPORT] =
+            binder_ext_sms_add_report_handler(self->sms_ext,
+                binder_sms_ext_status_report, self);
     }
 
     return G_SOURCE_REMOVE;
@@ -950,10 +966,10 @@ binder_sms_probe(
     self->ims_reg = binder_ims_reg_ref(modem->ims);
     self->g = radio_request_group_new(modem->client); /* Keeps ref to client */
 
-    if (modem->ext && (self->ims_sms = binder_ext_slot_get_interface(modem->ext,
-        BINDER_EXT_TYPE_IMS_SMS)) != NULL) {
-        DBG_(self, "using ims sms extension");
-        binder_ext_ims_sms_ref(self->ims_sms);
+    if (modem->ext && (self->sms_ext = binder_ext_slot_get_interface(modem->ext,
+        BINDER_EXT_TYPE_SMS)) != NULL) {
+        DBG_(self, "using %ssms extension", SMS_TYPE_STR(self->sms_ext));
+        binder_ext_sms_ref(self->sms_ext);
     }
 
     GASSERT(self->sim_context);
@@ -979,10 +995,10 @@ binder_sms_remove(
         g_source_remove(self->register_id);
     }
 
-    if (self->ims_sms) {
-        binder_ext_ims_sms_remove_all_handlers(self->ims_sms, self->ims_event);
-        binder_ext_ims_sms_cancel_send(self->ims_sms, self->ims_send_id);
-        binder_ext_ims_sms_unref(self->ims_sms);
+    if (self->sms_ext) {
+        binder_ext_sms_remove_all_handlers(self->sms_ext, self->ext_event);
+        binder_ext_sms_cancel(self->sms_ext, self->ext_send_id);
+        binder_ext_sms_unref(self->sms_ext);
     }
 
     radio_client_remove_all_handlers(self->g->client, self->radio_event);

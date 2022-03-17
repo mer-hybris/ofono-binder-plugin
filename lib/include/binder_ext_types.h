@@ -20,7 +20,7 @@
 
 G_BEGIN_DECLS
 
-typedef struct binder_ext_ims_sms BinderExtImsSms;
+typedef struct binder_ext_sms BinderExtSms;
 typedef struct binder_ext_plugin BinderExtPlugin;
 typedef struct binder_ext_slot BinderExtSlot;
 
