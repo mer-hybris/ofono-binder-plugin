@@ -83,7 +83,7 @@ binder_ext_sms_unref(
 
 BINDER_EXT_SMS_INTERFACE_FLAGS
 binder_ext_sms_get_interface_flags(
-    BinderExtSms* self);
+    BinderExtSms* ext);
 
 guint
 binder_ext_sms_send(
