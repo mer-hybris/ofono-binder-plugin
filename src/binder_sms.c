@@ -130,7 +130,7 @@ binder_sms_send(
 #define DBG_(self,fmt,args...) DBG("%s" fmt, (self)->log_prefix, ##args)
 #define SMS_TYPE_STR(ext) \
     ((binder_ext_sms_get_interface_flags(ext) & \
-      BINDER_EXT_SMS_INTERFACE_FLAG_IMS) ? "ims " : "")
+      BINDER_EXT_SMS_INTERFACE_FLAG_IMS_REQUIRED) ? "ims " : "")
 
 static inline BinderSms* binder_sms_get_data(struct ofono_sms *sms)
     { return ofono_sms_get_data(sms); }
@@ -353,6 +353,16 @@ binder_sms_can_send_ims_message(
 }
 
 static
+gboolean
+binder_sms_can_send_ext_message(
+    BinderSms* self)
+{
+    return self->sms_ext && (!(binder_ext_sms_get_interface_flags
+        (self->sms_ext) & BINDER_EXT_SMS_INTERFACE_FLAG_IMS_REQUIRED) ||
+        binder_sms_can_send_ims_message(self));
+}
+
+static
 void
 binder_sms_submit_cb(
     RadioRequest* req,
@@ -548,27 +558,30 @@ binder_sms_send(
     ofono_sms_submit_cb_t cb,
     void* data)
 {
+    BinderSmsSubmitCbData* cbd = NULL;
     struct ofono_error err;
 
     DBG("pdu_len: %d, tpdu_len: %d flags: 0x%02x", pdu_len, tpdu_len, flags);
-    if (self->sms_ext && !(flags & BINDER_SMS_SEND_FLAG_FORCE_GSM)) {
+    if (!(flags & BINDER_SMS_SEND_FLAG_FORCE_GSM) &&
+        binder_sms_can_send_ext_message(self)) {
         const int smsc_len = pdu_len - tpdu_len;
         const void* tpdu = pdu + smsc_len;
         char* smsc = (smsc_len > 1) ? g_strndup((char*)pdu, smsc_len) : NULL;
 
         /* Vendor specific mechanism */
         binder_ext_sms_cancel(self->sms_ext, self->ext_send_id);
+        /* Copy the PDU for GSM SMS fallback */
+        cbd = binder_sms_submit_cbd_new(self, pdu,pdu_len,tpdu_len, cb, data);
         self->ext_send_id = binder_ext_sms_send(self->sms_ext, smsc,
             tpdu, tpdu_len, 0, (flags & BINDER_SMS_SEND_FLAG_EXPECT_MORE) ?
             BINDER_EXT_SMS_SEND_EXPECT_MORE : BINDER_EXT_SMS_SEND_NO_FLAGS,
-            binder_sms_submit_ext_cb, binder_sms_submit_cbd_free,
-            /* Copy the PDU for GSM SMS fallback */
-            binder_sms_submit_cbd_new(self, pdu, pdu_len, tpdu_len, cb, data));
+            binder_sms_submit_ext_cb, binder_sms_submit_cbd_free, cbd);
         g_free(smsc);
         if (self->ext_send_id) {
             /* Request submitted */
             return;
         }
+        /* cbd will be reused */
     }
 
     if ((flags & BINDER_SMS_SEND_FLAG_FORCE_GSM) ||
@@ -582,7 +595,7 @@ binder_sms_send(
             (flags & BINDER_SMS_SEND_FLAG_EXPECT_MORE) ?
             RADIO_REQ_SEND_SMS_EXPECT_MORE : RADIO_REQ_SEND_SMS, &writer,
             binder_sms_submit_cb, binder_sms_submit_cbd_free,
-            /* No need to copy the PDU */
+            cbd ? cbd : /* No need to copy the PDU */
             binder_sms_submit_cbd_new(self, NULL, 0, 0, cb, data));
 
         binder_sms_gsm_message(self, &writer,
@@ -599,7 +612,7 @@ binder_sms_send(
         RadioRequest* req = radio_request_new2(self->g,
             RADIO_REQ_SEND_IMS_SMS, &writer,
             binder_sms_submit_cb, binder_sms_submit_cbd_free,
-            /* Copy the PDU for GSM SMS fallback */
+            cbd ? cbd :  /* Copy the PDU for GSM SMS fallback */
             binder_sms_submit_cbd_new(self, pdu, pdu_len, tpdu_len, cb, data));
 
         DBG("sending ims message");
@@ -609,6 +622,9 @@ binder_sms_send(
             /* Request submitted */
             return;
         }
+    } else if (cbd) {
+        /* cbd wasn't reused */
+        binder_sms_submit_cbd_free(cbd);
     }
 
     /* Error path */

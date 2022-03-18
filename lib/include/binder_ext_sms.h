@@ -24,7 +24,8 @@ G_BEGIN_DECLS
 
 typedef enum binder_ext_sms_interface_flags {
     BINDER_EXT_SMS_INTERFACE_NO_FLAGS = 0,
-    BINDER_EXT_SMS_INTERFACE_FLAG_IMS = 0x01
+    BINDER_EXT_SMS_INTERFACE_FLAG_IMS_SUPPORT = 0x01,
+    BINDER_EXT_SMS_INTERFACE_FLAG_IMS_REQUIRED = 0x02
 } BINDER_EXT_SMS_INTERFACE_FLAGS;
 
 typedef enum binder_ext_sms_send_flags {
