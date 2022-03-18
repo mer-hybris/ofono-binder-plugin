@@ -2,3 +2,11 @@
 build
 unit/coverage/*.gcov
 unit/coverage/report
+debian/.debhelper
+debian/files
+debian/*.debhelper.log
+debian/*.install
+debian/*.substvars
+debian/libofonobinderpluginext-dev
+debian/libofonobinderpluginext
+debian/tmp
