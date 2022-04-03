@@ -23,7 +23,7 @@ all: debug release pkgconfig
 
 VERSION_MAJOR = 1
 VERSION_MINOR = 0
-VERSION_RELEASE = 0
+VERSION_RELEASE = 3
 
 # Version for pkg-config
 PCVERSION = $(VERSION_MAJOR).$(VERSION_MINOR).$(VERSION_RELEASE)
@@ -171,7 +171,7 @@ ABS_LIBDIR := $(shell echo /$(LIBDIR) | sed -r 's|/+|/|g')
 $(PKGCONFIG): $(LIB_NAME).pc.in Makefile
 	sed -e 's|@version@|$(PCVERSION)|g' -e 's|@libdir@|$(ABS_LIBDIR)|g' $< > $@
 
-debian/%.install: debian/%.install.in
+../debian/%.install: ../debian/%.install.in
 	sed 's|@LIBDIR@|$(LIBDIR)|g' $< > $@
 
 #

@@ -1,0 +1,5 @@
+libofonobinderpluginext (1.0.3) unstable; urgency=low
+
+  * Added debian packaging for the extension lib
+
+ -- Slava Monich <slava.monich@jolla.com>  Sun, 03 Apr 2022 21:07:21 +0300

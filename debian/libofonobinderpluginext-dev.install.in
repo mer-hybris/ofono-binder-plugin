@@ -1,0 +1,3 @@
+debian/tmp/@LIBDIR@/libofonobinderpluginext.so @LIBDIR@
+debian/tmp/@LIBDIR@/pkgconfig/libofonobinderpluginext.pc @LIBDIR@/pkgconfig
+debian/tmp/usr/include/* usr/include/

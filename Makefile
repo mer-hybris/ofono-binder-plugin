@@ -176,6 +176,10 @@ release_ext_so:
 clean:
 	make -C unit clean
 	make -C $(EXTLIB_DIR) clean
+	rm -fr debian/*.install debian/.debhelper debian/tmp
+	rm -fr debian/libofonobinderpluginext debian/libofonobinderpluginext-dev
+	rm -f documentation.list debian/files debian/*.substvars
+	rm -f debian/*.debhelper.log debian/*.debhelper debian/*~
 	rm -f *~ $(SRC_DIR)/*~ rpm/*~
 	rm -fr $(BUILD_DIR)
 

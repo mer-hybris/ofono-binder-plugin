@@ -1,0 +1,18 @@
+Source: libofonobinderpluginext
+Section: libs
+Priority: optional
+Maintainer: Slava Monich <slava.monich@jolla.com>
+Build-Depends: debhelper (>= 8.1.3), libglib2.0-dev (>= 2.0)
+Standards-Version: 3.8.4
+
+Package: libofonobinderpluginext
+Section: libs
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: Extension interfaces for ofono-binder-plugin
+
+Package: libofonobinderpluginext-dev
+Section: libdevel
+Architecture: any
+Depends: libofonobinderpluginext (= ${binary:Version}), ${misc:Depends}
+Description: Development files for ofono-binder-plugin extensions
