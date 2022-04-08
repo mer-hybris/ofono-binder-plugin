@@ -20,9 +20,17 @@
 
 G_BEGIN_DECLS
 
-typedef struct binder_ext_sms BinderExtSms;
+typedef struct binder_ext_call BinderExtCall;
 typedef struct binder_ext_plugin BinderExtPlugin;
 typedef struct binder_ext_slot BinderExtSlot;
+typedef struct binder_ext_sms BinderExtSms;
+
+/* Type of address, 3GPP TS 24.008 subclause 10.5.4.7 */
+typedef enum binder_ext_toa {
+    BINDER_EXT_TOA_LOCAL = 129,
+    BINDER_EXT_TOA_INTERNATIONAL = 145,
+    BINDER_EXT_TOA_UNKNOWN = 0x7fffffff
+} BINDER_EXT_TOA;
 
 G_END_DECLS
 

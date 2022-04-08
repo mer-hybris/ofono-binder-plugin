@@ -19,6 +19,7 @@
 #include "binder_modem.h"
 #include "binder_util.h"
 
+#include "binder_ext_call.h"
 #include "binder_ext_slot.h"
 #include "binder_ext_sms.h"
 
@@ -114,8 +115,15 @@ binder_ims_probe(
     if (binder_ext_sms_get_interface_flags
        (binder_ext_slot_get_interface(modem->ext, BINDER_EXT_TYPE_SMS)) &
         BINDER_EXT_SMS_INTERFACE_FLAG_IMS_SUPPORT) {
-        DBG_(self, "ims sms seems to be supported");
+        DBG_(self, "ims sms support is detected");
         self->caps |= OFONO_IMS_SMS_CAPABLE;
+    }
+
+    if (binder_ext_call_get_interface_flags
+       (binder_ext_slot_get_interface(modem->ext, BINDER_EXT_TYPE_CALL)) &
+        BINDER_EXT_CALL_INTERFACE_FLAG_IMS_SUPPORT) {
+        DBG_(self, "ims call support is detected");
+        self->caps |= OFONO_IMS_VOICE_CAPABLE;
     }
 
     self->start_id = g_idle_add(binder_ims_start, self);
