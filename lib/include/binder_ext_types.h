@@ -21,6 +21,7 @@
 G_BEGIN_DECLS
 
 typedef struct binder_ext_call BinderExtCall;
+typedef struct binder_ext_ims BinderExtIms;
 typedef struct binder_ext_plugin BinderExtPlugin;
 typedef struct binder_ext_slot BinderExtSlot;
 typedef struct binder_ext_sms BinderExtSms;
