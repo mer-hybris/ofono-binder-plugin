@@ -50,7 +50,7 @@ enum binder_voicecall_events {
     VOICECALL_EVENT_COUNT
 };
 
-enum binder_ext_events {
+enum binder_voicecall_ext_events {
     VOICECALL_EXT_CALL_STATE_CHANGED,
     VOICECALL_EXT_CALL_DISCONNECTED,
     VOICECALL_EXT_CALL_SUPP_SVC_NOTIFICATION,
