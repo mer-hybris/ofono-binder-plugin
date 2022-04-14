@@ -736,7 +736,7 @@ binder_strv_from_hidl_string_vec(
 {
     if (vec) {
         const GBinderHidlString* strings = vec->data.ptr;
-        char** out = g_new(char*, vec->count);
+        char** out = g_new(char*, vec->count + 1);
         char** ptr = out;
         guint i;
 
