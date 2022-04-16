@@ -136,9 +136,11 @@ G_DEFINE_TYPE(BinderDataObject, binder_data_object, BINDER_TYPE_BASE)
 BINDER_BASE_ASSERT_COUNT(BINDER_DATA_PROPERTY_COUNT);
 
 typedef enum binder_data_request_flags {
+    DATA_REQUEST_NO_FLAGS = 0,
     DATA_REQUEST_FLAG_COMPLETED = 0x1,
-    DATA_REQUEST_FLAG_CANCEL_WHEN_ALLOWED = 0x2,
-    DATA_REQUEST_FLAG_CANCEL_WHEN_DISALLOWED = 0x4
+    DATA_REQUEST_FLAG_SUBMISSION_FAILURE = 0x2,
+    DATA_REQUEST_FLAG_CANCEL_WHEN_ALLOWED = 0x4,
+    DATA_REQUEST_FLAG_CANCEL_WHEN_DISALLOWED = 0x8
 } BINDER_DATA_REQUEST_FLAGS;
 
 struct binder_data_request {
@@ -785,6 +787,7 @@ binder_data_request_call(
     } else {
         radio_request_drop(req);
         dr->radio_req = NULL;
+        dr->flags |= DATA_REQUEST_FLAG_SUBMISSION_FAILURE;
         return FALSE;
     }
 }
@@ -806,6 +809,8 @@ binder_data_request_submit_next(
     BinderDataObject* data)
 {
     if (!data->pending_req) {
+        int submission_failure = 0;
+
         binder_data_power_update(data);
         while (data->req_queue) {
             BinderDataRequest* dr = data->req_queue;
@@ -821,11 +826,14 @@ binder_data_request_submit_next(
             } else {
                 DBG_(data, "%s request %p done (or failed)", dr->name, dr);
                 data->pending_req = NULL;
+                if (dr->flags & DATA_REQUEST_FLAG_SUBMISSION_FAILURE) {
+                    submission_failure++;
+                }
                 binder_data_request_free(dr);
             }
         }
 
-        if (!data->pending_req) {
+        if (!data->pending_req && !submission_failure) {
             binder_data_manager_check_data(data->dm);
         }
     }
