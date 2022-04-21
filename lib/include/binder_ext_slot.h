@@ -50,10 +50,6 @@ void
 binder_ext_slot_unref(
     BinderExtSlot* slot);
 
-const char*
-binder_ext_slot_plugin_name(
-    BinderExtSlot* slot);
-
 void
 binder_ext_slot_drop(
     BinderExtSlot* slot);

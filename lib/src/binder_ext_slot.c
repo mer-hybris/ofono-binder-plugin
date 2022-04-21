@@ -53,13 +53,6 @@ binder_ext_slot_unref(
     }
 }
 
-const char*
-binder_ext_slot_plugin_name(
-    BinderExtSlot* self)
-{
-    return G_LIKELY(self) ? GET_CLASS(self)->plugin_name : NULL;
-}
-
 void
 binder_ext_slot_drop(
     BinderExtSlot* self)

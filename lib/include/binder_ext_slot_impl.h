@@ -24,7 +24,6 @@ G_BEGIN_DECLS
 
 typedef struct binder_ext_slot_class {
     GObjectClass parent;
-    const char* plugin_name;
 
     gpointer (*get_interface)(BinderExtSlot* slot, GType iface);
     void (*shutdown)(BinderExtSlot* slot);
