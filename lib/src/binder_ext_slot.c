@@ -23,7 +23,6 @@ struct binder_ext_slot_priv {
 
 #define THIS(obj) BINDER_EXT_SLOT(obj)
 #define THIS_TYPE BINDER_EXT_TYPE_SLOT
-#define PARENT_CLASS binder_ext_slot_parent_class
 
 G_DEFINE_ABSTRACT_TYPE(BinderExtSlot, binder_ext_slot, G_TYPE_OBJECT)
 
@@ -98,21 +97,6 @@ binder_ext_slot_nop(
 
 static
 void
-binder_ext_slot_finalize(
-    GObject* object)
-{
-    BinderExtSlot* self = THIS(object);
-    BinderExtSlotPriv* priv = self->priv;
-
-    if (!priv->dropped) {
-        priv->dropped = TRUE;
-        GET_CLASS(self)->shutdown(self);
-    }
-    G_OBJECT_CLASS(PARENT_CLASS)->finalize(object);
-}
-
-static
-void
 binder_ext_slot_init(
     BinderExtSlot* self)
 {
@@ -126,7 +110,6 @@ binder_ext_slot_class_init(
     BinderExtSlotClass* klass)
 {
     g_type_class_add_private(klass, sizeof(BinderExtSlotPriv));
-    G_OBJECT_CLASS(klass)->finalize = binder_ext_slot_finalize;
     klass->get_interface = binder_ext_slot_default_get_interface;
     klass->shutdown = binder_ext_slot_nop;
 }
