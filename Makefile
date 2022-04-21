@@ -88,6 +88,7 @@ COVERAGE_BUILD_DIR = $(BUILD_DIR)/coverage
 
 CC = $(CROSS_COMPILE)gcc
 LD = $(CC)
+STRIP ?= strip
 WARNINGS = -Wall
 BASE_FLAGS = -fPIC -fvisibility=hidden
 FULL_CFLAGS = $(BASE_FLAGS) $(CFLAGS) $(DEFINES) $(WARNINGS) -MMD -MP \
