@@ -2,6 +2,7 @@
 
 .PHONY: clean cleaner unitclean all debug release coverage valgrind
 .PHONY: debug_lib release_lib coverage_lib
+.PHONY: debug_ext_lib release_ext_lib coverage_ext_lib
 .PHONY: test test_banner
 
 #
@@ -34,6 +35,7 @@ all: debug release
 
 SRC_DIR = .
 LIB_DIR = ../..
+EXT_DIR = $(LIB_DIR)/lib
 COMMON_DIR = ../common
 BUILD_DIR = build
 DEBUG_BUILD_DIR = $(BUILD_DIR)/debug
@@ -51,7 +53,7 @@ COMMON_COVERAGE_BUILD_DIR = $(COMMON_BUILD_DIR)/coverage
 CC ?= $(CROSS_COMPILE)gcc
 LD = $(CC)
 WARNINGS += -Wall -Wno-deprecated-declarations
-INCLUDES += -I$(COMMON_DIR) -I$(LIB_DIR)/src -I$(LIB_DIR)/include
+INCLUDES += -I$(COMMON_DIR) -I$(LIB_DIR)/src -I$(EXT_DIR)/include
 BASE_FLAGS = -fPIC
 FULL_CFLAGS = $(BASE_FLAGS) $(CFLAGS) $(DEFINES) $(WARNINGS) $(INCLUDES) \
   -MMD -MP $(shell pkg-config --cflags $(PKGS))
@@ -78,9 +80,17 @@ DEBUG_LIB = $(LIB_DIR)/$(DEBUG_LIB_FILE)
 RELEASE_LIB = $(LIB_DIR)/$(RELEASE_LIB_FILE)
 COVERAGE_LIB = $(LIB_DIR)/$(COVERAGE_LIB_FILE)
 
-DEBUG_LIBS = $(DEBUG_LIB) $(LIBS)
-RELEASE_LIBS = $(RELEASE_LIB) $(LIBS)
-COVERAGE_LIBS = $(COVERAGE_LIB) $(LIBS)
+DEBUG_EXT_LIB_FILE := $(shell $(QUIET_MAKE) -C $(EXT_DIR) print_debug_lib)
+RELEASE_EXT_LIB_FILE := $(shell $(QUIET_MAKE) -C $(EXT_DIR) print_release_lib)
+COVERAGE_EXT_LIB_FILE := $(shell $(QUIET_MAKE) -C $(EXT_DIR) print_coverage_lib)
+
+DEBUG_EXT_LIB = $(EXT_DIR)/$(DEBUG_EXT_LIB_FILE)
+RELEASE_EXT_LIB = $(EXT_DIR)/$(RELEASE_EXT_LIB_FILE)
+COVERAGE_EXT_LIB = $(EXT_DIR)/$(COVERAGE_EXT_LIB_FILE)
+
+DEBUG_LIBS = $(DEBUG_LIB) $(DEBUG_EXT_LIB) $(LIBS)
+RELEASE_LIBS = $(RELEASE_LIB) $(RELEASE_EXT_LIB) $(LIBS)
+COVERAGE_LIBS = $(COVERAGE_LIB) $(COVERAGE_EXT_LIB) $(LIBS)
 
 #
 # Files
@@ -107,9 +117,9 @@ ifneq ($(strip $(DEPS)),)
 endif
 endif
 
-$(DEBUG_LIB): | debug_lib
-$(RELEASE_LIB): | release_lib
-$(COVERAGE_LIB): | coverage_lib
+$(DEBUG_LIB): | debug_lib debug_ext_lib
+$(RELEASE_LIB): | release_lib release_ext_lib
+$(COVERAGE_LIB): | coverage_lib coverage_ext_lib
 
 $(TEST_DEBUG_OBJS): | $(DEBUG_BUILD_DIR)
 $(TEST_RELEASE_OBJS): | $(RELEASE_BUILD_DIR)
@@ -193,7 +203,7 @@ $(DEBUG_EXE): $(DEBUG_LIB) $(DEBUG_OBJS)
 $(RELEASE_EXE): $(RELEASE_LIB) $(RELEASE_OBJS)
 	$(LD) $(RELEASE_LDFLAGS) $(RELEASE_OBJS) $(RELEASE_LIBS) -o $@
 
-$(COVERAGE_EXE): $(COVERAG_LIB) $(COVERAGE_OBJS)
+$(COVERAGE_EXE): $(COVERAGE_LIB) $(COVERAGE_OBJS)
 	$(LD) $(COVERAGE_LDFLAGS) $(COVERAGE_OBJS) $(COVERAGE_LIBS) -o $@
 
 debug_lib:
@@ -204,3 +214,12 @@ release_lib:
 
 coverage_lib:
 	$(MAKE) -C $(LIB_DIR) $@
+
+debug_ext_lib:
+	$(MAKE) -C $(EXT_DIR) debug_lib
+
+release_ext_lib:
+	$(MAKE) -C $(EXT_DIR) release_lib
+
+coverage_ext_lib:
+	$(MAKE) -C $(EXT_DIR) coverage_lib

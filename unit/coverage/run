@@ -5,6 +5,8 @@
 
 TESTS="\
 unit_base \
+unit_ext_ims \
+unit_ext_slot \
 unit_sim_settings"
 
 function err() {
@@ -23,6 +25,8 @@ if  [ ! -z "$(lcov --help | grep ' --rc ')" ] ; then
     GENHTML_OPT="--branch-coverage"
 fi
 
+LCOV="lcov $LCOV_OPT"
+
 pushd `dirname $0` > /dev/null
 COV_DIR="$PWD"
 pushd .. > /dev/null
@@ -32,6 +36,7 @@ TOP_DIR="$PWD"
 popd > /dev/null
 popd > /dev/null
 popd > /dev/null
+EXT_DIR="$TOP_DIR/lib"
 
 make -C "$TOP_DIR" clean
 for t in $TESTS ; do
@@ -41,13 +46,14 @@ for t in $TESTS ; do
     popd
 done
 
-# Sometimes you need this, sometimes that :S
-BASE_DIR="$TOP_DIR"
-#BASE_DIR="$TOP_DIR/src"
+PLUGIN_BASE_DIR="$TOP_DIR"
+EXT_BASE_DIR="$EXT_DIR"
 
-FULL_COV="$COV_DIR/full.gcov"
-LIB_COV="$COV_DIR/lib.gcov"
-rm -f "$FULL_COV" "$LIB_COV"
-lcov $LCOV_OPT -c -d "$TOP_DIR/build/coverage" -b "$BASE_DIR" -o "$FULL_COV" || exit 1
-lcov $LCOV_OPT -e "$FULL_COV" "$BASE_DIR/*" -o "$LIB_COV" || exit 1
-genhtml $GENHTML_OPT "$LIB_COV" -t "ofono binder plugin" --output-directory "$COV_DIR/report" || exit 1
+PLUGIN_COV="$COV_DIR/plugin.gcov"
+EXT_COV="$COV_DIR/ext.gcov"
+OUT_COV="$COV_DIR/out.gcov"
+rm -f "$PLUGIN_COV" "$EXT_COV" "$OUT_COV"
+$LCOV -c -d "$TOP_DIR/build/coverage" -b "$PLUGIN_BASE_DIR" -o "$PLUGIN_COV" || exit 1
+$LCOV -c -d "$EXT_DIR/build/coverage" -b "$EXT_BASE_DIR" -o "$EXT_COV" || exit 1
+$LCOV -a "$PLUGIN_COV" -a "$EXT_COV" -o "$OUT_COV" || exit 1
+genhtml $GENHTML_OPT "$OUT_COV" -t "ofono binder plugin" --output-directory "$COV_DIR/report" || exit 1
