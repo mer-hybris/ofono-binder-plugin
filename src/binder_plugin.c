@@ -1051,6 +1051,13 @@ binder_plugin_service_list_proc(
                           BINDER_PLUGIN_NEED_CONFIG_SERVICE);
     } else {
         plugin->flags &= ~BINDER_PLUGIN_HAVE_CONFIG_SERVICE;
+        if (gutil_strv_contains(services, RADIO_CONFIG_1_0_FQNAME)) {
+            /*
+             * If 1.0 has appeared but 1.1 has not, assume that 1.1
+             * is not supported.
+             */
+            plugin->flags &= ~BINDER_PLUGIN_NEED_CONFIG_SERVICE;
+        }
     }
 
     binder_plugin_check_config_client(plugin);
@@ -1174,6 +1181,24 @@ binder_plugin_check_config_client(
 
 static
 void
+binder_plugin_check_data_manager(
+    BinderPlugin* plugin)
+{
+    /*
+     * If we haven't found any IRadioConfig (even 1.0) then still create
+     * the data manager.
+     */
+    if (!plugin->data_manager) {
+        const BinderPluginSettings* ps = &plugin->settings;
+
+        GASSERT(plugin->radio_config);
+        plugin->data_manager = binder_data_manager_new(NULL, ps->dm_flags,
+            ps->non_data_mode);
+    }
+}
+
+static
+void
 binder_plugin_slot_connected_cb(
     RadioClient* client,
     void* user_data)
@@ -1212,6 +1237,7 @@ binder_plugin_slot_check_radio_client(
 
             binder_logger_dump_update_slot(slot);
             binder_logger_trace_update_slot(slot);
+            binder_plugin_check_data_manager(plugin);
 
             if (radio_client_connected(slot->client)) {
                 binder_plugin_slot_connected(slot);
@@ -2048,18 +2074,6 @@ binder_plugin_manager_start_timeout(
     plugin->start_timeout_id = 0;
 
     /*
-     * If we haven't found any IRadioConfig (even 1.0) then still create
-     * the data manager.
-     */
-    if (!plugin->data_manager) {
-        const BinderPluginSettings* ps = &plugin->settings;
-
-        GASSERT(plugin->radio_config);
-        plugin->data_manager = binder_data_manager_new(NULL, ps->dm_flags,
-            ps->non_data_mode);
-    }
-
-    /*
      * If we haven't seen IRadioConfig before startup timeout has expired
      * then assume that we don't need it.
      */
@@ -2067,6 +2081,7 @@ binder_plugin_manager_start_timeout(
         plugin->flags &= ~BINDER_PLUGIN_NEED_CONFIG_SERVICE;
     }
 
+    binder_plugin_check_data_manager(plugin);
     binder_plugin_manager_started(plugin);
     return G_SOURCE_REMOVE;
 }
@@ -2381,6 +2396,7 @@ binder_plugin_manager_started(
     BinderPlugin* plugin)
 {
     binder_plugin_drop_orphan_slots(plugin);
+    binder_plugin_check_data_manager(plugin);
     binder_data_manager_check_data(plugin->data_manager);
     ofono_slot_driver_started(binder_driver_reg);
 }
