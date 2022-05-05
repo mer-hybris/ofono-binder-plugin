@@ -126,6 +126,8 @@ static const char* const binder_radio_ifaces[] = {
 #define BINDER_CONF_SLOT_EMPTY_PIN_QUERY      "emptyPinQuery"
 #define BINDER_CONF_SLOT_DEVMON               "deviceStateTracking"
 #define BINDER_CONF_SLOT_USE_DATA_PROFILES    "useDataProfiles"
+#define BINDER_CONF_SLOT_DEFAULT_DATA_PROFILE_ID "defaultDataProfileId"
+#define BINDER_CONF_SLOT_MMS_DATA_PROFILE_ID  "mmsDataProfileId"
 #define BINDER_CONF_SLOT_ALLOW_DATA_REQ       "allowDataReq"
 #define BINDER_CONF_SLOT_REPLACE_STRANGE_OPER "replaceStrangeOperatorNames"
 #define BINDER_CONF_SLOT_SIGNAL_STRENGTH_RANGE "signalStrengthRange"
@@ -153,6 +155,7 @@ static const char* const binder_radio_ifaces[] = {
 #define BINDER_DEFAULT_SLOT_FORCE_GSM_WHEN_RADIO_OFF FALSE
 #define BINDER_DEFAULT_SLOT_USE_DATA_PROFILES TRUE
 #define BINDER_DEFAULT_SLOT_MMS_DATA_PROFILE_ID RADIO_DATA_PROFILE_DEFAULT
+#define BINDER_DEFAULT_SLOT_DATA_PROFILE_ID   RADIO_DATA_PROFILE_DEFAULT
 #define BINDER_DEFAULT_SLOT_FLAGS             OFONO_SLOT_NO_FLAGS
 #define BINDER_DEFAULT_SLOT_CELL_INFO_INTERVAL_SHORT_MS (2000) /* 2 sec */
 #define BINDER_DEFAULT_SLOT_CELL_INFO_INTERVAL_LONG_MS  (30000) /* 30 sec */
@@ -1396,6 +1399,7 @@ binder_plugin_create_slot(
     BinderSlot* slot;
     BinderSlotConfig* config;
     BinderDataOptions* data_opt;
+    BinderDataProfileConfig* dpc;
     GError* error = NULL;
     const char* group = name;
     GUtilInts* ints;
@@ -1416,6 +1420,7 @@ binder_plugin_create_slot(
 
     config = &slot->config;
     data_opt = &slot->data_opt;
+    dpc = &config->data_profile_config;
 
     config->slot = BINDER_SLOT_NUMBER_AUTOMATIC;
     config->techs = BINDER_DEFAULT_SLOT_TECHS;
@@ -1436,12 +1441,14 @@ binder_plugin_create_slot(
     config->replace_strange_oper = BINDER_DEFAULT_SLOT_REPLACE_STRANGE_OPER;
     config->force_gsm_when_radio_off =
         BINDER_DEFAULT_SLOT_FORCE_GSM_WHEN_RADIO_OFF;
-    config->use_data_profiles = BINDER_DEFAULT_SLOT_USE_DATA_PROFILES;
-    config->mms_data_profile_id = BINDER_DEFAULT_SLOT_MMS_DATA_PROFILE_ID;
     config->cell_info_interval_short_ms =
         BINDER_DEFAULT_SLOT_CELL_INFO_INTERVAL_SHORT_MS;
     config->cell_info_interval_long_ms =
         BINDER_DEFAULT_SLOT_CELL_INFO_INTERVAL_LONG_MS;
+
+    dpc->use_data_profiles = BINDER_DEFAULT_SLOT_USE_DATA_PROFILES;
+    dpc->mms_profile_id = BINDER_DEFAULT_SLOT_MMS_DATA_PROFILE_ID;
+    dpc->default_profile_id = BINDER_DEFAULT_SLOT_DATA_PROFILE_ID;
 
     slot->name = g_strdup(name);
     slot->svcmgr = gbinder_servicemanager_ref(sm);
@@ -1568,9 +1575,23 @@ binder_plugin_create_slot(
 
     /* useDataProfiles */
     if (ofono_conf_get_boolean(file, group,
-        BINDER_CONF_SLOT_USE_DATA_PROFILES, &config->use_data_profiles)) {
+        BINDER_CONF_SLOT_USE_DATA_PROFILES, &dpc->use_data_profiles)) {
         DBG("%s: " BINDER_CONF_SLOT_USE_DATA_PROFILES " %s", group,
-            config->use_data_profiles ? "yes" : "no");
+            dpc->use_data_profiles ? "yes" : "no");
+    }
+
+    /* defaultDataProfileId */
+    if (ofono_conf_get_integer(file, group,
+        BINDER_CONF_SLOT_DEFAULT_DATA_PROFILE_ID, &ival)) {
+        dpc->default_profile_id = ival;
+        DBG("%s: " BINDER_CONF_SLOT_DEFAULT_DATA_PROFILE_ID " %d", group, ival);
+    }
+
+    /* mmsDataProfileId */
+    if (ofono_conf_get_integer(file, group,
+        BINDER_CONF_SLOT_MMS_DATA_PROFILE_ID, &ival)) {
+        dpc->mms_profile_id = ival;
+        DBG("%s: " BINDER_CONF_SLOT_MMS_DATA_PROFILE_ID " %d", group, ival);
     }
 
     /* allowDataReq */

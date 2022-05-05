@@ -51,7 +51,8 @@ binder_radio_access_network_for_tech(
 
 RADIO_APN_TYPES
 binder_radio_apn_types_for_profile(
-    RADIO_DATA_PROFILE_ID profile_id)
+    guint profile_id,
+    const BinderDataProfileConfig* config)
     BINDER_INTERNAL;
 
 RADIO_PDP_PROTOCOL_TYPE

@@ -50,6 +50,12 @@ typedef enum binder_feature_mask {
     BINDER_FEATURE_ALL            = 0x07ff  /* all */
 } BINDER_FEATURE_MASK;
 
+typedef struct binder_data_profile_config {
+    gboolean use_data_profiles;
+    guint default_profile_id;
+    guint mms_profile_id;
+} BinderDataProfileConfig;
+
 typedef struct binder_slot_config {
     guint slot;
     int cell_info_interval_short_ms;
@@ -68,8 +74,7 @@ typedef struct binder_slot_config {
     gboolean confirm_radio_power_on;
     gboolean replace_strange_oper;
     gboolean force_gsm_when_radio_off;
-    gboolean use_data_profiles;
-    RADIO_DATA_PROFILE_ID mms_data_profile_id;
+    BinderDataProfileConfig data_profile_config;
     GUtilInts* local_hangup_reasons;
     GUtilInts* remote_hangup_reasons;
 } BinderSlotConfig;

@@ -88,28 +88,46 @@ binder_radio_access_network_for_tech(
 
 RADIO_APN_TYPES
 binder_radio_apn_types_for_profile(
-    RADIO_DATA_PROFILE_ID profile_id)
+    guint profile_id,
+    const BinderDataProfileConfig* config)
 {
-    switch (profile_id) {
-    case RADIO_DATA_PROFILE_INVALID:
-        return RADIO_APN_TYPE_NONE;
-    case RADIO_DATA_PROFILE_IMS:
-        return RADIO_APN_TYPE_IMS;
-    case RADIO_DATA_PROFILE_CBS:
-        return RADIO_APN_TYPE_CBS;
-    case RADIO_DATA_PROFILE_FOTA:
-        return RADIO_APN_TYPE_FOTA;
-    case RADIO_DATA_PROFILE_DEFAULT:
-        return (RADIO_APN_TYPE_DEFAULT |
-                RADIO_APN_TYPE_SUPL |
-                RADIO_APN_TYPE_IA);
-    default:
-        /*
-         * There's no standard profile id for MMS, OEM-specific profile ids
-         * are used for that.
-         */
-        return RADIO_APN_TYPE_MMS;
+    RADIO_APN_TYPES apn_types = RADIO_APN_TYPE_NONE;
+
+    if (profile_id == config->mms_profile_id) {
+        apn_types |= RADIO_APN_TYPE_MMS;
     }
+
+    if (profile_id == config->default_profile_id) {
+        apn_types |= (RADIO_APN_TYPE_DEFAULT |
+            RADIO_APN_TYPE_SUPL |
+            RADIO_APN_TYPE_IA);
+    }
+
+    switch (profile_id) {
+    case RADIO_DATA_PROFILE_IMS:
+        apn_types |= RADIO_APN_TYPE_IMS;
+        break;
+    case RADIO_DATA_PROFILE_CBS:
+        apn_types |= RADIO_APN_TYPE_CBS;
+        break;
+    case RADIO_DATA_PROFILE_FOTA:
+        apn_types |= RADIO_APN_TYPE_FOTA;
+        break;
+    default:
+        if (profile_id == config->mms_profile_id ||
+            profile_id == config->default_profile_id) {
+            break;
+        }
+        /* fallthrough */
+    case RADIO_DATA_PROFILE_INVALID:
+    case RADIO_DATA_PROFILE_DEFAULT:
+        apn_types |= (RADIO_APN_TYPE_DEFAULT |
+            RADIO_APN_TYPE_SUPL |
+            RADIO_APN_TYPE_IA);
+        break;
+    }
+
+    return apn_types;
 }
 
 RADIO_PDP_PROTOCOL_TYPE
@@ -302,7 +320,7 @@ binder_access_modes_from_raf(
    if (raf == RAF_UNKNOWN) {
         return OFONO_RADIO_ACCESS_MODE_ALL;
    } else {
-       enum ofono_radio_access_mode modes =  OFONO_RADIO_ACCESS_MODE_NONE;
+       enum ofono_radio_access_mode modes = OFONO_RADIO_ACCESS_MODE_NONE;
 
        if (raf & RADIO_ACCESS_FAMILY_GSM) {
            modes |= OFONO_RADIO_ACCESS_MODE_GSM;
