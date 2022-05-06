@@ -130,8 +130,7 @@ typedef struct binder_network_object {
     struct ofono_network_operator operator;
     gboolean assert_rat;
     gboolean force_gsm_when_radio_off;
-    gboolean use_data_profiles;
-    int mms_data_profile_id;
+    BinderDataProfileConfig data_profile_config;
     GSList* data_profiles;
 } BinderNetworkObject;
 
@@ -908,7 +907,8 @@ RadioDataProfile*
 binder_network_fill_radio_data_profile(
     GBinderWriter* writer,
     RadioDataProfile* dp,
-    const BinderNetworkDataProfile* src)
+    const BinderNetworkDataProfile* src,
+    const BinderDataProfileConfig* dpc)
 {
     const char* proto = binder_proto_str_from_ofono_proto(src->proto);
 
@@ -920,7 +920,8 @@ binder_network_fill_radio_data_profile(
     binder_copy_hidl_string(writer, &dp->mvnoMatchData, NULL);
 
     dp->authType = binder_radio_auth_from_ofono_method(src->auth_method);
-    dp->supportedApnTypesBitmap = binder_radio_apn_types_for_profile(src->id);
+    dp->supportedApnTypesBitmap = binder_radio_apn_types_for_profile(src->id,
+        dpc);
     dp->enabled = TRUE;
     return dp;
 }
@@ -929,10 +930,11 @@ static
 RadioDataProfile*
 binder_network_new_radio_data_profile(
     GBinderWriter* writer,
-    const BinderNetworkDataProfile* src)
+    const BinderNetworkDataProfile* src,
+    const BinderDataProfileConfig* dpc)
 {
     return binder_network_fill_radio_data_profile(writer,
-        gbinder_writer_new0(writer, RadioDataProfile), src);
+        gbinder_writer_new0(writer, RadioDataProfile), src, dpc);
 }
 
 static
@@ -959,7 +961,8 @@ RadioDataProfile_1_4*
 binder_network_fill_radio_data_profile_1_4(
     GBinderWriter* writer,
     RadioDataProfile_1_4* dp,
-    const BinderNetworkDataProfile* src)
+    const BinderNetworkDataProfile* src,
+    const BinderDataProfileConfig* dpc)
 {
     binder_copy_hidl_string(writer, &dp->apn, src->apn);
     binder_copy_hidl_string(writer, &dp->user, src->username);
@@ -968,7 +971,8 @@ binder_network_fill_radio_data_profile_1_4(
     dp->protocol = dp->roamingProtocol =
         binder_proto_from_ofono_proto(src->proto);
     dp->authType = binder_radio_auth_from_ofono_method(src->auth_method);
-    dp->supportedApnTypesBitmap = binder_radio_apn_types_for_profile(src->id);
+    dp->supportedApnTypesBitmap = binder_radio_apn_types_for_profile(src->id,
+        dpc);
     dp->enabled = TRUE;
     dp->preferred = TRUE;
     return dp;
@@ -978,10 +982,11 @@ static
 RadioDataProfile_1_4*
 binder_network_new_radio_data_profile_1_4(
     GBinderWriter* writer,
-    const BinderNetworkDataProfile* src)
+    const BinderNetworkDataProfile* src,
+    const BinderDataProfileConfig* dpc)
 {
     return binder_network_fill_radio_data_profile_1_4(writer,
-        gbinder_writer_new0(writer, RadioDataProfile_1_4), src);
+        gbinder_writer_new0(writer, RadioDataProfile_1_4), src, dpc);
 }
 
 static
@@ -1089,6 +1094,7 @@ binder_network_set_data_profiles(
     BinderNetworkObject* self)
 {
     RadioClient* client = self->g->client;
+    const BinderDataProfileConfig* dpc = &self->data_profile_config;
     const RADIO_INTERFACE iface = radio_client_interface(client);
     const guint n = g_slist_length(self->data_profiles);
     RadioRequest* req;
@@ -1107,7 +1113,7 @@ binder_network_set_data_profiles(
         dp = gbinder_writer_malloc0(&writer, elem * n);
         for (l = self->data_profiles, i = 0; i < n; l = l->next, i++) {
             binder_network_fill_radio_data_profile_1_4(&writer, dp + i,
-                (BinderNetworkDataProfile*) l->data);
+                (BinderNetworkDataProfile*) l->data, dpc);
         }
 
         parent = binder_append_vec_with_data(&writer, dp, elem, n, NULL);
@@ -1126,7 +1132,7 @@ binder_network_set_data_profiles(
         dp = gbinder_writer_malloc0(&writer, elem * n);
         for (l = self->data_profiles, i = 0; i < n; l = l->next, i++) {
             binder_network_fill_radio_data_profile(&writer, dp + i,
-                (BinderNetworkDataProfile*) l->data);
+                (BinderNetworkDataProfile*) l->data, dpc);
         }
 
         parent = binder_append_vec_with_data(&writer, dp, elem, n, NULL);
@@ -1147,6 +1153,7 @@ void
 binder_network_check_data_profiles(
     BinderNetworkObject* self)
 {
+    const BinderDataProfileConfig* dpc = &self->data_profile_config;
     struct ofono_gprs* gprs = self->watch->gprs;
 
     if (gprs) {
@@ -1165,13 +1172,13 @@ binder_network_check_data_profiles(
         if (internet) {
             DBG_(self, "internet apn \"%s\"", internet->apn);
             l = g_slist_append(l, binder_network_data_profile_new(internet,
-                RADIO_DATA_PROFILE_DEFAULT));
+                dpc->default_profile_id));
         }
 
         if (mms) {
             DBG_(self, "mms apn \"%s\"", mms->apn);
             l = g_slist_append(l, binder_network_data_profile_new(mms,
-                self->mms_data_profile_id));
+                dpc->mms_profile_id));
         }
 
         if (ims) {
@@ -1222,6 +1229,7 @@ binder_network_set_initial_attach_apn(
     const struct ofono_gprs_primary_context* ctx)
 {
     const RADIO_INTERFACE iface = radio_client_interface(self->g->client);
+    const BinderDataProfileConfig* dpc = &self->data_profile_config;
     BinderNetworkDataProfile profile;
     RadioRequest* req;
     GBinderWriter writer;
@@ -1236,7 +1244,7 @@ binder_network_set_initial_attach_apn(
         req = radio_request_new2(self->g, RADIO_REQ_SET_INITIAL_ATTACH_APN_1_4,
             &writer, NULL, NULL, NULL);
 
-        dp = binder_network_new_radio_data_profile_1_4(&writer, &profile);
+        dp = binder_network_new_radio_data_profile_1_4(&writer, &profile, dpc);
         parent = gbinder_writer_append_buffer_object(&writer, dp, sizeof(*dp));
         binder_network_write_data_profile_strings_1_4(&writer, dp, parent, 0);
     } else {
@@ -1249,7 +1257,7 @@ binder_network_set_initial_attach_apn(
         req = radio_request_new2(self->g, RADIO_REQ_SET_INITIAL_ATTACH_APN,
             &writer, NULL, NULL, NULL);
 
-        dp = binder_network_new_radio_data_profile(&writer, &profile);
+        dp = binder_network_new_radio_data_profile(&writer, &profile, dpc);
         parent = gbinder_writer_append_buffer_object(&writer, dp, sizeof(*dp));
         binder_network_write_data_profile_strings(&writer, dp, parent, 0);
         gbinder_writer_append_bool(&writer, FALSE);  /* modemCognitive */
@@ -1982,9 +1990,10 @@ binder_network_watch_gprs_cb(
     void* user_data)
 {
     BinderNetworkObject* self = THIS(user_data);
+    const BinderDataProfileConfig* dpc = &self->data_profile_config;
 
     DBG_(self, "gprs %s", watch->gprs ? "appeared" : "is gone");
-    if (self->use_data_profiles) {
+    if (dpc->use_data_profiles) {
         binder_network_check_data_profiles(self);
     }
     binder_network_check_initial_attach_apn(self);
@@ -1999,8 +2008,9 @@ binder_network_watch_gprs_settings_cb(
     void* user_data)
 {
     BinderNetworkObject* self = THIS(user_data);
+    const BinderDataProfileConfig* dpc = &self->data_profile_config;
 
-    if (self->use_data_profiles) {
+    if (dpc->use_data_profiles) {
         binder_network_check_data_profiles(self);
     }
 
@@ -2023,6 +2033,7 @@ binder_network_new(
     BinderSimSettings* settings,
     const BinderSlotConfig* config)
 {
+    const BinderDataProfileConfig* dpc = &config->data_profile_config;
     BinderNetworkObject* self = g_object_new(THIS_TYPE, NULL);
     BinderNetwork* net = &self->pub;
 
@@ -2039,8 +2050,7 @@ binder_network_new(
     self->umts_network_mode = config->umts_network_mode;
     self->network_mode_timeout_ms = config->network_mode_timeout_ms;
     self->force_gsm_when_radio_off = config->force_gsm_when_radio_off;
-    self->use_data_profiles = config->use_data_profiles;
-    self->mms_data_profile_id = config->mms_data_profile_id;
+    self->data_profile_config = *dpc;
 
     /* Register listeners */
     self->ind_id[IND_NETWORK_STATE] =
@@ -2089,7 +2099,7 @@ binder_network_new(
     self->set_initial_attach_apn = self->need_initial_attach_apn =
         binder_network_need_initial_attach_apn(self);
 
-    if (self->use_data_profiles) {
+    if (dpc->use_data_profiles) {
         binder_network_check_data_profiles(self);
     }
     binder_network_try_set_initial_attach_apn(self);

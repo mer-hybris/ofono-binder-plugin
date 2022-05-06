@@ -116,8 +116,7 @@ typedef struct binder_data_object {
     BinderDataRequest* pending_req;
 
     BinderDataOptions options;
-    gboolean use_data_profiles;
-    guint mms_data_profile_id;
+    BinderDataProfileConfig profile_config;
     guint slot;
     char* log_prefix;
     RadioRequest* query_req;
@@ -1206,7 +1205,8 @@ binder_data_call_setup_submit(
         binder_copy_hidl_string(&writer, &dp->password, setup->password);
         dp->enabled = TRUE;
         dp->supportedApnTypesBitmap =
-            binder_radio_apn_types_for_profile(setup->profile_id);
+            binder_radio_apn_types_for_profile(setup->profile_id,
+                &data->profile_config);
         binder_copy_hidl_string(&writer, &dp->mvnoMatchData, NULL);
 
         if (iface >= RADIO_INTERFACE_1_2) {
@@ -1272,14 +1272,15 @@ binder_data_call_setup_new(
     BinderDataCallSetupFunc cb,
     void* arg)
 {
+    const BinderDataProfileConfig* dpc = &data->profile_config;
     BinderDataRequestSetup* setup = g_new0(BinderDataRequestSetup, 1);
     BinderDataRequest* dr = &setup->req;
 
-    setup->profile_id = RADIO_DATA_PROFILE_DEFAULT;
-    if (data->use_data_profiles) {
+    if (dpc->use_data_profiles) {
+        setup->profile_id = dpc->default_profile_id;
         switch (context_type) {
         case OFONO_GPRS_CONTEXT_TYPE_MMS:
-            setup->profile_id = data->mms_data_profile_id;
+            setup->profile_id = dpc->mms_profile_id;
             break;
         case OFONO_GPRS_CONTEXT_TYPE_IMS:
             setup->profile_id = RADIO_DATA_PROFILE_IMS;
@@ -1287,8 +1288,11 @@ binder_data_call_setup_new(
         case OFONO_GPRS_CONTEXT_TYPE_ANY:
         case OFONO_GPRS_CONTEXT_TYPE_INTERNET:
         case OFONO_GPRS_CONTEXT_TYPE_WAP:
+            /* Leave the default value untouched */
             break;
         }
+    } else {
+        setup->profile_id = RADIO_DATA_PROFILE_INVALID;
     }
 
     setup->apn = g_strdup(ctx->apn);
@@ -1747,8 +1751,7 @@ binder_data_new(
 
         self->options = *options;
         self->log_prefix = binder_dup_prefix(name);
-        self->use_data_profiles = config->use_data_profiles;
-        self->mms_data_profile_id = config->mms_data_profile_id;
+        self->profile_config = config->data_profile_config;
         self->slot = config->slot;
         self->g = radio_request_group_new(client); /* Keeps ref to client */
         self->dm = binder_data_manager_ref(dm);
