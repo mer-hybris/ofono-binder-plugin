@@ -39,6 +39,7 @@
 #include <gutil_ints.h>
 #include <gutil_macros.h>
 #include <gutil_ring.h>
+#include <gutil_strv.h>
 
 #define VOICECALL_BLOCK_TIMEOUT_MS (5*1000)
 
@@ -46,7 +47,7 @@ enum binder_voicecall_events {
     VOICECALL_EVENT_CALL_STATE_CHANGED,
     VOICECALL_EVENT_SUPP_SVC_NOTIFICATION,
     VOICECALL_EVENT_RINGBACK_TONE,
-    VOICECALL_EVENT_ECCLIST_CHANGED, /* IRadio@1.4 specific */
+    VOICECALL_EVENT_ECCLIST_CHANGED, /* IRadio 1.4 specific */
     VOICECALL_EVENT_COUNT
 };
 
@@ -1701,6 +1702,41 @@ binder_voicecall_ringback_tone_event(
 
 static
 void
+binder_voicecall_ecclist_changed(
+    RadioClient* client,
+    RADIO_IND code,
+    const GBinderReader* args,
+    gpointer user_data)
+{
+    BinderVoiceCall* self = user_data;
+    GBinderReader reader;
+    gsize count = 0;
+    const RadioEmergencyNumber* list;
+    const char** en_list = NULL;
+
+    /* currentEmergencyNumberList(RadioIndicationType,vec<EmergencyNumber>); */
+    gbinder_reader_copy(&reader, args);
+    list = gbinder_reader_read_hidl_type_vec(&reader,
+        RadioEmergencyNumber, &count);
+
+    DBG_(self, "%u emergency number(s)", (guint) count);
+    if (count) {
+        guint i;
+
+        en_list = g_new(const char*, count + 1);
+        for (i = 0; i < count; i++) {
+            en_list[i] = list[i].number.data.str;
+            DBG("%s", en_list[i]);
+        }
+        en_list[i] = NULL;
+    }
+
+    ofono_voicecall_en_list_notify(self->vc, (char**) en_list);
+    g_free(en_list);
+}
+
+static
+void
 binder_voicecall_ext_calls_changed(
     BinderExtCall* ext,
     void* user_data)
@@ -1787,6 +1823,17 @@ binder_voicecall_register(
             RADIO_IND_INDICATE_RINGBACK_TONE,
             binder_voicecall_ringback_tone_event, self);
 
+    /*
+     * This one is IRadio 1.4 specific and we won't actually receive
+     * it unless IRadio 1.4 is actually in use. It's OK to register
+     * the handler unconditionally, though.
+     */
+    self->radio_event[VOICECALL_EVENT_ECCLIST_CHANGED] =
+        radio_client_add_indication_handler(client,
+            RADIO_IND_CURRENT_EMERGENCY_NUMBER_LIST,
+            binder_voicecall_ecclist_changed, self);
+
+    /* Register extension event handlers if there is an extension */
     if (self->ext) {
         self->ext_event[VOICECALL_EXT_CALL_STATE_CHANGED] =
             binder_ext_call_add_calls_changed_handler(self->ext,
@@ -1798,7 +1845,6 @@ binder_voicecall_register(
             binder_ext_call_add_ssn_handler(self->ext,
                 binder_voicecall_ext_supp_svc_notification, self);
     }
-#pragma message("TODO: Set up ECC list watcher")
 }
 
 static
