@@ -6,6 +6,7 @@
 TESTS="\
 unit_base \
 unit_ext_ims \
+unit_ext_plugin \
 unit_ext_slot \
 unit_sim_settings"
 
