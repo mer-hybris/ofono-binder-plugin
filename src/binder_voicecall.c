@@ -954,17 +954,34 @@ static
 void
 binder_voicecall_submit_hangup_req(
     struct ofono_voicecall* vc,
-    guint cid,
+    int cid,
     BinderVoiceCallCbData* cbd)
 {
     BinderVoiceCall* self = binder_voicecall_get_data(vc);
+    RadioRequest* req;
+    const BinderVoiceCallInfo* call =
+        binder_voicecall_find_call_with_id(self, cid);
 
-    /* hangup(int32 serial, int32 index) */
-    GBinderWriter writer;
-    RadioRequest* req = radio_request_new2(self->g, RADIO_REQ_HANGUP, &writer,
-        binder_voicecall_cbd_complete, binder_voicecall_cbd_destroy, cbd);
+    /*
+     * hangup() for incoming calls doesn't always work the way we would like
+     * it to work, i.e. some inter-operator calls get terminated locally but
+     * not remotely (the other side keeps thinking that the call is still
+     * ringing). For whatever reason, hangupWaitingOrBackground() seems to
+     * work better.
+     */
+    if (call && call->oc.status == OFONO_CALL_STATUS_INCOMING) {
+        /* hangupWaitingOrBackground(int32_t serial) */
+        req = radio_request_new2(self->g,
+            RADIO_REQ_HANGUP_WAITING_OR_BACKGROUND, NULL,
+            binder_voicecall_cbd_complete, binder_voicecall_cbd_destroy, cbd);
+    } else {
+        /* hangup(int32 serial, int32 index) */
+        GBinderWriter writer;
 
-    gbinder_writer_append_int32(&writer, cid);
+        req = radio_request_new2(self->g, RADIO_REQ_HANGUP, &writer,
+            binder_voicecall_cbd_complete, binder_voicecall_cbd_destroy, cbd);
+        gbinder_writer_append_int32(&writer, cid);
+    }
 
     /* Append the call id to the list of calls being released locally */
     GASSERT(!gutil_int_array_contains(self->local_release_ids, cid));
