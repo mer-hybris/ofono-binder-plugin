@@ -18,6 +18,9 @@
 #include "binder_log.h"
 #include "binder_util.h"
 
+#include "binder_ext_ims.h"
+#include "binder_ext_slot.h"
+
 #include <radio_client.h>
 #include <radio_request.h>
 #include <radio_request_group.h>
@@ -25,6 +28,11 @@
 #include <gbinder_reader.h>
 #include <gutil_macros.h>
 #include <gutil_misc.h>
+
+enum binder_ims_ext_events {
+    EVENT_EXT_IMS_STATE_CHANGED,
+    EVENT_EXT_COUNT
+};
 
 enum binder_ims_events {
     EVENT_IMS_NETWORK_STATE_CHANGED,
@@ -34,8 +42,10 @@ enum binder_ims_events {
 typedef struct binder_ims_reg_object {
     BinderBase base;
     BinderImsReg pub;
+    BinderExtIms* ext;
     RadioRequestGroup* g;
     char* log_prefix;
+    gulong ext_event_id[EVENT_EXT_COUNT];
     gulong event_id[EVENT_COUNT];
 } BinderImsRegObject;
 
@@ -72,7 +82,6 @@ binder_ims_reg_query_done(
     BinderBase* base = &self->base;
     BinderImsReg* ims = &self->pub;
     gboolean registered = FALSE;
-    gint32 rat = RADIO_TECH_FAMILY_3GPP;
 
     if (status != RADIO_TX_STATUS_OK) {
         ofono_error("getImsRegistrationState failed");
@@ -82,6 +91,7 @@ binder_ims_reg_query_done(
         DBG_(self, "%s", binder_radio_error_string(error));
     } else {
         GBinderReader reader;
+        gint32 rat;
 
         /*
          * getImsRegistrationStateResponse(RadioResponseInfo info,
@@ -101,11 +111,6 @@ binder_ims_reg_query_done(
         ims->registered = registered;
         binder_base_queue_property_change(base,
             BINDER_IMS_REG_PROPERTY_REGISTERED);
-    }
-    if (ims->tech_family != rat) {
-        ims->tech_family = rat;
-        binder_base_queue_property_change(base,
-            BINDER_IMS_REG_PROPERTY_TECH_FAMILY);
     }
     binder_base_emit_queued_signals(base);
 }
@@ -137,6 +142,35 @@ binder_ims_reg_state_changed(
     binder_ims_reg_query(self);
 }
 
+static
+void
+binder_ims_ext_update_state(
+    BinderImsRegObject* self)
+{
+    const BINDER_EXT_IMS_STATE state = binder_ext_ims_get_state(self->ext);
+    const gboolean registered = (state == BINDER_EXT_IMS_STATE_REGISTERED);
+    BinderImsReg* ims = &self->pub;
+
+    if (ims->registered != registered) {
+        ims->registered = registered;
+        DBG_(self, "%sregistered", registered ? "" : "not ");
+        binder_base_queue_property_change(&self->base,
+            BINDER_IMS_REG_PROPERTY_REGISTERED);
+    }
+}
+
+static
+void
+binder_ims_ext_state_changed(
+    BinderExtIms* ext,
+    void* user_data)
+{
+    BinderImsRegObject* self = THIS(user_data);
+
+    binder_ims_ext_update_state(self);
+    binder_base_emit_queued_signals(&self->base);
+}
+
 /*==========================================================================*
  * API
  *==========================================================================*/
@@ -144,6 +178,7 @@ binder_ims_reg_state_changed(
 BinderImsReg*
 binder_ims_reg_new(
     RadioClient* client,
+    BinderExtSlot* ext_slot,
     const char* log_prefix)
 {
     BinderImsReg* ims = NULL;
@@ -153,17 +188,33 @@ binder_ims_reg_new(
 
         ims = &self->pub;
         self->log_prefix = binder_dup_prefix(log_prefix);
-        self->g = radio_request_group_new(client); /* Keeps ref to client */
-        DBG_(self, "");
+        self->ext = binder_ext_ims_ref(binder_ext_slot_get_interface(ext_slot,
+            BINDER_EXT_TYPE_IMS));
 
-        /* Register event handlers */
-        self->event_id[EVENT_IMS_NETWORK_STATE_CHANGED] =
-        radio_client_add_indication_handler(client,
-            RADIO_IND_IMS_NETWORK_STATE_CHANGED,
-            binder_ims_reg_state_changed, self);
+        if (self->ext) {
+            DBG_(self, "using ims ext");
+            binder_ims_ext_update_state(self);
 
-        /* Query the initial state */
-        binder_ims_reg_query(self);
+            /* Register event handler */
+            self->ext_event_id[EVENT_EXT_IMS_STATE_CHANGED] =
+                binder_ext_ims_add_state_handler(self->ext,
+                    binder_ims_ext_state_changed, self);
+        } else {
+            DBG_(self, "using ims radio api");
+            self->g = radio_request_group_new(client); /* Keeps ref to client */
+
+            /* Register event handler */
+            self->event_id[EVENT_IMS_NETWORK_STATE_CHANGED] =
+                radio_client_add_indication_handler(client,
+                    RADIO_IND_IMS_NETWORK_STATE_CHANGED,
+                    binder_ims_reg_state_changed, self);
+
+            /* Query the initial state */
+            binder_ims_reg_query(self);
+        }
+
+        /* Clear queued signals */
+        self->base.queued_signals = 0;
     }
     return ims;
 }
@@ -246,13 +297,21 @@ binder_ims_reg_object_finalize(
     GObject* object)
 {
     BinderImsRegObject* self = THIS(object);
-    RadioRequestGroup* g = self->g;
 
-    radio_client_remove_all_handlers(g->client, self->event_id);
-    radio_request_group_cancel(g);
-    radio_request_group_unref(g);
+    if (self->ext) {
+        BinderExtIms* ext = self->ext;
+
+        binder_ext_ims_remove_all_handlers(ext, self->ext_event_id);
+        binder_ext_ims_unref(ext);
+    }
+    if (self->g) {
+        RadioRequestGroup* g = self->g;
+
+        radio_client_remove_all_handlers(g->client, self->event_id);
+        radio_request_group_cancel(g);
+        radio_request_group_unref(g);
+    }
     g_free(self->log_prefix);
-
     G_OBJECT_CLASS(PARENT_CLASS)->finalize(object);
 }
 
