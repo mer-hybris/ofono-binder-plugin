@@ -580,7 +580,7 @@ binder_modem_create(
         modem->data = binder_data_ref(data);
         modem->watch = ofono_watch_new(path);
         modem->client = radio_client_ref(client);
-        modem->ims = binder_ims_reg_new(client, log_prefix);
+        modem->ims = binder_ims_reg_new(client, ext, log_prefix);
         modem->ext = binder_ext_slot_ref(ext);
         self->g = radio_request_group_new(client);
         self->last_known_iccid = g_strdup(modem->watch->iccid);

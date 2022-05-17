@@ -17,19 +17,18 @@
 #define BINDER_IMS_REG_H
 
 #include "binder_types.h"
+#include "binder_ext_types.h"
 
 /* Object tracking IMS registration state */
 
 typedef enum binder_ims_reg_property {
     BINDER_IMS_REG_PROPERTY_ANY,
     BINDER_IMS_REG_PROPERTY_REGISTERED,
-    BINDER_IMS_REG_PROPERTY_TECH_FAMILY,
     BINDER_IMS_REG_PROPERTY_COUNT
 } BINDER_IMS_REG_PROPERTY;
 
 struct binder_ims_reg {
     gboolean registered;
-    RADIO_TECH_FAMILY tech_family;
 };
 
 typedef
@@ -42,6 +41,7 @@ void
 BinderImsReg*
 binder_ims_reg_new(
     RadioClient* client,
+    BinderExtSlot* ext_slot,
     const char* log_prefix);
 
 BinderImsReg*
