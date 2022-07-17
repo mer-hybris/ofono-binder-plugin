@@ -278,7 +278,7 @@ binder_call_forwarding_query_cb(
     const BinderCallForwardingCbData* cbd = user_data;
 
     if (status == RADIO_TX_STATUS_OK) {
-        if (resp == RADIO_RESP_SET_CALL_FORWARD) {
+        if (resp == RADIO_RESP_GET_CALL_FORWARD_STATUS) {
             if (error == RADIO_ERROR_NONE) {
                 binder_call_forwarding_query_ok(cbd, args);
                 return;
@@ -304,6 +304,13 @@ binder_call_forwarding_query(
     BinderCallForwarding* self = binder_call_forwarding_get_data(f);
 
     DBG_(self, "%d", type);
+
+    /* Modem doesn't seem to like class mask 7, replace it with 0 */
+    if (cls == (RADIO_SERVICE_CLASS_VOICE |
+        RADIO_SERVICE_CLASS_DATA | RADIO_SERVICE_CLASS_FAX)) {
+        DBG_(self, "cls %d => %d", cls, RADIO_SERVICE_CLASS_NONE);
+        cls = RADIO_SERVICE_CLASS_NONE;
+    }
     binder_call_forwarding_call(self, RADIO_REQ_GET_CALL_FORWARD_STATUS,
         RADIO_CALL_FORWARD_INTERROGATE, type, cls, NULL, CF_TIME_DEFAULT,
         binder_call_forwarding_query_cb, BINDER_CB(cb), data);
