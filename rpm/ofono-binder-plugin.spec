@@ -1,6 +1,6 @@
 Name: ofono-binder-plugin
 
-Version: 1.1.5
+Version: 1.1.6
 Release: 1
 Summary: Binder based ofono plugin
 License: GPLv2
@@ -9,7 +9,7 @@ Source: %{name}-%{version}.tar.bz2
 
 %define libglibutil_version 1.0.61
 %define libgbinder_version 1.1.15
-%define libgbinder_radio_version 1.4.8
+%define libgbinder_radio_version 1.4.11
 %define libmce_version 1.0.6
 %define libofonobinderpluginext_version 1.1.0
 %define ofono_version 1.28+git3
