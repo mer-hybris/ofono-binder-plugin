@@ -252,6 +252,20 @@ binder_ussd_notify(
             DBG_(self, "ussd length %d", len);
 
             /*
+             * If sendUssd request is pending, consider it to be successfully
+             * completed, otherwise ofono core may get confused.
+             */
+            if (self->send_req) {
+                struct ofono_error err;
+                RadioRequest* req = self->send_req;
+                BinderUssdCbData* cbd = radio_request_user_data(req);
+
+                self->send_req = NULL;
+                cbd->cb(binder_error_ok(&err), cbd->data);
+                radio_request_drop(req); /* Frees BinderUssdCbData */
+            }
+
+            /*
              * Message is freed by core if dcs is 0xff, we have to
              * duplicate it.
              */
