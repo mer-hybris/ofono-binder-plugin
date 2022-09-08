@@ -74,6 +74,7 @@ typedef struct binder_voicecall {
     GUtilInts* remote_hangup_reasons;
     RadioRequest* send_dtmf_req;
     RadioRequest* clcc_poll_req;
+    guint ext_send_dtmf_id;
     guint ext_req_id;
     gulong ext_event[VOICECALL_EXT_EVENT_COUNT];
     gulong radio_event[VOICECALL_EVENT_COUNT];
@@ -152,8 +153,14 @@ binder_voicecall_clear_dtmf_queue(
     BinderVoiceCall* self)
 {
     gutil_ring_clear(self->dtmf_queue);
-    radio_request_drop(self->send_dtmf_req);
-    self->send_dtmf_req = NULL;
+    if (self->ext_send_dtmf_id) {
+        binder_ext_call_cancel(self->ext, self->ext_send_dtmf_id);
+        self->ext_send_dtmf_id = 0;
+    }
+    if (self->send_dtmf_req) {
+        radio_request_drop(self->send_dtmf_req);
+        self->send_dtmf_req = NULL;
+    }
 }
 
 static
@@ -1344,7 +1351,7 @@ binder_voicecall_send_dtmf_cb(
                 ofono_error("Unexpected sendDtmf response %d", resp);
             }
         } else {
-            ofono_error("failed to senf dtmf: %s",
+            ofono_error("failed to send dtmf: %s",
                 binder_radio_error_string(error));
         }
     }
@@ -1353,27 +1360,56 @@ binder_voicecall_send_dtmf_cb(
 
 static
 void
+binder_voicecall_send_dtmf_ext_cb(
+    BinderExtCall* ext,
+    BINDER_EXT_CALL_RESULT result,
+    void* user_data)
+{
+    BinderVoiceCall* self = user_data;
+
+    self->ext_send_dtmf_id = 0;
+    if (result == BINDER_EXT_CALL_RESULT_OK) {
+        /* Send the next one */
+        binder_voicecall_send_one_dtmf(self);
+    } else {
+        ofono_error("failed to send ext dtmf tone");
+        binder_voicecall_clear_dtmf_queue(self);
+    }
+}
+
+static
+void
 binder_voicecall_send_one_dtmf(
     BinderVoiceCall* self)
 {
-    if (!self->send_dtmf_req && gutil_ring_size(self->dtmf_queue) > 0) {
-        /* sendDtmf(int32 serial, string s) */
-        GBinderWriter writer;
-        RadioRequest* req = radio_request_new2(self->g,
-            RADIO_REQ_SEND_DTMF, &writer,
-            binder_voicecall_send_dtmf_cb, NULL, self);
-        char dtmf_str[2];
+    if (!self->send_dtmf_req &&
+        !self->ext_send_dtmf_id &&
+        gutil_ring_size(self->dtmf_queue) > 0) {
+        char tone[2];
 
-        dtmf_str[0] = (char)GPOINTER_TO_UINT(gutil_ring_get(self->dtmf_queue));
-        dtmf_str[1] = 0;
-        gbinder_writer_append_hidl_string_copy(&writer, dtmf_str);
+        tone[0] = (char)GPOINTER_TO_UINT(gutil_ring_get(self->dtmf_queue));
+        tone[1] = 0;
+        DBG_(self, "'%s'", tone);
 
-        DBG_(self, "%s", dtmf_str);
-        if (radio_request_submit(req)) {
-            self->send_dtmf_req = req;
-        } else {
-            radio_request_unref(req);
-            binder_voicecall_clear_dtmf_queue(self);
+        /* If self->ext is NULL then binder_ext_call_send_dtmf is a noop */
+        self->ext_send_dtmf_id = binder_ext_call_send_dtmf(self->ext, tone,
+            binder_voicecall_send_dtmf_ext_cb, NULL, self);
+
+        /* If it's not handled by the extension, revert to good old IRadio */
+        if (!self->ext_send_dtmf_id) {
+            /* sendDtmf(int32 serial, string tones) */
+            GBinderWriter writer;
+            RadioRequest* req = radio_request_new2(self->g,
+                RADIO_REQ_SEND_DTMF, &writer,
+                binder_voicecall_send_dtmf_cb, NULL, self);
+
+            gbinder_writer_append_hidl_string_copy(&writer, tone);
+            if (radio_request_submit(req)) {
+                self->send_dtmf_req = req;
+            } else {
+                radio_request_unref(req);
+                binder_voicecall_clear_dtmf_queue(self);
+            }
         }
     }
 }
@@ -1924,6 +1960,7 @@ binder_voicecall_remove(
 
     if (self->ext) {
         binder_ext_call_remove_all_handlers(self->ext, self->ext_event);
+        binder_ext_call_cancel(self->ext, self->ext_send_dtmf_id);
         binder_ext_call_cancel(self->ext, self->ext_req_id);
         binder_ext_call_unref(self->ext);
     }
