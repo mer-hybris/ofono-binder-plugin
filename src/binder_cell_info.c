@@ -67,6 +67,7 @@ enum binder_cell_info_signal {
 
 #define SIGNAL_CELLS_CHANGED_NAME   "binder-cell-info-cells-changed"
 
+static GUtilIdlePool* binder_cell_info_pool = NULL;
 static guint binder_cell_info_signals[SIGNAL_COUNT] = { 0 };
 
 G_DEFINE_TYPE(BinderCellInfo, binder_cell_info, G_TYPE_OBJECT)
@@ -93,7 +94,23 @@ binder_cell_info_int_format(
     if (value == OFONO_CELL_INVALID_VALUE) {
         return "";
     } else {
-        static GUtilIdlePool* binder_cell_info_pool = NULL;
+        GUtilIdlePool* pool = gutil_idle_pool_get(&binder_cell_info_pool);
+        char* str = g_strdup_printf(format, value);
+
+        gutil_idle_pool_add(pool, str, g_free);
+        return str;
+    }
+}
+
+static
+const char*
+binder_cell_info_int64_format(
+    guint64 value,
+    const char* format)
+{
+    if (value == OFONO_CELL_INVALID_VALUE_INT64) {
+        return "";
+    } else {
         GUtilIdlePool* pool = gutil_idle_pool_get(&binder_cell_info_pool);
         char* str = g_strdup_printf(format, value);
 
@@ -183,6 +200,25 @@ binder_cell_info_invalidate(
     for (i = 0; i < n; i++) {
         *value++ = OFONO_CELL_INVALID_VALUE;
     }
+}
+
+static
+void
+binder_cell_info_invalidate_nr(
+    struct ofono_cell_info_nr* nr)
+{
+    nr->mcc = OFONO_CELL_INVALID_VALUE;
+    nr->mnc = OFONO_CELL_INVALID_VALUE;
+    nr->nci = OFONO_CELL_INVALID_VALUE_INT64;
+    nr->pci = OFONO_CELL_INVALID_VALUE;
+    nr->tac = OFONO_CELL_INVALID_VALUE;
+    nr->nrarfcn = OFONO_CELL_INVALID_VALUE;
+    nr->ssRsrp = OFONO_CELL_INVALID_VALUE;
+    nr->ssRsrq = OFONO_CELL_INVALID_VALUE;
+    nr->ssSinr = OFONO_CELL_INVALID_VALUE;
+    nr->csiRsrp = OFONO_CELL_INVALID_VALUE;
+    nr->csiRsrq = OFONO_CELL_INVALID_VALUE;
+    nr->csiSinr = OFONO_CELL_INVALID_VALUE;
 }
 
 static
@@ -293,6 +329,46 @@ binder_cell_info_new_cell_lte(
         binder_cell_info_int_format(lte->rssnr, ",rssnr=%d"),
         binder_cell_info_int_format(lte->cqi, ",cqi=%d"),
         binder_cell_info_int_format(lte->timingAdvance, ",t=%d"));
+    return cell;
+}
+static
+struct ofono_cell*
+binder_cell_info_new_cell_nr(
+    gboolean registered,
+    const RadioCellIdentityNr* id,
+    const RadioSignalStrengthNr* ss)
+{
+    struct ofono_cell* cell = binder_cell_new();
+    struct ofono_cell_info_nr* nr = &cell->info.nr;
+
+    cell->type = OFONO_CELL_TYPE_NR;
+    cell->registered = registered;
+
+    binder_cell_info_invalidate_nr(nr);
+    gutil_parse_int(id->mcc.data.str, 10, &nr->mcc);
+    gutil_parse_int(id->mnc.data.str, 10, &nr->mnc);
+    nr->nci = id->nci;
+    nr->pci = id->pci;
+    nr->tac = id->tac;
+    nr->nrarfcn = id->nrarfcn;
+    nr->ssRsrp = ss->ssRsrp;
+    nr->ssRsrq = ss->ssRsrq;
+    nr->ssSinr = ss->ssSinr;
+    nr->csiRsrp = ss->csiRsrp;
+    nr->csiRsrq = ss->csiRsrq;
+    nr->csiSinr = ss->csiSinr;
+    DBG("[nr] reg=%d%s%s%s%s%s%s%s%s%s%s%s", registered,
+        binder_cell_info_int_format(nr->mcc, ",mcc=%d"),
+        binder_cell_info_int_format(nr->mnc, ",mnc=%d"),
+        binder_cell_info_int64_format(nr->nci, ",nci=%" G_GINT64_FORMAT),
+        binder_cell_info_int_format(nr->pci, ",pci=%d"),
+        binder_cell_info_int_format(nr->tac, ",tac=%d"),
+        binder_cell_info_int_format(nr->ssRsrp, ",ssRsrp=%d"),
+        binder_cell_info_int_format(nr->ssRsrq, ",ssRsrq=%d"),
+        binder_cell_info_int_format(nr->ssSinr, ",ssSinr=%d"),
+        binder_cell_info_int_format(nr->csiRsrp, ",csiRsrp=%d"),
+        binder_cell_info_int_format(nr->csiRsrq, ",csiRsrq=%d"),
+        binder_cell_info_int_format(nr->csiSinr, ",csiSinr=%d"));
     return cell;
 }
 
@@ -427,9 +503,13 @@ binder_cell_info_array_new_1_4(
                 &cell->info.wcdma.cellIdentityWcdma.base,
                 &cell->info.wcdma.signalStrengthWcdma.base));
             continue;
+        case RADIO_CELL_INFO_1_4_NR:
+            g_ptr_array_add(l, binder_cell_info_new_cell_nr(registered,
+                &cell->info.nr.cellIdentity,
+                &cell->info.nr.signalStrength));
+            continue;
         case RADIO_CELL_INFO_1_4_TD_SCDMA:
         case RADIO_CELL_INFO_1_4_CDMA:
-        case RADIO_CELL_INFO_1_4_NR:
             break;
         }
         DBG("unsupported cell type %d", cell->cellInfoType);
@@ -467,6 +547,10 @@ binder_cell_info_array_new_1_5(
                 &cell->info.wcdma.signalStrengthWcdma.base));
             continue;
         case RADIO_CELL_INFO_1_5_NR:
+            g_ptr_array_add(l, binder_cell_info_new_cell_nr(registered,
+                &cell->info.nr.cellIdentityNr.base,
+                &cell->info.nr.signalStrengthNr));
+            continue;
         case RADIO_CELL_INFO_1_5_TD_SCDMA:
         case RADIO_CELL_INFO_1_5_CDMA:
             break;

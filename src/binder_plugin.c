@@ -1653,6 +1653,11 @@ binder_plugin_create_slot(
         g_strfreev(strv);
     }
 
+    /* limit technologies based on radioInterface */
+    if (slot->version < RADIO_INTERFACE_1_4) {
+        config->techs &= ~OFONO_RADIO_ACCESS_MODE_NR;
+    }
+
     /* lteNetworkMode */
     if (ofono_conf_get_integer(file, group,
         BINDER_CONF_SLOT_LTE_MODE, &ival)) {
@@ -1926,7 +1931,9 @@ binder_plugin_parse_config_file(
         ofono_radio_access_mode_to_string(OFONO_RADIO_ACCESS_MODE_UMTS),
         OFONO_RADIO_ACCESS_MODE_UMTS,
         ofono_radio_access_mode_to_string(OFONO_RADIO_ACCESS_MODE_LTE),
-        OFONO_RADIO_ACCESS_MODE_LTE, NULL)) {
+        OFONO_RADIO_ACCESS_MODE_LTE,
+        ofono_radio_access_mode_to_string(OFONO_RADIO_ACCESS_MODE_NR),
+        OFONO_RADIO_ACCESS_MODE_NR, NULL)) {
         DBG(BINDER_CONF_PLUGIN_MAX_NON_DATA_MODE " %s",
             ofono_radio_access_mode_to_string(ival));
         ps->non_data_mode = ival;

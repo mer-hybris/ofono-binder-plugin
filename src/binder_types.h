@@ -89,12 +89,13 @@ typedef struct binder_slot_config {
 typedef void (*BinderCallback)(void);
 #define BINDER_CB(f) ((BinderCallback)(f))
 
-#define OFONO_RADIO_ACCESS_MODE_COUNT (3)
+#define OFONO_RADIO_ACCESS_MODE_COUNT (4)
 
 #define OFONO_RADIO_ACCESS_MODE_ALL (\
     OFONO_RADIO_ACCESS_MODE_GSM  |\
     OFONO_RADIO_ACCESS_MODE_UMTS |\
-    OFONO_RADIO_ACCESS_MODE_LTE)
+    OFONO_RADIO_ACCESS_MODE_LTE |\
+    OFONO_RADIO_ACCESS_MODE_NR)
 
 #define OFONO_RADIO_ACCESS_MODE_NONE \
     ((enum ofono_radio_access_mode) 0)
@@ -105,6 +106,8 @@ typedef void (*BinderCallback)(void);
     (OFONO_RADIO_ACCESS_MODE_UMTS | (OFONO_RADIO_ACCESS_MODE_UMTS - 1))
 #define OFONO_RADIO_ACCESS_LTE_MASK \
     (OFONO_RADIO_ACCESS_MODE_LTE | (OFONO_RADIO_ACCESS_MODE_LTE - 1))
+#define OFONO_RADIO_ACCESS_NR_MASK \
+    (OFONO_RADIO_ACCESS_MODE_NR | (OFONO_RADIO_ACCESS_MODE_NR - 1))
 
 #endif /* BINDER_TYPES_H */
 
