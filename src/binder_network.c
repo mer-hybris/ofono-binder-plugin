@@ -40,6 +40,7 @@
 
 #define SET_PREF_MODE_HOLDOFF_SEC BINDER_RETRY_SECS
 #define INTINITE_TIMEOUT UINT_MAX
+#define MAX_DATA_CALLS 16
 
 typedef enum binder_network_timer {
     TIMER_SET_RAT_HOLDOFF,
@@ -481,6 +482,56 @@ binder_network_location_1_2(
 
 static
 void
+binder_network_location_1_5(
+    const RadioCellIdentity_1_5* cell,
+    BinderNetworkLocation* l)
+{
+    switch (cell->cellIdentityType) {
+    case RADIO_CELL_IDENTITY_1_5_GSM: {
+        const RadioCellIdentityGsm_1_5* gsm = &cell->identity.gsm;
+
+        l->lac = gsm->base.base.lac;
+        l->ci = gsm->base.base.cid;
+        return;
+    }
+    case RADIO_CELL_IDENTITY_1_5_WCDMA: {
+        const RadioCellIdentityWcdma_1_5* wcdma = &cell->identity.wcdma;
+
+        l->lac = wcdma->base.base.lac;
+        l->ci = wcdma->base.base.cid;
+        return;
+    }
+    case RADIO_CELL_IDENTITY_1_5_TD_SCDMA: {
+        const RadioCellIdentityTdscdma_1_5* tds = &cell->identity.tdscdma;
+
+        l->lac = tds->base.base.lac;
+        l->ci = tds->base.base.cid;
+        return;
+    }
+    case RADIO_CELL_IDENTITY_1_5_LTE: {
+        const RadioCellIdentityLte_1_5* lte = &cell->identity.lte;
+
+        l->lac = -1;
+        l->ci = lte->base.base.ci;
+        return;
+    }
+    case RADIO_CELL_IDENTITY_1_5_NR: {
+        const RadioCellIdentityNr_1_5* nr = &cell->identity.nr;
+
+        l->lac = -1;
+        l->ci = nr->base.nci;
+        return;
+    }
+    default:
+        break;
+    }
+
+    /* Unknown location */
+    l->lac = l->ci = -1;
+}
+
+static
+void
 binder_network_poll_voice_state_1_0(
     BinderRegistrationState* state,
     const RadioVoiceRegStateResult* result)
@@ -501,6 +552,19 @@ binder_network_poll_voice_state_1_2(
     BinderNetworkLocation l;
 
     binder_network_location_1_2(&result->cellIdentity, &l);
+    binder_network_set_registration_state(state, result->regState,
+        result->rat, l.lac, l.ci);
+}
+
+static
+void
+binder_network_poll_voice_state_1_5(
+    BinderRegistrationState* state,
+    const RadioRegStateResult_1_5* result)
+{
+    BinderNetworkLocation l;
+
+    binder_network_location_1_5(&result->cellIdentity, &l);
     binder_network_set_registration_state(state, result->regState,
         result->rat, l.lac, l.ci);
 }
@@ -548,6 +612,16 @@ binder_network_poll_voice_state_cb(
                     reg = &state;
                     reason = result->reasonForDenial;
                     binder_network_poll_voice_state_1_2(reg, result);
+                }
+            } else if (resp == RADIO_RESP_GET_VOICE_REGISTRATION_STATE_1_5) {
+                const RadioRegStateResult_1_5* result =
+                    gbinder_reader_read_hidl_struct(&reader,
+                        RadioRegStateResult_1_5);
+
+                if (result) {
+                    reg = &state;
+                    reason = result->reasonDataDenied;
+                    binder_network_poll_voice_state_1_5(reg, result);
                 }
             } else {
                 ofono_error("Unexpected getVoiceRegistrationState response %d",
@@ -615,6 +689,19 @@ binder_network_poll_data_state_1_4(
 
 static
 void
+binder_network_poll_data_state_1_5(
+    BinderRegistrationState* state,
+    const RadioRegStateResult_1_5* result)
+{
+    BinderNetworkLocation l;
+
+    binder_network_location_1_5(&result->cellIdentity, &l);
+    binder_network_set_registration_state(state, result->regState,
+        result->rat, l.lac, l.ci);
+}
+
+static
+void
 binder_network_poll_data_state_cb(
     RadioRequest* req,
     RADIO_TX_STATUS status,
@@ -669,6 +756,17 @@ binder_network_poll_data_state_cb(
                     reason = result->reasonDataDenied;
                     max_data_calls = result->maxDataCalls;
                     binder_network_poll_data_state_1_4(reg, result);
+                }
+            } else if (resp == RADIO_RESP_GET_DATA_REGISTRATION_STATE_1_5) {
+                const RadioRegStateResult_1_5* result =
+                    gbinder_reader_read_hidl_struct(&reader,
+                        RadioRegStateResult_1_5);
+
+                if (result) {
+                    reg = &state;
+                    reason = result->reasonDataDenied;
+                    max_data_calls = MAX_DATA_CALLS;
+                    binder_network_poll_data_state_1_5(reg, result);
                 }
             } else {
                 ofono_error("Unexpected getDataRegistrationState response %d",
@@ -748,12 +846,22 @@ void
 binder_network_poll_registration_state(
     BinderNetworkObject* self)
 {
+    RadioClient* client = self->g->client;
+    const RADIO_INTERFACE iface = radio_client_interface(client);
+
     self->voice_poll_req = binder_network_poll_and_retry(self,
         self->voice_poll_req, RADIO_REQ_GET_VOICE_REGISTRATION_STATE,
         binder_network_poll_voice_state_cb);
-    self->data_poll_req = binder_network_poll_and_retry(self,
-        self->data_poll_req, RADIO_REQ_GET_DATA_REGISTRATION_STATE,
-        binder_network_poll_data_state_cb);
+
+    if (iface >= RADIO_INTERFACE_1_5) {
+        self->data_poll_req = binder_network_poll_and_retry(self,
+            self->data_poll_req, RADIO_REQ_GET_DATA_REGISTRATION_STATE_1_5,
+            binder_network_poll_data_state_cb);
+    } else {
+        self->data_poll_req = binder_network_poll_and_retry(self,
+            self->data_poll_req, RADIO_REQ_GET_DATA_REGISTRATION_STATE,
+            binder_network_poll_data_state_cb);
+    }
 }
 
 static
@@ -979,6 +1087,28 @@ binder_network_fill_radio_data_profile_1_4(
 }
 
 static
+RadioDataProfile_1_5*
+binder_network_fill_radio_data_profile_1_5(
+    GBinderWriter* writer,
+    RadioDataProfile_1_5* dp,
+    const BinderNetworkDataProfile* src,
+    const BinderDataProfileConfig* dpc)
+{
+    binder_copy_hidl_string(writer, &dp->apn, src->apn);
+    binder_copy_hidl_string(writer, &dp->user, src->username);
+    binder_copy_hidl_string(writer, &dp->password, src->password);
+
+    dp->protocol = dp->roamingProtocol =
+        binder_proto_from_ofono_proto(src->proto);
+    dp->authType = binder_radio_auth_from_ofono_method(src->auth_method);
+    dp->supportedApnTypesBitmap = binder_radio_apn_types_for_profile(src->id,
+        dpc);
+    dp->enabled = TRUE;
+    dp->preferred = TRUE;
+    return dp;
+}
+
+static
 RadioDataProfile_1_4*
 binder_network_new_radio_data_profile_1_4(
     GBinderWriter* writer,
@@ -987,6 +1117,17 @@ binder_network_new_radio_data_profile_1_4(
 {
     return binder_network_fill_radio_data_profile_1_4(writer,
         gbinder_writer_new0(writer, RadioDataProfile_1_4), src, dpc);
+}
+
+static
+RadioDataProfile_1_5*
+binder_network_new_radio_data_profile_1_5(
+    GBinderWriter* writer,
+    const BinderNetworkDataProfile* src,
+    const BinderDataProfileConfig* dpc)
+{
+    return binder_network_fill_radio_data_profile_1_5(writer,
+        gbinder_writer_new0(writer, RadioDataProfile_1_5), src, dpc);
 }
 
 static
@@ -1005,6 +1146,21 @@ binder_network_write_data_profile_strings_1_4(
     binder_append_hidl_string_data2(writer, dp, password, parent, off);
 }
 
+static
+void
+binder_network_write_data_profile_strings_1_5(
+    GBinderWriter* writer,
+    const RadioDataProfile_1_5* dp,
+    guint parent,
+    guint i)
+{
+    const guint off = sizeof(*dp) * i;
+
+    /* Write the string data in the right order */
+    binder_append_hidl_string_data2(writer, dp, apn, parent, off);
+    binder_append_hidl_string_data2(writer, dp, user, parent, off);
+    binder_append_hidl_string_data2(writer, dp, password, parent, off);
+}
 
 static
 gboolean
@@ -1102,7 +1258,26 @@ binder_network_set_data_profiles(
     GSList* l;
     guint i, parent;
 
-    if (iface >= RADIO_INTERFACE_1_4) {
+    if (iface >= RADIO_INTERFACE_1_5) {
+        RadioDataProfile_1_5* dp;
+        const gsize elem = sizeof(*dp);
+
+        /* setDataProfile_1_4(int32 serial, vec<DataProfileInfo>); */
+        req = radio_request_new(client, RADIO_REQ_SET_DATA_PROFILE_1_5,
+            &writer, binder_network_set_data_profiles_done, NULL, self);
+
+        dp = gbinder_writer_malloc0(&writer, elem * n);
+        for (l = self->data_profiles, i = 0; i < n; l = l->next, i++) {
+            binder_network_fill_radio_data_profile_1_5(&writer, dp + i,
+                (BinderNetworkDataProfile*) l->data, dpc);
+        }
+
+        parent = binder_append_vec_with_data(&writer, dp, elem, n, NULL);
+        for (i = 0; i < n; i++) {
+            binder_network_write_data_profile_strings_1_5(&writer, dp + i,
+                parent, i);
+        }
+    } else if (iface >= RADIO_INTERFACE_1_4) {
         RadioDataProfile_1_4* dp;
         const gsize elem = sizeof(*dp);
 
@@ -1237,7 +1412,17 @@ binder_network_set_initial_attach_apn(
 
     binder_network_data_profile_init(&profile, ctx, RADIO_DATA_PROFILE_DEFAULT);
 
-    if (iface >= RADIO_INTERFACE_1_4) {
+    if (iface >= RADIO_INTERFACE_1_5) {
+        RadioDataProfile_1_5* dp;
+
+        /* setInitialAttachApn_1_4(int32 serial, DataProfileInfo profile); */
+        req = radio_request_new2(self->g, RADIO_REQ_SET_INITIAL_ATTACH_APN_1_5,
+            &writer, NULL, NULL, NULL);
+
+        dp = binder_network_new_radio_data_profile_1_5(&writer, &profile, dpc);
+        parent = gbinder_writer_append_buffer_object(&writer, dp, sizeof(*dp));
+        binder_network_write_data_profile_strings_1_5(&writer, dp, parent, 0);
+    } else if (iface >= RADIO_INTERFACE_1_4) {
         RadioDataProfile_1_4* dp;
 
         /* setInitialAttachApn_1_4(int32 serial, DataProfileInfo profile); */

@@ -493,6 +493,7 @@ binder_sim_card_status_cb(
         const RadioCardStatus* status_1_0;
         const RadioCardStatus_1_2* status_1_2;
         const RadioCardStatus_1_4* status_1_4;
+        const RadioCardStatus_1_5* status_1_5;
         BinderSimCardStatus* status = NULL;
         GBinderReader reader;
 
@@ -517,6 +518,13 @@ binder_sim_card_status_cb(
                 RadioCardStatus_1_4);
             if (status_1_4) {
                 status = binder_sim_card_status_new(&status_1_4->base);
+            }
+            break;
+        case RADIO_RESP_GET_ICC_CARD_STATUS_1_5:
+            status_1_5 = gbinder_reader_read_hidl_struct(&reader,
+                RadioCardStatus_1_5);
+            if (status_1_5) {
+                status = binder_sim_card_status_new(&status_1_5->base.base);
             }
             break;
         default:
