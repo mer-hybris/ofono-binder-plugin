@@ -1165,7 +1165,9 @@ binder_data_call_setup_submit(
          *   vec<string> dnses);
          */
         dp = gbinder_writer_new0(&writer, RadioDataProfile_1_4);
-        dp->profileId = setup->profile_id;
+        // profile id is only meaningful when it's persistent on the modem.
+        // dp->profileId = setup->profile_id;
+        dp->profileId = RADIO_DATA_PROFILE_INVALID;
         binder_copy_hidl_string(&writer, &dp->apn, setup->apn);
         dp->protocol = dp->roamingProtocol =
             binder_proto_from_ofono_proto(setup->proto);
@@ -1173,6 +1175,9 @@ binder_data_call_setup_submit(
         binder_copy_hidl_string(&writer, &dp->user, setup->username);
         binder_copy_hidl_string(&writer, &dp->password, setup->password);
         dp->enabled = TRUE;
+        dp->supportedApnTypesBitmap =
+            binder_radio_apn_types_for_profile(setup->profile_id,
+                &data->profile_config);
 
         gbinder_writer_append_int32(&writer,
             binder_radio_access_network_for_tech(tech)); /* accessNetwork */
