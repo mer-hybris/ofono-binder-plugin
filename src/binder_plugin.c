@@ -88,13 +88,15 @@
 #define BINDER_SLOT_RADIO_INTERFACE_1_2 "1.2"
 #define BINDER_SLOT_RADIO_INTERFACE_1_3 "1.3"
 #define BINDER_SLOT_RADIO_INTERFACE_1_4 "1.4"
+#define BINDER_SLOT_RADIO_INTERFACE_1_5 "1.5"
 
 static const char* const binder_radio_ifaces[] = {
     RADIO_1_0, /* android.hardware.radio@1.0::IRadio */
     RADIO_1_1, /* android.hardware.radio@1.1::IRadio */
     RADIO_1_2, /* android.hardware.radio@1.2::IRadio */
     RADIO_1_3, /* android.hardware.radio@1.3::IRadio */
-    RADIO_1_4  /* android.hardware.radio@1.4::IRadio */
+    RADIO_1_4, /* android.hardware.radio@1.4::IRadio */
+    RADIO_1_5  /* android.hardware.radio@1.5::IRadio */
 };
 
 /*
@@ -1048,7 +1050,8 @@ binder_plugin_service_list_proc(
     plugin->list_call_id = 0;
 
     /* IRadioConfig 1.0 is of no use to us */
-    if (gutil_strv_contains(services, RADIO_CONFIG_1_1_FQNAME)) {
+    if (gutil_strv_contains(services, RADIO_CONFIG_1_2_FQNAME) ||
+            gutil_strv_contains(services, RADIO_CONFIG_1_1_FQNAME)) {
         /* If it's there then we definitely need it */
         plugin->flags |= (BINDER_PLUGIN_HAVE_CONFIG_SERVICE |
                           BINDER_PLUGIN_NEED_CONFIG_SERVICE);
@@ -1312,6 +1315,7 @@ binder_plugin_radio_interface_name(
     case RADIO_INTERFACE_1_2: return BINDER_SLOT_RADIO_INTERFACE_1_2;
     case RADIO_INTERFACE_1_3: return BINDER_SLOT_RADIO_INTERFACE_1_3;
     case RADIO_INTERFACE_1_4: return BINDER_SLOT_RADIO_INTERFACE_1_4;
+    case RADIO_INTERFACE_1_5: return BINDER_SLOT_RADIO_INTERFACE_1_5;
     case RADIO_INTERFACE_NONE:
     case RADIO_INTERFACE_COUNT:
         break;
