@@ -72,6 +72,7 @@ typedef struct binder_slot_config {
     gboolean empty_pin_query;
     gboolean radio_power_cycle;
     gboolean confirm_radio_power_on;
+    gboolean use_network_scan;
     gboolean replace_strange_oper;
     gboolean force_gsm_when_radio_off;
     BinderDataProfileConfig data_profile_config;
@@ -87,6 +88,8 @@ typedef struct binder_slot_config {
 
 typedef void (*BinderCallback)(void);
 #define BINDER_CB(f) ((BinderCallback)(f))
+
+#define OFONO_RADIO_ACCESS_MODE_COUNT (3)
 
 #define OFONO_RADIO_ACCESS_MODE_ALL (\
     OFONO_RADIO_ACCESS_MODE_GSM  |\
