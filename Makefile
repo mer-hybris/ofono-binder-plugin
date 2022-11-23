@@ -58,6 +58,7 @@ SRC = \
   binder_modem.c \
   binder_netreg.c \
   binder_network.c \
+  binder_oplist.c \
   binder_radio.c \
   binder_radio_caps.c \
   binder_radio_settings.c \

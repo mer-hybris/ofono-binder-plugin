@@ -131,6 +131,7 @@ static const char* const binder_radio_ifaces[] = {
 #define BINDER_CONF_SLOT_DEFAULT_DATA_PROFILE_ID "defaultDataProfileId"
 #define BINDER_CONF_SLOT_MMS_DATA_PROFILE_ID  "mmsDataProfileId"
 #define BINDER_CONF_SLOT_ALLOW_DATA_REQ       "allowDataReq"
+#define BINDER_CONF_SLOT_USE_NETWORK_SCAN     "useNetworkScan"
 #define BINDER_CONF_SLOT_REPLACE_STRANGE_OPER "replaceStrangeOperatorNames"
 #define BINDER_CONF_SLOT_SIGNAL_STRENGTH_RANGE "signalStrengthRange"
 
@@ -1606,6 +1607,14 @@ binder_plugin_create_slot(
         DBG("%s: " BINDER_CONF_SLOT_ALLOW_DATA_REQ " %s", group,
             (ival == BINDER_ALLOW_DATA_ENABLED) ? "enabled": "disabled");
         slot->data_opt.allow_data = ival;
+    }
+
+    /* useNetworkScan */
+    if (ofono_conf_get_boolean(file, group,
+        BINDER_CONF_SLOT_USE_NETWORK_SCAN,
+        &config->use_network_scan)) {
+        DBG("%s: " BINDER_CONF_SLOT_USE_NETWORK_SCAN " %s", group,
+            config->use_network_scan ? "yes" : "no");
     }
 
     /* replaceStrangeOperatorNames */
