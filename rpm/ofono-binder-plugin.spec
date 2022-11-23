@@ -1,6 +1,6 @@
 Name: ofono-binder-plugin
 
-Version: 1.1.9
+Version: 1.1.10
 Release: 1
 Summary: Binder based ofono plugin
 License: GPLv2
@@ -55,7 +55,6 @@ make %{_smp_mflags} -C lib LIBDIR=%{_libdir} KEEP_SYMBOLS=1 release pkgconfig
 make test
 
 %install
-rm -rf %{buildroot}
 make DESTDIR=%{buildroot} PLUGINDIR=%{plugin_dir} install
 make -C lib DESTDIR=%{buildroot} LIBDIR=%{_libdir} install install-dev
 mkdir -p %{buildroot}%{config_dir}
@@ -103,6 +102,7 @@ Interfaces for ofono binder plugin extensions
 
 %files -n libofonobinderpluginext-devel
 %defattr(-,root,root,-)
+%dir %{_includedir}/ofonobinderpluginext
 %{_libdir}/pkgconfig/libofonobinderpluginext.pc
 %{_libdir}/libofonobinderpluginext.so
 %{_includedir}/ofonobinderpluginext/*.h
