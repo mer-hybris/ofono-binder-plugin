@@ -18,6 +18,8 @@
 
 #include "binder_types.h"
 
+#include <gbinder_writer.h>
+
 #include <radio_request.h>
 
 #include <ofono/slot.h>
@@ -251,6 +253,10 @@ binder_data_set_data_allowed_request_new(
     GDestroyNotify destroy,
     void* user_data)
     BINDER_INTERNAL;
+
+extern const GBinderWriterType binder_data_profile_type BINDER_INTERNAL;
+extern const GBinderWriterType binder_data_profile_1_4_type BINDER_INTERNAL;
+extern const GBinderWriterType binder_data_profile_1_5_type BINDER_INTERNAL;
 
 #endif /* BINDER_DATA_H */
 
