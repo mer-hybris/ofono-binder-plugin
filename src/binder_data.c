@@ -182,6 +182,108 @@ typedef struct binder_data_request_allow_data {
     gboolean allow;
 } BinderDataRequestAllowData;
 
+/* Data type descriptors */
+
+/*
+ * typedef struct radio_data_profile {
+ *     RADIO_DATA_PROFILE_ID profileId;
+ *     GBinderHidlString apn;
+ *     GBinderHidlString protocol;
+ *     GBinderHidlString roamingProtocol;
+ *     RADIO_APN_AUTH_TYPE authType;
+ *     GBinderHidlString user;
+ *     GBinderHidlString password;
+ *     RADIO_DATA_PROFILE_TYPE type;
+ *     gint32 maxConnsTime;
+ *     gint32 maxConns;
+ *     gint32 waitTime;
+ *     guint8 enabled;
+ *     RADIO_APN_TYPES supportedApnTypesBitmap;
+ *     RADIO_ACCESS_FAMILY bearerBitmap;
+ *     gint32 mtu;
+ *     gint32 mvnoType;
+ *     GBinderHidlString mvnoMatchData;
+ * } RadioDataProfile;
+ */
+static const GBinderWriterField binder_data_profile_f[] = {
+    GBINDER_WRITER_FIELD_HIDL_STRING(RadioDataProfile,apn),
+    GBINDER_WRITER_FIELD_HIDL_STRING(RadioDataProfile,protocol),
+    GBINDER_WRITER_FIELD_HIDL_STRING(RadioDataProfile,roamingProtocol),
+    GBINDER_WRITER_FIELD_HIDL_STRING(RadioDataProfile,user),
+    GBINDER_WRITER_FIELD_HIDL_STRING(RadioDataProfile,password),
+    GBINDER_WRITER_FIELD_HIDL_STRING(RadioDataProfile,mvnoMatchData),
+    GBINDER_WRITER_FIELD_END()
+};
+const GBinderWriterType binder_data_profile_type = {
+    GBINDER_WRITER_STRUCT_NAME_AND_SIZE(RadioDataProfile),
+    binder_data_profile_f
+};
+
+/*
+ * typedef struct radio_data_profile_1_4 {
+ *     RADIO_DATA_PROFILE_ID profileId;
+ *     GBinderHidlString apn;
+ *     RADIO_PDP_PROTOCOL_TYPE protocol;
+ *     RADIO_PDP_PROTOCOL_TYPE roamingProtocol;
+ *     RADIO_APN_AUTH_TYPE authType;
+ *     GBinderHidlString user;
+ *     GBinderHidlString password;
+ *     RADIO_DATA_PROFILE_TYPE type;
+ *     gint32 maxConnsTime;
+ *     gint32 maxConns;
+ *     gint32 waitTime;
+ *     guint8 enabled;
+ *     RADIO_APN_TYPES supportedApnTypesBitmap;
+ *     RADIO_ACCESS_FAMILY bearerBitmap;
+ *     gint32 mtu;
+ *     guint8 preferred;
+ *     guint8 persistent;
+ * } RadioDataProfile_1_4;
+ */
+static const GBinderWriterField binder_data_profile_1_4_f[] = {
+    GBINDER_WRITER_FIELD_HIDL_STRING(RadioDataProfile_1_4,apn),
+    GBINDER_WRITER_FIELD_HIDL_STRING(RadioDataProfile_1_4,user),
+    GBINDER_WRITER_FIELD_HIDL_STRING(RadioDataProfile_1_4,password),
+    GBINDER_WRITER_FIELD_END()
+};
+const GBinderWriterType binder_data_profile_1_4_type = {
+    GBINDER_WRITER_STRUCT_NAME_AND_SIZE(RadioDataProfile_1_4),
+    binder_data_profile_1_4_f
+};
+
+/*
+ * typedef struct radio_data_profile_1_5 {
+ *     RADIO_DATA_PROFILE_ID profileId;
+ *     GBinderHidlString apn;
+ *     RADIO_PDP_PROTOCOL_TYPE protocol;
+ *     RADIO_PDP_PROTOCOL_TYPE roamingProtocol;
+ *     RADIO_APN_AUTH_TYPE authType;
+ *     GBinderHidlString user;
+ *     GBinderHidlString password;
+ *     RADIO_DATA_PROFILE_TYPE type;
+ *     gint32 maxConnsTime;
+ *     gint32 maxConns;
+ *     gint32 waitTime;
+ *     guint8 enabled;
+ *     RADIO_APN_TYPES supportedApnTypesBitmap;
+ *     RADIO_ACCESS_FAMILY bearerBitmap;
+ *     gint32 mtuV4;
+ *     gint32 mtuV6;
+ *     guint8 preferred;
+ *     guint8 persistent;
+ * } RadioDataProfile_1_5;
+ */
+static const GBinderWriterField binder_data_profile_1_5_f[] = {
+    GBINDER_WRITER_FIELD_HIDL_STRING(RadioDataProfile_1_5,apn),
+    GBINDER_WRITER_FIELD_HIDL_STRING(RadioDataProfile_1_5,user),
+    GBINDER_WRITER_FIELD_HIDL_STRING(RadioDataProfile_1_5,password),
+    GBINDER_WRITER_FIELD_END()
+};
+const GBinderWriterType binder_data_profile_1_5_type = {
+    GBINDER_WRITER_STRUCT_NAME_AND_SIZE(RadioDataProfile_1_5),
+    binder_data_profile_1_5_f
+};
+
 static struct ofono_debug_desc binder_data_debug_desc OFONO_DEBUG_ATTR = {
     .file = __FILE__,
     .flags = OFONO_DEBUG_FLAG_DEFAULT,
@@ -1244,9 +1346,9 @@ binder_data_call_setup_submit(
     const RADIO_APN_AUTH_TYPE auth =(setup->username && setup->username[0]) ?
         binder_radio_auth_from_ofono_method(setup->auth_method) :
         RADIO_APN_AUTH_NONE;
+
     if (iface >= RADIO_INTERFACE_1_5) {
         RadioDataProfile_1_5* dp;
-        guint parent;
 
         req = radio_request_new2(g, RADIO_REQ_SETUP_DATA_CALL_1_5,
             &writer, binder_data_call_setup_cb, NULL, setup);
@@ -1274,11 +1376,8 @@ binder_data_call_setup_submit(
 
         gbinder_writer_append_int32(&writer,
             binder_radio_access_network_for_tech(tech)); /* accessNetwork */
-        /* dataProfileInfo */
-        parent = gbinder_writer_append_buffer_object(&writer, dp, sizeof(*dp));
-        binder_append_hidl_string_data(&writer, dp, apn, parent);
-        binder_append_hidl_string_data(&writer, dp, user, parent);
-        binder_append_hidl_string_data(&writer, dp, password, parent);
+        gbinder_writer_append_struct(&writer, dp,
+            &binder_data_profile_1_5_type, NULL);   /* dataProfileInfo */
         gbinder_writer_append_bool(&writer, TRUE);  /* roamingAllowed */
         gbinder_writer_append_int32(&writer,
             RADIO_DATA_REQUEST_REASON_NORMAL);      /* reason */
@@ -1286,7 +1385,6 @@ binder_data_call_setup_submit(
         gbinder_writer_append_hidl_string_vec(&writer, &nothing, -1);
     } else if (iface >= RADIO_INTERFACE_1_4) {
         RadioDataProfile_1_4* dp;
-        guint parent;
 
         req = radio_request_new2(g, RADIO_REQ_SETUP_DATA_CALL_1_4,
             &writer, binder_data_call_setup_cb, NULL, setup);
@@ -1314,11 +1412,8 @@ binder_data_call_setup_submit(
 
         gbinder_writer_append_int32(&writer,
             binder_radio_access_network_for_tech(tech)); /* accessNetwork */
-        /* dataProfileInfo */
-        parent = gbinder_writer_append_buffer_object(&writer, dp, sizeof(*dp));
-        binder_append_hidl_string_data(&writer, dp, apn, parent);
-        binder_append_hidl_string_data(&writer, dp, user, parent);
-        binder_append_hidl_string_data(&writer, dp, password, parent);
+        gbinder_writer_append_struct(&writer, dp,
+            &binder_data_profile_1_4_type, NULL);   /* dataProfileInfo */
         gbinder_writer_append_bool(&writer, TRUE);  /* roamingAllowed */
         gbinder_writer_append_int32(&writer,
             RADIO_DATA_REQUEST_REASON_NORMAL);      /* reason */
@@ -1327,7 +1422,6 @@ binder_data_call_setup_submit(
     } else {
         RadioDataProfile* dp;
         const char* proto_str = binder_proto_str_from_ofono_proto(setup->proto);
-        guint parent;
 
         req = radio_request_new2(g, (iface >= RADIO_INTERFACE_1_2) ?
             RADIO_REQ_SETUP_DATA_CALL_1_2 : RADIO_REQ_SETUP_DATA_CALL,
@@ -1365,14 +1459,8 @@ binder_data_call_setup_submit(
             gbinder_writer_append_int32(&writer, tech); /* radioTechnology */
         }
 
-        /* dataProfileInfo */
-        parent = gbinder_writer_append_buffer_object(&writer, dp, sizeof(*dp));
-        binder_append_hidl_string_data(&writer, dp, apn, parent);
-        binder_append_hidl_string_data(&writer, dp, protocol, parent);
-        binder_append_hidl_string_data(&writer, dp, roamingProtocol, parent);
-        binder_append_hidl_string_data(&writer, dp, user, parent);
-        binder_append_hidl_string_data(&writer, dp, password, parent);
-        binder_append_hidl_string_data(&writer, dp, mvnoMatchData, parent);
+        gbinder_writer_append_struct(&writer, dp,
+            &binder_data_profile_type, NULL);       /* dataProfileInfo */
         gbinder_writer_append_bool(&writer, FALSE); /* modemCognitive */
         gbinder_writer_append_bool(&writer, TRUE);  /* roamingAllowed */
         gbinder_writer_append_bool(&writer, FALSE); /* isRoaming */

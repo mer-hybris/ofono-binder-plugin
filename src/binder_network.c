@@ -14,6 +14,7 @@
  */
 
 #include "binder_base.h"
+#include "binder_data.h"
 #include "binder_log.h"
 #include "binder_network.h"
 #include "binder_radio.h"
@@ -1046,25 +1047,6 @@ binder_network_new_radio_data_profile(
 }
 
 static
-void
-binder_network_write_data_profile_strings(
-    GBinderWriter* writer,
-    const RadioDataProfile* dp,
-    guint parent,
-    guint i)
-{
-    const guint off = sizeof(*dp) * i;
-
-    /* Write the string data in the right order */
-    binder_append_hidl_string_data2(writer, dp, apn, parent, off);
-    binder_append_hidl_string_data2(writer, dp, protocol, parent, off);
-    binder_append_hidl_string_data2(writer, dp, roamingProtocol, parent, off);
-    binder_append_hidl_string_data2(writer, dp, user, parent, off);
-    binder_append_hidl_string_data2(writer, dp, password, parent, off);
-    binder_append_hidl_string_data2(writer, dp, mvnoMatchData, parent, off);
-}
-
-static
 RadioDataProfile_1_4*
 binder_network_fill_radio_data_profile_1_4(
     GBinderWriter* writer,
@@ -1128,38 +1110,6 @@ binder_network_new_radio_data_profile_1_5(
 {
     return binder_network_fill_radio_data_profile_1_5(writer,
         gbinder_writer_new0(writer, RadioDataProfile_1_5), src, dpc);
-}
-
-static
-void
-binder_network_write_data_profile_strings_1_4(
-    GBinderWriter* writer,
-    const RadioDataProfile_1_4* dp,
-    guint parent,
-    guint i)
-{
-    const guint off = sizeof(*dp) * i;
-
-    /* Write the string data in the right order */
-    binder_append_hidl_string_data2(writer, dp, apn, parent, off);
-    binder_append_hidl_string_data2(writer, dp, user, parent, off);
-    binder_append_hidl_string_data2(writer, dp, password, parent, off);
-}
-
-static
-void
-binder_network_write_data_profile_strings_1_5(
-    GBinderWriter* writer,
-    const RadioDataProfile_1_5* dp,
-    guint parent,
-    guint i)
-{
-    const guint off = sizeof(*dp) * i;
-
-    /* Write the string data in the right order */
-    binder_append_hidl_string_data2(writer, dp, apn, parent, off);
-    binder_append_hidl_string_data2(writer, dp, user, parent, off);
-    binder_append_hidl_string_data2(writer, dp, password, parent, off);
 }
 
 static
@@ -1256,65 +1206,53 @@ binder_network_set_data_profiles(
     RadioRequest* req;
     GBinderWriter writer;
     GSList* l;
-    guint i, parent;
+    guint i;
 
     if (iface >= RADIO_INTERFACE_1_5) {
         RadioDataProfile_1_5* dp;
-        const gsize elem = sizeof(*dp);
 
-        /* setDataProfile_1_4(int32 serial, vec<DataProfileInfo>); */
+        /* setDataProfile_1_5(int32 serial, vec<DataProfileInfo>); */
         req = radio_request_new(client, RADIO_REQ_SET_DATA_PROFILE_1_5,
             &writer, binder_network_set_data_profiles_done, NULL, self);
 
-        dp = gbinder_writer_malloc0(&writer, elem * n);
+        dp = gbinder_writer_malloc0(&writer, sizeof(*dp) * n);
         for (l = self->data_profiles, i = 0; i < n; l = l->next, i++) {
             binder_network_fill_radio_data_profile_1_5(&writer, dp + i,
                 (BinderNetworkDataProfile*) l->data, dpc);
         }
 
-        parent = binder_append_vec_with_data(&writer, dp, elem, n, NULL);
-        for (i = 0; i < n; i++) {
-            binder_network_write_data_profile_strings_1_5(&writer, dp + i,
-                parent, i);
-        }
+        gbinder_writer_append_struct_vec(&writer, dp, n,
+            &binder_data_profile_1_5_type);
     } else if (iface >= RADIO_INTERFACE_1_4) {
         RadioDataProfile_1_4* dp;
-        const gsize elem = sizeof(*dp);
 
         /* setDataProfile_1_4(int32 serial, vec<DataProfileInfo>); */
         req = radio_request_new(client, RADIO_REQ_SET_DATA_PROFILE_1_4,
             &writer, binder_network_set_data_profiles_done, NULL, self);
 
-        dp = gbinder_writer_malloc0(&writer, elem * n);
+        dp = gbinder_writer_malloc0(&writer, sizeof(*dp) * n);
         for (l = self->data_profiles, i = 0; i < n; l = l->next, i++) {
             binder_network_fill_radio_data_profile_1_4(&writer, dp + i,
                 (BinderNetworkDataProfile*) l->data, dpc);
         }
 
-        parent = binder_append_vec_with_data(&writer, dp, elem, n, NULL);
-        for (i = 0; i < n; i++) {
-            binder_network_write_data_profile_strings_1_4(&writer, dp + i,
-                parent, i);
-        }
+        gbinder_writer_append_struct_vec(&writer, dp, n,
+            &binder_data_profile_1_4_type);
     } else {
         RadioDataProfile* dp;
-        const gsize elem = sizeof(*dp);
 
         /* setDataProfile(int32 serial, vec<DataProfileInfo>, bool roaming); */
         req = radio_request_new(client, RADIO_REQ_SET_DATA_PROFILE,
             &writer, binder_network_set_data_profiles_done, NULL, self);
 
-        dp = gbinder_writer_malloc0(&writer, elem * n);
+        dp = gbinder_writer_malloc0(&writer, sizeof(*dp) * n);
         for (l = self->data_profiles, i = 0; i < n; l = l->next, i++) {
             binder_network_fill_radio_data_profile(&writer, dp + i,
                 (BinderNetworkDataProfile*) l->data, dpc);
         }
 
-        parent = binder_append_vec_with_data(&writer, dp, elem, n, NULL);
-        for (i = 0; i < n; i++) {
-            binder_network_write_data_profile_strings(&writer, dp + i,
-                parent, i);
-        }
+        gbinder_writer_append_struct_vec(&writer, dp, n,
+            &binder_data_profile_type);
         gbinder_writer_append_bool(&writer, FALSE); /* isRoaming */
     }
 
@@ -1408,33 +1346,26 @@ binder_network_set_initial_attach_apn(
     BinderNetworkDataProfile profile;
     RadioRequest* req;
     GBinderWriter writer;
-    guint parent;
 
     binder_network_data_profile_init(&profile, ctx, RADIO_DATA_PROFILE_DEFAULT);
 
     if (iface >= RADIO_INTERFACE_1_5) {
-        RadioDataProfile_1_5* dp;
-
         /* setInitialAttachApn_1_4(int32 serial, DataProfileInfo profile); */
         req = radio_request_new2(self->g, RADIO_REQ_SET_INITIAL_ATTACH_APN_1_5,
             &writer, NULL, NULL, NULL);
 
-        dp = binder_network_new_radio_data_profile_1_5(&writer, &profile, dpc);
-        parent = gbinder_writer_append_buffer_object(&writer, dp, sizeof(*dp));
-        binder_network_write_data_profile_strings_1_5(&writer, dp, parent, 0);
+        gbinder_writer_append_struct(&writer,
+            binder_network_new_radio_data_profile_1_5(&writer, &profile, dpc),
+            &binder_data_profile_1_5_type, NULL);
     } else if (iface >= RADIO_INTERFACE_1_4) {
-        RadioDataProfile_1_4* dp;
-
         /* setInitialAttachApn_1_4(int32 serial, DataProfileInfo profile); */
         req = radio_request_new2(self->g, RADIO_REQ_SET_INITIAL_ATTACH_APN_1_4,
             &writer, NULL, NULL, NULL);
 
-        dp = binder_network_new_radio_data_profile_1_4(&writer, &profile, dpc);
-        parent = gbinder_writer_append_buffer_object(&writer, dp, sizeof(*dp));
-        binder_network_write_data_profile_strings_1_4(&writer, dp, parent, 0);
+        gbinder_writer_append_struct(&writer,
+            binder_network_new_radio_data_profile_1_4(&writer, &profile, dpc),
+            &binder_data_profile_1_4_type, NULL);
     } else {
-        RadioDataProfile* dp;
-
         /*
          * setInitialAttachApn(int32 serial, DataProfileInfo profile,
          *     bool modemCognitive, bool isRoaming);
@@ -1442,9 +1373,9 @@ binder_network_set_initial_attach_apn(
         req = radio_request_new2(self->g, RADIO_REQ_SET_INITIAL_ATTACH_APN,
             &writer, NULL, NULL, NULL);
 
-        dp = binder_network_new_radio_data_profile(&writer, &profile, dpc);
-        parent = gbinder_writer_append_buffer_object(&writer, dp, sizeof(*dp));
-        binder_network_write_data_profile_strings(&writer, dp, parent, 0);
+        gbinder_writer_append_struct(&writer,
+            binder_network_new_radio_data_profile(&writer, &profile, dpc),
+            &binder_data_profile_type, NULL);
         gbinder_writer_append_bool(&writer, FALSE);  /* modemCognitive */
         gbinder_writer_append_bool(&writer, FALSE); /* isRoaming */
     }
