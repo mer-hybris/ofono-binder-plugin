@@ -134,6 +134,7 @@ static const char* const binder_radio_ifaces[] = {
 #define BINDER_CONF_SLOT_USE_NETWORK_SCAN     "useNetworkScan"
 #define BINDER_CONF_SLOT_REPLACE_STRANGE_OPER "replaceStrangeOperatorNames"
 #define BINDER_CONF_SLOT_SIGNAL_STRENGTH_RANGE "signalStrengthRange"
+#define BINDER_CONF_SLOT_LTE_MODE             "lteNetworkMode"
 
 /* Defaults */
 #define BINDER_DEFAULT_RADIO_INTERFACE        RADIO_INTERFACE_1_2
@@ -1607,6 +1608,13 @@ binder_plugin_create_slot(
         DBG("%s: " BINDER_CONF_SLOT_ALLOW_DATA_REQ " %s", group,
             (ival == BINDER_ALLOW_DATA_ENABLED) ? "enabled": "disabled");
         slot->data_opt.allow_data = ival;
+    }
+
+    /* lteNetworkMode */
+    if (ofono_conf_get_integer(file, group,
+        BINDER_CONF_SLOT_LTE_MODE, &ival)) {
+        DBG("%s: " BINDER_CONF_SLOT_LTE_MODE " %d", group, ival);
+        config->lte_network_mode = ival;
     }
 
     /* useNetworkScan */
