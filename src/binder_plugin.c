@@ -135,6 +135,7 @@ static const char* const binder_radio_ifaces[] = {
 #define BINDER_CONF_SLOT_REPLACE_STRANGE_OPER "replaceStrangeOperatorNames"
 #define BINDER_CONF_SLOT_SIGNAL_STRENGTH_RANGE "signalStrengthRange"
 #define BINDER_CONF_SLOT_LTE_MODE             "lteNetworkMode"
+#define BINDER_CONF_SLOT_UMTS_MODE            "umtsNetworkMode"
 
 /* Defaults */
 #define BINDER_DEFAULT_RADIO_INTERFACE        RADIO_INTERFACE_1_2
@@ -1615,6 +1616,13 @@ binder_plugin_create_slot(
         BINDER_CONF_SLOT_LTE_MODE, &ival)) {
         DBG("%s: " BINDER_CONF_SLOT_LTE_MODE " %d", group, ival);
         config->lte_network_mode = ival;
+    }
+
+    /* umtsNetworkMode */
+    if (ofono_conf_get_integer(file, group,
+        BINDER_CONF_SLOT_UMTS_MODE, &ival)) {
+        DBG("%s: " BINDER_CONF_SLOT_UMTS_MODE " %d", group, ival);
+        config->umts_network_mode = ival;
     }
 
     /* useNetworkScan */
