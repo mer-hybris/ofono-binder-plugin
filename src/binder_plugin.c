@@ -169,6 +169,9 @@ static const char* const binder_radio_ifaces[] = {
 #define BINDER_DEFAULT_SLOT_DATA_CALL_RETRY_LIMIT 4
 #define BINDER_DEFAULT_SLOT_DATA_CALL_RETRY_DELAY_MS 200 /* ms */
 
+/* The overall start timeout is the longest slot timeout plus this */
+#define BINDER_SLOT_REGISTRATION_TIMEOUT_MS         (10*1000) /* 10 sec */
+
 /* Modem error ids */
 #define BINDER_ERROR_ID_DEATH                 "binder-death"
 #define BINDER_ERROR_ID_CAPS_SWITCH_ABORTED   "binder-caps-switch-aborted"
@@ -724,12 +727,14 @@ binder_plugin_slot_startup_check(
     BinderPlugin* plugin = slot->plugin;
 
     if (!slot->handle && radio_client_connected(slot->client) &&
-        !slot->imei_req && slot->imei && slot->start_timeout_id) {
+        !slot->imei_req && slot->imei) {
         struct ofono_slot* ofono_slot;
 
-        /* Looks like we have made it before the timeout expired */
-        g_source_remove(slot->start_timeout_id);
-        slot->start_timeout_id = 0;
+        if (slot->start_timeout_id) {
+            /* We have made it before the slot timeout has expired */
+            g_source_remove(slot->start_timeout_id);
+            slot->start_timeout_id = 0;
+        }
 
         /* Register this slot with the sailfish manager plugin */
         DBG("registering slot %s", slot->path);
@@ -1198,7 +1203,6 @@ binder_plugin_check_data_manager(
     if (!plugin->data_manager) {
         const BinderPluginSettings* ps = &plugin->settings;
 
-        GASSERT(plugin->radio_config);
         plugin->data_manager = binder_data_manager_new(NULL, ps->dm_flags,
             ps->non_data_mode);
     }
@@ -2117,7 +2121,7 @@ binder_plugin_manager_start_timeout(
         plugin->flags &= ~BINDER_PLUGIN_NEED_CONFIG_SERVICE;
     }
 
-    binder_plugin_check_data_manager(plugin);
+    binder_plugin_foreach_slot(plugin, binder_plugin_slot_check_radio_client);
     binder_plugin_manager_started(plugin);
     return G_SOURCE_REMOVE;
 }
@@ -2158,13 +2162,13 @@ binder_plugin_manager_start_done(
 
 static
 void
-binder_plugin_slot_check_timeout_cb(
+binder_plugin_slot_pick_shortest_timeout_cb(
     BinderSlot* slot,
     void* param)
 {
     guint* timeout = param;
 
-    if ((*timeout) < slot->start_timeout_ms) {
+    if (!(*timeout) || (*timeout) < slot->start_timeout_ms) {
         (*timeout) = slot->start_timeout_ms;
     }
 }
@@ -2178,9 +2182,20 @@ binder_plugin_slot_start_timeout(
     BinderPlugin* plugin = slot->plugin;
 
     DBG("%s", slot->name);
-    plugin->slots = g_slist_remove(plugin->slots, slot);
     slot->start_timeout_id = 0;
-    binder_plugin_slot_free(slot);
+
+    /*
+     * If any slot times out and we haven't seen IRadioConfig so far,
+     * then assume that we don't need it.
+     */
+    if (!(plugin->flags & BINDER_PLUGIN_HAVE_CONFIG_SERVICE)) {
+        plugin->flags &= ~BINDER_PLUGIN_NEED_CONFIG_SERVICE;
+    }
+    binder_plugin_foreach_slot(plugin, binder_plugin_slot_check_radio_client);
+    if (!slot->client) {
+        plugin->slots = g_slist_remove(plugin->slots, slot);
+        binder_plugin_slot_free(slot);
+    }
     binder_plugin_check_if_started(plugin);
     return G_SOURCE_REMOVE;
 }
@@ -2304,12 +2319,25 @@ binder_plugin_slot_driver_init(
 }
 
 static
+void
+binder_plugin_slot_check_plugin_flags_cb(
+    BinderSlot* slot,
+    void* param)
+{
+    BinderPlugin* plugin = param;
+
+    if (slot->version >= RADIO_INTERFACE_1_2) {
+        plugin->flags |= BINDER_PLUGIN_NEED_CONFIG_SERVICE;
+    }
+}
+
+static
 guint
 binder_plugin_slot_driver_start(
     BinderPlugin* plugin)
 {
     BinderPluginSettings* ps = &plugin->settings;
-    guint start_timeout = 0;
+    guint start_timeout, shortest_timeout = 0;
 
     DBG("");
 
@@ -2318,9 +2346,11 @@ binder_plugin_slot_driver_start(
 
     /* Pick the shortest timeout */
     binder_plugin_foreach_slot_param(plugin,
-        binder_plugin_slot_check_timeout_cb, &start_timeout);
+        binder_plugin_slot_pick_shortest_timeout_cb, &shortest_timeout);
 
     /* Timeout remains zero if there are no slots */
+    start_timeout = shortest_timeout ?
+        (shortest_timeout + BINDER_SLOT_REGISTRATION_TIMEOUT_MS) : 0;
     GASSERT(!plugin->start_timeout_id);
     plugin->start_timeout_id = g_timeout_add_full(G_PRIORITY_DEFAULT,
         start_timeout, binder_plugin_manager_start_timeout,
@@ -2335,9 +2365,11 @@ binder_plugin_slot_driver_start(
      * But if IRadioConfig 1.0 is there and IRadioConfig 1.1 isn't,
      * then there's no point in waiting for IRadioConfig 1.1.
      *
-     * At startup, assume that we need IRadioConfig
+     * At startup, assume that we need IRadioConfig for IRadio 1.2
+     * and higher.
      */
-    plugin->flags |= BINDER_PLUGIN_NEED_CONFIG_SERVICE;
+    binder_plugin_foreach_slot_param(plugin,
+        binder_plugin_slot_check_plugin_flags_cb, plugin);
     plugin->radio_config_watch_id =
         gbinder_servicemanager_add_registration_handler(plugin->svcmgr,
             RADIO_CONFIG_1_0, binder_plugin_service_registration_proc, plugin);
