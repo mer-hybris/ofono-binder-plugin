@@ -53,7 +53,7 @@ enum binder_netreg_radio_ind {
 };
 
 enum binder_netreg_network_events {
-    NETREG_NETWORK_EVENT_OPERATOR_CHANGED,
+    NETREG_NETWORK_EVENT_DATA_STATE_CHANGED,
     NETREG_NETWORK_EVENT_VOICE_STATE_CHANGED,
     NETREG_NETWORK_EVENT_COUNT
 };
@@ -63,6 +63,7 @@ typedef struct binder_netreg {
     struct ofono_watch* watch;
     struct ofono_netreg* netreg;
     BinderNetwork* network;
+    BinderRegistrationState reg_state;
     enum ofono_radio_access_mode techs;
     gboolean use_network_scan;
     gboolean replace_strange_oper;
@@ -179,15 +180,41 @@ binder_netreg_status_notify_cb(
     gpointer user_data)
 {
     BinderNetReg* self = user_data;
-    const BinderRegistrationState* reg = &self->network->voice;
+    BinderNetwork* network = self->network;
+    BinderRegistrationState* current = &self->reg_state;
+    const BinderRegistrationState* data = &network->data;
 
-    DBG_(self, "");
+    /*
+     * Use data registration state if we are registered for data.
+     * Data connectivity makes perfect sense without voice, VoLTE
+     * may also work without voice registration. In that sense,
+     * data registration is even more functional than voice. In
+     * any case, if we have any sort of registration, we have to
+     * report that to the ofono core.
+     */
+    const BinderRegistrationState* reg =
+        (data->status == OFONO_NETREG_STATUS_REGISTERED ||
+         data->status == OFONO_NETREG_STATUS_ROAMING) ? data :
+        &network->voice;
+    const enum ofono_netreg_status reg_status =
+        binder_netreg_check_status(self, reg->status);
+
     GASSERT(self->notify_id);
     self->notify_id = 0;
 
-    ofono_netreg_status_notify(self->netreg,
-        binder_netreg_check_status(self, reg->status),
-        reg->lac, reg->ci, reg->access_tech);
+    if (current->status != reg_status ||
+        current->access_tech != reg->access_tech ||
+        current->lac != reg->lac ||
+        current->ci != reg->ci) {
+        /* Registration state has changed */
+        current->status = reg_status;
+        current->access_tech = reg->access_tech;
+        current->lac = reg->lac;
+        current->ci = reg->ci;
+        ofono_netreg_status_notify(self->netreg, current->status,
+            current->lac, current->ci, current->access_tech);
+    }
+
     return G_SOURCE_REMOVE;
 }
 
@@ -202,7 +229,7 @@ binder_netreg_status_notify(
 
     /* Coalesce multiple notifications into one */
     if (self->notify_id) {
-        DBG_(self, "notification aready queued");
+        DBG_(self, "notification already queued");
     } else {
         DBG_(self, "queuing notification");
         self->notify_id = g_idle_add(binder_netreg_status_notify_cb, self);
@@ -1603,9 +1630,9 @@ binder_netreg_register(
     ofono_netreg_register(self->netreg);
 
     /* Register for network state changes */
-    self->network_event_id[NETREG_NETWORK_EVENT_OPERATOR_CHANGED] =
+    self->network_event_id[NETREG_NETWORK_EVENT_DATA_STATE_CHANGED] =
         binder_network_add_property_handler(self->network,
-            BINDER_NETWORK_PROPERTY_OPERATOR,
+            BINDER_NETWORK_PROPERTY_DATA_STATE,
             binder_netreg_status_notify, self);
     self->network_event_id[NETREG_NETWORK_EVENT_VOICE_STATE_CHANGED] =
         binder_network_add_property_handler(self->network,
