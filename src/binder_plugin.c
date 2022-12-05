@@ -136,6 +136,7 @@ static const char* const binder_radio_ifaces[] = {
 #define BINDER_CONF_SLOT_SIGNAL_STRENGTH_RANGE "signalStrengthRange"
 #define BINDER_CONF_SLOT_LTE_MODE             "lteNetworkMode"
 #define BINDER_CONF_SLOT_UMTS_MODE            "umtsNetworkMode"
+#define BINDER_CONF_SLOT_TECHNOLOGIES         "technologies"
 
 /* Defaults */
 #define BINDER_DEFAULT_RADIO_INTERFACE        RADIO_INTERFACE_1_2
@@ -1414,6 +1415,7 @@ binder_plugin_create_slot(
     GError* error = NULL;
     const char* group = name;
     GUtilInts* ints;
+    char **strv;
     char* sval;
     int ival;
 
@@ -1613,6 +1615,42 @@ binder_plugin_create_slot(
         DBG("%s: " BINDER_CONF_SLOT_ALLOW_DATA_REQ " %s", group,
             (ival == BINDER_ALLOW_DATA_ENABLED) ? "enabled": "disabled");
         slot->data_opt.allow_data = ival;
+    }
+
+    /* technologies */
+    strv = ofono_conf_get_strings(file, group, BINDER_CONF_SLOT_TECHNOLOGIES, ',');
+    if (strv) {
+        char **p;
+
+        config->techs = 0;
+        for (p = strv; *p; p++) {
+            const char *s = *p;
+            enum ofono_radio_access_mode m;
+
+            if (!s[0]) {
+                continue;
+            }
+
+            if (!strcmp(s, "all")) {
+                config->techs = OFONO_RADIO_ACCESS_MODE_ALL;
+                break;
+            }
+
+            if (!ofono_radio_access_mode_from_string(s, &m)) {
+                ofono_warn("Unknown technology %s in [%s] "
+                    "section of %s", s, group,
+                    BINDER_CONF_FILE);
+                continue;
+            }
+
+            if (m == OFONO_RADIO_ACCESS_MODE_ANY) {
+                config->techs = OFONO_RADIO_ACCESS_MODE_ALL;
+                break;
+            }
+
+            config->techs |= m;
+        }
+        g_strfreev(strv);
     }
 
     /* lteNetworkMode */
