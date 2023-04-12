@@ -154,7 +154,7 @@ binder_devmon_if_io_set_indication_filter(
                 RADIO_IND_FILTER_DATA_CALL_DORMANCY;
         } else {
             code = RADIO_REQ_SET_INDICATION_FILTER_1_5;
-            value = self->display_on ? RADIO_IND_FILTER_ALL_1_2 :
+            value = self->display_on ? RADIO_IND_FILTER_ALL_1_5 :
                 RADIO_IND_FILTER_DATA_CALL_DORMANCY;
         }
 
