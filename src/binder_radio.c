@@ -181,13 +181,17 @@ binder_radio_power_request_cb(
     void* user_data)
 {
     BinderRadioObject* self = THIS(user_data);
+    const RADIO_INTERFACE iface = radio_client_interface(self->client);
+    const RADIO_RESP code = (iface >= RADIO_INTERFACE_1_5) ?
+                            RADIO_RESP_SET_RADIO_POWER_1_5 :
+                            RADIO_RESP_SET_RADIO_POWER;
 
     GASSERT(self->pending_req == req);
     radio_request_unref(self->pending_req);
     self->pending_req = NULL;
 
     if (status == RADIO_TX_STATUS_OK) {
-        if (resp != RADIO_RESP_SET_RADIO_POWER) {
+        if (resp != code) {
             ofono_error("Unexpected setRadioPower response %d", resp);
         } else if (error != RADIO_ERROR_NONE) {
             ofono_error("Power request failed: %s",
@@ -206,13 +210,24 @@ binder_radio_submit_power_request(
     BinderRadioObject* self,
     gboolean on)
 {
-    /* setRadioPower(int32 serial, bool on) */
+    /* setRadioPower(int32 serial, bool on)
+     * setRadioPower_1_5(int32 serial, bool on, bool forEmergencyCall,
+     *     bool preferredForEmergencyCall)
+     */
     GBinderWriter writer;
+    const RADIO_INTERFACE iface = radio_client_interface(self->client);
+    const RADIO_REQ code = (iface >= RADIO_INTERFACE_1_5) ?
+                           RADIO_REQ_SET_RADIO_POWER_1_5 :
+                           RADIO_REQ_SET_RADIO_POWER;
     RadioRequest* req = radio_request_new(self->client,
-        RADIO_REQ_SET_RADIO_POWER, &writer,
+        code, &writer,
         binder_radio_power_request_cb, NULL, self);
 
     gbinder_writer_append_bool(&writer, on);
+    if (iface >= RADIO_INTERFACE_1_5) {
+        gbinder_writer_append_bool(&writer, FALSE);
+        gbinder_writer_append_bool(&writer, FALSE);
+    }
 
     self->next_state_valid = FALSE;
     self->next_state = on;
