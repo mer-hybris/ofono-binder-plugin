@@ -70,6 +70,7 @@ enum binder_network_sim_events {
 enum binder_network_ind_events {
     IND_NETWORK_STATE,
     IND_MODEM_RESET,
+    IND_CURRENT_PHYSICAL_CHANNEL_CONFIGS_1_4,
     IND_COUNT
 };
 
@@ -110,6 +111,7 @@ typedef struct binder_network_object {
     RADIO_PREF_NET_TYPE rat;
     RADIO_PREF_NET_TYPE lte_network_mode;
     RADIO_PREF_NET_TYPE umts_network_mode;
+    gboolean nr_connected;
     int network_mode_timeout_ms;
     char* log_prefix;
     RadioRequest* operator_poll_req;
@@ -151,6 +153,7 @@ G_STATIC_ASSERT(OFONO_RADIO_ACCESS_MODE_ANY == 0);
 G_STATIC_ASSERT(OFONO_RADIO_ACCESS_MODE_GSM > OFONO_RADIO_ACCESS_MODE_ANY);
 G_STATIC_ASSERT(OFONO_RADIO_ACCESS_MODE_UMTS > OFONO_RADIO_ACCESS_MODE_GSM);
 G_STATIC_ASSERT(OFONO_RADIO_ACCESS_MODE_LTE > OFONO_RADIO_ACCESS_MODE_UMTS);
+G_STATIC_ASSERT(OFONO_RADIO_ACCESS_MODE_NR > OFONO_RADIO_ACCESS_MODE_LTE);
 
 static
 void
@@ -679,26 +682,54 @@ static
 void
 binder_network_poll_data_state_1_4(
     BinderRegistrationState* state,
+    BinderNetworkObject* self,
     const RadioDataRegStateResult_1_4* result)
 {
     BinderNetworkLocation l;
+    RADIO_TECH rat = result->rat;
 
     binder_network_location_1_2(&result->cellIdentity, &l);
+
+    if (result->rat == RADIO_TECH_LTE || result->rat == RADIO_TECH_LTE_CA) {
+        const RadioDataRegNrIndicators *nrIndicators = &result->nrIndicators;
+
+        if (self->nr_connected && nrIndicators->isEndcAvailable &&
+            !nrIndicators->isDcNrRestricted &&
+            nrIndicators->isNrAvailable) {
+            rat = RADIO_TECH_NR;
+        }
+    }
+
     binder_network_set_registration_state(state, result->regState,
-        result->rat, l.lac, l.ci);
+        rat, l.lac, l.ci);
 }
 
 static
 void
 binder_network_poll_data_state_1_5(
     BinderRegistrationState* state,
+    BinderNetworkObject* self,
     const RadioRegStateResult_1_5* result)
 {
     BinderNetworkLocation l;
+    RADIO_TECH rat = result->rat;
 
     binder_network_location_1_5(&result->cellIdentity, &l);
+
+    if (result->accessTechnologySpecificInfoType == RADIO_REG_ACCESS_TECHNOLOGY_SPECIFIC_INFO_EUTRAN) {
+        RadioRegEutranRegistrationInfo *eutranInfo = (RadioRegEutranRegistrationInfo *)&result->accessTechnologySpecificInfo;
+        RadioDataRegNrIndicators *nrIndicators = &eutranInfo->nrIndicators;
+
+        if ((rat == RADIO_TECH_LTE || rat == RADIO_TECH_LTE_CA) &&
+            self->nr_connected && nrIndicators->isEndcAvailable &&
+            !nrIndicators->isDcNrRestricted &&
+            nrIndicators->isNrAvailable) {
+            DBG_(self, "Setting radio technology for NSA 5G");
+            rat = RADIO_TECH_NR;
+        }
+    }
     binder_network_set_registration_state(state, result->regState,
-        result->rat, l.lac, l.ci);
+        rat, l.lac, l.ci);
 }
 
 static
@@ -756,7 +787,7 @@ binder_network_poll_data_state_cb(
                     reg = &state;
                     reason = result->reasonDataDenied;
                     max_data_calls = result->maxDataCalls;
-                    binder_network_poll_data_state_1_4(reg, result);
+                    binder_network_poll_data_state_1_4(reg, self, result);
                 }
             } else if (resp == RADIO_RESP_GET_DATA_REGISTRATION_STATE_1_5) {
                 const RadioRegStateResult_1_5* result =
@@ -767,7 +798,7 @@ binder_network_poll_data_state_cb(
                     reg = &state;
                     reason = result->reasonDataDenied;
                     max_data_calls = MAX_DATA_CALLS;
-                    binder_network_poll_data_state_1_5(reg, result);
+                    binder_network_poll_data_state_1_5(reg, self, result);
                 }
             } else {
                 ofono_error("Unexpected getDataRegistrationState response %d",
@@ -887,6 +918,11 @@ binder_network_mode_to_pref(
 
     switch (ofono_radio_access_max_mode(mode)) {
     case OFONO_RADIO_ACCESS_MODE_ANY:
+    case OFONO_RADIO_ACCESS_MODE_NR:
+        if (settings->techs & OFONO_RADIO_ACCESS_MODE_NR) {
+            return RADIO_PREF_NET_NR_LTE_GSM_WCDMA;
+        }
+        /* fallthrough */
     case OFONO_RADIO_ACCESS_MODE_LTE:
         if (settings->techs & OFONO_RADIO_ACCESS_MODE_LTE) {
             return self->lte_network_mode;
@@ -1319,7 +1355,8 @@ binder_network_need_initial_attach_apn(
     BinderNetworkObject* self)
 {
     return (binder_network_actual_pref_modes(self) &
-            OFONO_RADIO_ACCESS_MODE_LTE) ? TRUE : FALSE;
+            (OFONO_RADIO_ACCESS_MODE_LTE | OFONO_RADIO_ACCESS_MODE_NR))
+            ? TRUE : FALSE;
 }
 
 static
@@ -2016,6 +2053,39 @@ binder_network_modem_reset_cb(
 
 static
 void
+binder_network_current_physical_channel_configs_cb(
+    RadioClient* client,
+    RADIO_IND code,
+    const GBinderReader* args,
+    gpointer user_data)
+{
+    BinderNetworkObject* self = THIS(user_data);
+    GBinderReader reader;
+    gboolean nr_connected = FALSE;
+
+    gbinder_reader_copy(&reader, args);
+
+    if (code == RADIO_IND_CURRENT_PHYSICAL_CHANNEL_CONFIGS_1_4) {
+        gsize count;
+        guint i;
+        const RadioPhysicalChannelConfig_1_4* configs = gbinder_reader_read_hidl_type_vec(&reader,
+            RadioPhysicalChannelConfig_1_4, &count);
+
+        for (i = 0; i < count; i++) {
+            if (configs[i].rat == RADIO_TECH_NR &&
+                configs[i].base.connectionStatus == RADIO_CELL_CONNECTION_SECONDARY_SERVING) {
+                DBG_(self, "NSA 5G connected");
+                nr_connected = TRUE;
+            }
+        }
+    } else {
+        ofono_warn("Unexpected current physical channel configs code %d", code);
+    }
+    self->nr_connected = nr_connected;
+}
+
+static
+void
 binder_network_radio_state_cb(
     BinderRadio* radio,
     BINDER_RADIO_PROPERTY property,
@@ -2177,6 +2247,10 @@ binder_network_new(
         radio_client_add_indication_handler(client,
             RADIO_IND_MODEM_RESET,
             binder_network_modem_reset_cb, self);
+    self->ind_id[IND_CURRENT_PHYSICAL_CHANNEL_CONFIGS_1_4] =
+        radio_client_add_indication_handler(client,
+            RADIO_IND_CURRENT_PHYSICAL_CHANNEL_CONFIGS_1_4,
+            binder_network_current_physical_channel_configs_cb, self);
 
     self->radio_event_id[RADIO_EVENT_STATE_CHANGED] =
         binder_radio_add_property_handler(self->radio,

@@ -44,6 +44,21 @@ struct ofono_network_operator;
 #define binder_error_sim(err,sw1,sw2) \
     (binder_error_init_sim_error(err,sw1,sw2), err)
 
+/* Internal extension for RADIO_PREF_NET_TYPE */
+typedef enum radio_pref_net_type_internal {
+    RADIO_PREF_NET_NR_ONLY = RADIO_PREF_NET_TD_SCDMA_LTE_CDMA_EVDO_GSM_WCDMA + 1,
+    RADIO_PREF_NET_NR_LTE,
+    RADIO_PREF_NET_NR_LTE_CDMA_EVDO,
+    RADIO_PREF_NET_NR_LTE_GSM_WCDMA,
+    RADIO_PREF_NET_NR_LTE_CDMA_EVDO_GSM_WCDMA,
+    RADIO_PREF_NET_NR_LTE_WCDMA,
+    RADIO_PREF_NET_NR_LTE_TD_SCDMA,
+    RADIO_PREF_NET_NR_LTE_TD_SCDMA_GSM,
+    RADIO_PREF_NET_NR_LTE_TD_SCDMA_WCDMA,
+    RADIO_PREF_NET_NR_LTE_TD_SCDMA_GSM_WCDMA,
+    RADIO_PREF_NET_NR_LTE_TD_SCDMA_CDMA_EVDO_GSM_WCDMA
+} RADIO_PREF_NET_TYPE_INTERNAL;
+
 RADIO_ACCESS_NETWORK
 binder_radio_access_network_for_tech(
     RADIO_TECH tech)
