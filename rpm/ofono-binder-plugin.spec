@@ -1,6 +1,6 @@
 Name: ofono-binder-plugin
 
-Version: 1.1.11
+Version: 1.1.12
 Release: 1
 Summary: Binder based ofono plugin
 License: GPLv2
