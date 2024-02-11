@@ -649,8 +649,6 @@ binder_netreg_start_network_scan(
 
         RadioNetworkScanRequest_1_2* scan = gbinder_writer_new0(&writer,
             RadioNetworkScanRequest_1_2);
-        RadioAccessSpecifier* specs = gbinder_writer_malloc0(&writer,
-            nspecs * sizeof(*specs));
 
         /* Which modes are supported and enabled */
         const BinderNetRegRadioType* radio_types[N_RADIO_TYPES];
@@ -660,6 +658,9 @@ binder_netreg_start_network_scan(
                 radio_types[nspecs++] = binder_netreg_radio_types + i;
             }
         }
+
+        RadioAccessSpecifier* specs = gbinder_writer_malloc0(&writer,
+            nspecs * sizeof(*specs));
 
         for (i = 0; i < nspecs; i++) {
             const BinderNetRegRadioType* radio_type = radio_types[i];
@@ -673,6 +674,7 @@ binder_netreg_start_network_scan(
         scan->specifiers.owns_buffer = TRUE;
         scan->specifiers.count = nspecs;
         scan->specifiers.data.ptr = specs;
+        scan->maxSearchTime = 60;
         scan->incrementalResults = TRUE;
         scan->incrementalResultsPeriodicity = 3;
         gbinder_writer_append_struct(&writer, scan,
@@ -724,17 +726,18 @@ binder_netreg_start_network_scan(
 
         RadioNetworkScanRequest_1_5* scan = gbinder_writer_new0(&writer,
             RadioNetworkScanRequest_1_5);
-        RadioAccessSpecifier_1_5* specs = gbinder_writer_malloc0(&writer,
-            nspecs * sizeof(*specs));
 
         /* Which modes are supported and enabled */
         const BinderNetRegRadioType* radio_types[N_RADIO_TYPES_1_5];
 
         for (i = 0; i < N_RADIO_TYPES_1_5; i++) {
             if (self->techs & binder_netreg_radio_types_1_5[i].mode) {
-                radio_types[nspecs++] = binder_netreg_radio_types + i;
+                radio_types[nspecs++] = binder_netreg_radio_types_1_5 + i;
             }
         }
+
+        RadioAccessSpecifier_1_5* specs = gbinder_writer_malloc0(&writer,
+            nspecs * sizeof(*specs));
 
         for (i = 0; i < nspecs; i++) {
             const BinderNetRegRadioType* radio_type = radio_types[i];
