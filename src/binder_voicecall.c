@@ -437,7 +437,12 @@ binder_voicecall_map_cause(
 
         case RADIO_LAST_CALL_FAIL_NORMAL_UNSPECIFIED:
             call_status = binder_voicecall_status_with_id(self, cid);
-            if (call_status == OFONO_CALL_STATUS_ACTIVE ||
+            /* If call cid doesn't exist anymore, above method returns -1.
+               This case can happen, when the cause response is received
+               after the status response that removed the call from the
+               list. We then assume that the remote is the cause. */
+            if (call_status == -1 ||
+                call_status == OFONO_CALL_STATUS_ACTIVE ||
                 call_status == OFONO_CALL_STATUS_HELD ||
                 call_status == OFONO_CALL_STATUS_DIALING ||
                 call_status == OFONO_CALL_STATUS_ALERTING) {
