@@ -1317,10 +1317,9 @@ binder_voicecall_answer(
     if (call && call->ext) {
         DBG_(self, "answering ext call");
         if (!binder_voicecall_ext_answer(self, cbd)) {
-            struct ofono_error err;
-
-            DBG_(self, "failed to answer ext call");
-            cb(binder_error_failure(&err), data);
+            /* If it's not handled by the extension, revert to IRadio */
+            DBG_(self, "answering ext call (fallback)");
+            binder_voicecall_request_submit(self, RADIO_REQ_ACCEPT_CALL, cbd);
         }
     } else {
         /* Default action */
