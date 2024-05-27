@@ -109,6 +109,22 @@ typedef void (*BinderCallback)(void);
 #define OFONO_RADIO_ACCESS_NR_MASK \
     (OFONO_RADIO_ACCESS_MODE_NR | (OFONO_RADIO_ACCESS_MODE_NR - 1))
 
+/* Some values copied from ofono's internal common.h */
+
+/* 27.007 Section 7.11 */
+enum bearer_class {
+        BEARER_CLASS_VOICE =            1,
+        BEARER_CLASS_DATA =             2,
+        BEARER_CLASS_FAX =              4,
+        BEARER_CLASS_DEFAULT =          7,
+        BEARER_CLASS_SMS =              8,
+        BEARER_CLASS_DATA_SYNC =        16,
+        BEARER_CLASS_DATA_ASYNC =       32,
+        BEARER_CLASS_SS_DEFAULT =       61,
+        BEARER_CLASS_PACKET =           64,
+        BEARER_CLASS_PAD =              128
+};
+
 #endif /* BINDER_TYPES_H */
 
 /*

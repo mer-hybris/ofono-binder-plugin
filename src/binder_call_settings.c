@@ -123,6 +123,17 @@ binder_call_settings_cw_set(
 {
     BinderCallSettings* self = binder_call_settings_get_data(s);
 
+    /*
+     * Modem seems to respond with error to all queries
+     * or settings made with bearer class
+     * BEARER_CLASS_DEFAULT. Design decision: If given
+     * class is BEARER_CLASS_DEFAULT let's map it to
+     * SERVICE_CLASS_VOICE effectively making it the
+     * default bearer.
+     */
+    if (cls == BEARER_CLASS_DEFAULT)
+        cls = BEARER_CLASS_VOICE;
+
     /* setCallWaiting(int32_t serial, bool enable, int32_t serviceClass); */
     GBinderWriter writer;
     RadioRequest* req = radio_request_new2(self->g,
@@ -207,6 +218,17 @@ void binder_call_settings_cw_query(
     void* data)
 {
     BinderCallSettings* self = binder_call_settings_get_data(s);
+
+    /*
+     * Modem seems to respond with error to all queries
+     * or settings made with bearer class
+     * BEARER_CLASS_DEFAULT. Design decision: If given
+     * class is BEARER_CLASS_DEFAULT let's map it to
+     * SERVICE_CLASS_VOICE effectively making it the
+     * default bearer.
+     */
+    if (cls == BEARER_CLASS_DEFAULT)
+        cls = BEARER_CLASS_VOICE;
 
     /* getCallWaiting(int32_t serial, int32_t serviceClass); */
     GBinderWriter writer;
