@@ -142,6 +142,15 @@ binder_call_barring_query(
 {
     BinderCallBarring* self = ofono_call_barring_get_data(b);
 
+    ofono_warn("binder_call_barring_query cls %i", cls);
+    /*
+     * Modem seems to respond with error to all requests
+     * made with bearer class BEARER_CLASS_DEFAULT.
+     */
+    if (cls == BEARER_CLASS_DEFAULT) {
+        cls = RADIO_SERVICE_CLASS_NONE;
+    }
+
     /*
      * getFacilityLockForApp(int32_t serial, string facility,
      *      string password, int32_t serviceClass, string appId);
@@ -209,6 +218,15 @@ binder_call_barring_set(
     void* data)
 {
     BinderCallBarring* self = ofono_call_barring_get_data(b);
+
+    ofono_warn("binder_call_barring_set cls %i", cls);
+    /*
+     * Modem seems to respond with error to all requests
+     * made with bearer class BEARER_CLASS_DEFAULT.
+     */
+    if (cls == BEARER_CLASS_DEFAULT) {
+        cls = RADIO_SERVICE_CLASS_NONE;
+    }
 
     /*
      * setFacilityLockForApp(int32_t serial, string facility, bool lockState,

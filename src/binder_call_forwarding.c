@@ -86,6 +86,15 @@ binder_call_forwarding_call(
     BinderCallback cb,
     void* data)
 {
+    ofono_warn("binder_call_forwarding_call cls %i", cls);
+    /*
+     * Modem seems to respond with error to all requests
+     * made with bearer class BEARER_CLASS_DEFAULT.
+     */
+    if (cls == BEARER_CLASS_DEFAULT) {
+        cls = RADIO_SERVICE_CLASS_NONE;
+    }
+
     /*
      * getCallForwardStatus(int32_t serial, CallForwardInfo callInfo);
      * setCallForward(int32_t serial, CallForwardInfo callInfo);
