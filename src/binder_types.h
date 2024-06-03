@@ -78,6 +78,7 @@ typedef struct binder_slot_config {
     BinderDataProfileConfig data_profile_config;
     GUtilInts* local_hangup_reasons;
     GUtilInts* remote_hangup_reasons;
+    GUtilInts* ignore_apn_errors;
 } BinderSlotConfig;
 
 #define BINDER_DRIVER "binder"
