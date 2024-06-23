@@ -137,6 +137,7 @@ static const char* const binder_radio_ifaces[] = {
 #define BINDER_CONF_SLOT_LTE_MODE             "lteNetworkMode"
 #define BINDER_CONF_SLOT_UMTS_MODE            "umtsNetworkMode"
 #define BINDER_CONF_SLOT_TECHNOLOGIES         "technologies"
+#define BINDER_CONF_SLOT_IGNORE_APN_ERRORS    "ignoreApnErrors"
 
 /* Defaults */
 #define BINDER_DEFAULT_RADIO_INTERFACE        RADIO_INTERFACE_1_2
@@ -1554,6 +1555,10 @@ binder_plugin_create_slot(
         DBG("%s: " BINDER_CONF_SLOT_DISABLE_FEATURES " 0x%04x", group, ival);
     }
 
+    /* ignoreApnErrors */
+    config->ignore_apn_errors = binder_plugin_config_get_ints(file, group,
+        BINDER_CONF_SLOT_IGNORE_APN_ERRORS);
+
     /* deviceStateTracking */
     if (ofono_conf_get_mask(file, group,
         BINDER_CONF_SLOT_DEVMON, &ival,
@@ -1726,6 +1731,7 @@ binder_plugin_slot_free(
     binder_sim_settings_unref(slot->sim_settings);
     gutil_ints_unref(slot->config.local_hangup_reasons);
     gutil_ints_unref(slot->config.remote_hangup_reasons);
+    gutil_ints_unref(slot->config.ignore_apn_errors);
     gbinder_servicemanager_remove_handler(slot->svcmgr, slot->radio_watch_id);
     gbinder_servicemanager_cancel(slot->svcmgr, slot->list_call_id);
     gbinder_servicemanager_unref(slot->svcmgr);
