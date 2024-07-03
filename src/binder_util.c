@@ -805,6 +805,18 @@ binder_read_hidl_struct1(
     return gbinder_reader_read_hidl_struct1(&reader, size);
 }
 
+const void*
+binder_read_parcelable(
+    const GBinderReader* args,
+    gsize* out_size)
+{
+    GBinderReader reader;
+
+    /* Read a single AIDL parcelable */
+    gbinder_reader_copy(&reader, args);
+    return gbinder_reader_read_parcelable(&reader, out_size);
+}
+
 char**
 binder_strv_from_hidl_string_vec(
     const GBinderHidlVec* vec)

@@ -221,6 +221,11 @@ binder_read_hidl_struct1(
 #define binder_read_hidl_struct(reader,type) \
     ((const type*)binder_read_hidl_struct1(reader, sizeof(type)))
 
+const void*
+binder_read_parcelable(
+    const GBinderReader* reader,
+    gsize* out_size);
+
 char**
 binder_strv_from_hidl_string_vec(
     const GBinderHidlVec* vec)
