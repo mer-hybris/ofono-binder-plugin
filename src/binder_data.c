@@ -2414,44 +2414,82 @@ binder_data_manager_get_phone_capability_done(
     dm->phone_cap_req = NULL;
 
     if (status == RADIO_TX_STATUS_OK) {
-        if (resp == RADIO_CONFIG_RESP_GET_PHONE_CAPABILITY) {
+        RADIO_INTERFACE_TYPE interface_type = radio_config_interface_type(dm->rc);
+        gint32 code = interface_type == RADIO_INTERFACE_TYPE_AIDL ?
+            RADIO_CONFIG_AIDL_RESP_GET_PHONE_CAPABILITY :
+            RADIO_CONFIG_RESP_GET_PHONE_CAPABILITY;
+        if (resp == code) {
             if (error == RADIO_ERROR_NONE) {
                 /*
                  * getPhoneCapabilityResponse(RadioResponseInfo,
                  *   PhoneCapability phoneCapability);
                  */
-                const RadioPhoneCapability* pcap =
-                    binder_read_hidl_struct(args, RadioPhoneCapability);
+                GUtilIntArray* modem_ids = NULL;
+                guint maxActiveData = 0, maxActiveInternetData = 0;
 
-                GASSERT(pcap);
-                if (pcap) {
-                    const GBinderHidlVec* modems = &pcap->logicalModemList;
-                    const RadioModemInfo* modem = modems->data.ptr;
-                    const guint n = modems->count;
-                    GUtilIntArray* modem_ids = gutil_int_array_sized_new(n);
-                    guint i;
+                if (interface_type == RADIO_INTERFACE_TYPE_HIDL) {
+                    const RadioPhoneCapability* pcap =
+                        binder_read_hidl_struct(args, RadioPhoneCapability);
+                    GASSERT(pcap);
 
-                    for (i = 0; i < n; i++) {
-                        gutil_int_array_append(modem_ids, modem[i].modemId);
+                    if (pcap) {
+                        const GBinderHidlVec* modems = &pcap->logicalModemList;
+                        const RadioModemInfo* modem = modems->data.ptr;
+                        const guint n = modems->count;
+                        guint i;
+
+                        maxActiveData = pcap->maxActiveData;
+                        maxActiveInternetData = pcap->maxActiveInternetData;
+
+                        modem_ids = gutil_int_array_sized_new(n);
+
+                        for (i = 0; i < n; i++) {
+                            gutil_int_array_append(modem_ids, modem[i].modemId);
+                        }
+                    }
+                } else if (interface_type == RADIO_INTERFACE_TYPE_AIDL) {
+                    gsize out_size;
+                    const RadioAidlPhoneCapability* pcap =
+                        binder_read_parcelable(args, &out_size);
+                    GASSERT(pcap);
+                    GASSERT(out_size >= sizeof(RadioAidlPhoneCapability));
+
+                    if (pcap) {
+                        const guint n = pcap->logicalModemList.length;
+                        const guint8* modems = pcap->logicalModemList.data;
+                        guint i;
+
+                        maxActiveData = pcap->maxActiveData;
+                        maxActiveInternetData = pcap->maxActiveInternetData;
+
+                        modem_ids = gutil_int_array_sized_new(n);
+
+                        for (i = 0; i < n; i++) {
+                            gutil_int_array_append(modem_ids, modems[i]);
+                        }
+                    }
+                }
+
+                GASSERT(modem_ids);
+                if (modem_ids) {
+                    if (binder_data_debug_desc.flags & OFONO_DEBUG_FLAG_PRINT) {
+                        GString* str = g_string_new("");
+                        guint i;
+
+                        for (i = 0; i < modem_ids->count; i++) {
+                            if (i > 0) {
+                                g_string_append_c(str, ',');
+                            }
+                            g_string_append_printf(str, "%u", modem_ids->data[i]);
+                        }
+                        DBG("maxActiveData=%u, maxActiveInternetData=%u, "
+                            "logicalModemList=[%s]", maxActiveData,
+                            maxActiveInternetData, str->str);
+                        g_string_free(str, TRUE);
                     }
 
                     gutil_ints_unref(dm->modem_ids);
                     dm->modem_ids = gutil_int_array_free_to_ints(modem_ids);
-
-                    if (binder_data_debug_desc.flags & OFONO_DEBUG_FLAG_PRINT) {
-                        GString* str = g_string_new("");
-
-                        for (i = 0; i < n; i++) {
-                            if (i > 0) {
-                                g_string_append_c(str, ',');
-                            }
-                            g_string_append_printf(str, "%u", modem[i].modemId);
-                        }
-                        DBG("maxActiveData=%u, maxActiveInternetData=%u, "
-                            "logicalModemList=[%s]", pcap->maxActiveData,
-                            pcap->maxActiveInternetData, str->str);
-                        g_string_free(str, TRUE);
-                    }
                }
             } else {
                 DBG("%s error %s", radio_config_resp_name(dm->rc, resp),
@@ -2470,9 +2508,19 @@ void
 binder_data_manager_request_phone_capability(
     BinderDataManager* dm)
 {
-    if (radio_config_interface(dm->rc) >= RADIO_CONFIG_INTERFACE_1_1) {
+    guint req_code = RADIO_CONFIG_REQ_NONE;
+    RADIO_INTERFACE_TYPE interface_type = radio_config_interface_type(dm->rc);
+
+    if (interface_type == RADIO_INTERFACE_TYPE_HIDL
+        && radio_config_interface(dm->rc) >= RADIO_CONFIG_INTERFACE_1_1) {
+        req_code = RADIO_CONFIG_REQ_GET_PHONE_CAPABILITY;
+    } else if (interface_type == RADIO_INTERFACE_TYPE_AIDL) {
+        req_code = RADIO_CONFIG_AIDL_REQ_GET_PHONE_CAPABILITY;
+    }
+
+    if (req_code != RADIO_CONFIG_REQ_NONE) {
         RadioRequest* req = radio_config_request_new(dm->rc,
-            RADIO_CONFIG_REQ_GET_PHONE_CAPABILITY, NULL,
+            req_code, NULL,
             binder_data_manager_get_phone_capability_done, NULL, dm);
 
         if (radio_request_submit(req)) {

@@ -116,6 +116,7 @@ static const char* const binder_radio_ifaces[] = {
 #define BINDER_CONF_PLUGIN_SET_RADIO_CAP      "SetRadioCapability"
 #define BINDER_CONF_PLUGIN_EXPECT_SLOTS       "ExpectSlots"
 #define BINDER_CONF_PLUGIN_IGNORE_SLOTS       "IgnoreSlots"
+#define BINDER_CONF_PLUGIN_INTERFACE_TYPE     "InterfaceType"
 
 /* Slot specific */
 #define BINDER_CONF_SLOT_PATH                 "path"
@@ -140,6 +141,7 @@ static const char* const binder_radio_ifaces[] = {
 
 /* Defaults */
 #define BINDER_DEFAULT_RADIO_INTERFACE        RADIO_INTERFACE_1_2
+#define BINDER_DEFAULT_INTERFACE_TYPE         RADIO_INTERFACE_TYPE_HIDL
 #define BINDER_DEFAULT_PLUGIN_DEVICE          GBINDER_DEFAULT_HWBINDER
 #define BINDER_DEFAULT_PLUGIN_IDENTITY        "radio:radio"
 #define BINDER_DEFAULT_PLUGIN_DM_FLAGS        BINDER_DATA_MANAGER_3GLTE_HANDOVER
@@ -231,6 +233,7 @@ typedef struct binder_plugin_settings {
     BINDER_SET_RADIO_CAP_OPT set_radio_cap;
     BinderPluginIdentity identity;
     enum ofono_radio_access_mode non_data_mode;
+    RADIO_INTERFACE_TYPE interface_type;
 } BinderPluginSettings;
 
 typedef struct ofono_slot_driver_data {
@@ -1060,7 +1063,8 @@ binder_plugin_service_list_proc(
 
     /* IRadioConfig 1.0 is of no use to us */
     if (gutil_strv_contains(services, RADIO_CONFIG_1_2_FQNAME) ||
-            gutil_strv_contains(services, RADIO_CONFIG_1_1_FQNAME)) {
+            gutil_strv_contains(services, RADIO_CONFIG_1_1_FQNAME) ||
+            gutil_strv_contains(services, RADIO_CONFIG_AIDL_FQNAME)) {
         /* If it's there then we definitely need it */
         plugin->flags |= (BINDER_PLUGIN_HAVE_CONFIG_SERVICE |
                           BINDER_PLUGIN_NEED_CONFIG_SERVICE);
@@ -1171,8 +1175,10 @@ binder_plugin_check_config_client(
 {
     if (plugin->flags & BINDER_PLUGIN_HAVE_CONFIG_SERVICE) {
         if (!plugin->radio_config) {
-            plugin->radio_config = radio_config_new_with_version
-                (RADIO_CONFIG_INTERFACE_1_1);
+            plugin->radio_config =
+                radio_config_new_with_version_and_interface_type
+                    (RADIO_CONFIG_INTERFACE_1_1,
+                     plugin->settings.interface_type);
             binder_radio_config_trace_update(plugin);
             binder_radio_config_dump_update(plugin);
             if (plugin->data_manager) {
@@ -1968,6 +1974,16 @@ binder_plugin_parse_config_file(
         OFONO_COMMON_SETTINGS_GROUP, BINDER_CONF_PLUGIN_IGNORE_SLOTS,
         BINDER_CONF_LIST_DELIMITER), "");
 
+    /* InterfaceType */
+    if (ofono_conf_get_enum(file, OFONO_COMMON_SETTINGS_GROUP,
+        BINDER_CONF_PLUGIN_INTERFACE_TYPE, &ival,
+        "auto", RADIO_INTERFACE_TYPE_NONE,
+        "hidl", RADIO_INTERFACE_TYPE_HIDL,
+        "aidl", RADIO_INTERFACE_TYPE_AIDL, NULL)) {
+        DBG(BINDER_CONF_PLUGIN_INTERFACE_TYPE " %d", ival);
+        ps->interface_type = ival;
+    }
+
     /*
      * The way to stop the plugin from even trying to find any slots is
      * the IgnoreSlots entry containining '*' pattern in combination with
@@ -2299,6 +2315,7 @@ binder_plugin_slot_driver_init(
     ps->set_radio_cap = BINDER_SET_RADIO_CAP_AUTO;
     ps->dm_flags = BINDER_DEFAULT_PLUGIN_DM_FLAGS;
     ps->non_data_mode = BINDER_DEFAULT_MAX_NON_DATA_MODE;
+    ps->interface_type = BINDER_DEFAULT_INTERFACE_TYPE;
 
     /* Connect to system bus before we switch the identity */
     plugin->system_bus = g_bus_get_sync(G_BUS_TYPE_SYSTEM, NULL, &error);
@@ -2431,9 +2448,17 @@ binder_plugin_slot_driver_start(
      */
     binder_plugin_foreach_slot_param(plugin,
         binder_plugin_slot_check_plugin_flags_cb, plugin);
-    plugin->radio_config_watch_id =
+
+    if (ps->interface_type == RADIO_INTERFACE_TYPE_HIDL) {
+        plugin->radio_config_watch_id =
         gbinder_servicemanager_add_registration_handler(plugin->svcmgr,
             RADIO_CONFIG_1_0, binder_plugin_service_registration_proc, plugin);
+    } else if (ps->interface_type == RADIO_INTERFACE_TYPE_AIDL) {
+        plugin->radio_config_watch_id =
+        gbinder_servicemanager_add_registration_handler(plugin->svcmgr,
+            RADIO_CONFIG_AIDL_FQNAME,binder_plugin_service_registration_proc,
+            plugin);
+    }
     binder_plugin_service_check(plugin);
 
     /* And per-slot IRadio services too */

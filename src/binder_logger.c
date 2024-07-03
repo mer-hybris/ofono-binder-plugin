@@ -35,9 +35,9 @@ enum binder_logger_events {
 };
 
 typedef struct binder_logger_callbacks {
-    const char* (*req_name)(guint32 code);
-    const char* (*resp_name)(guint32 code);
-    const char* (*ind_name)(guint32 code);
+    const char* (*req_name)(gpointer object, guint32 code);
+    const char* (*resp_name)(gpointer object, guint32 code);
+    const char* (*ind_name)(gpointer object, guint32 code);
     gsize (*rpc_header_size)(gpointer object, guint32 code);
     void (*drop_object)(BinderLogger* logger);
 } BinderLoggerCallbacks;
@@ -74,7 +74,7 @@ binder_logger_trace_req(
     const BinderLoggerCallbacks* cb = logger->cb;
     static const GLogModule* log = &binder_logger_module;
     const gsize header_size = cb->rpc_header_size(logger->object, code);
-    const char* name = cb->req_name(code);
+    const char* name = cb->req_name(logger->object, code);
     GBinderWriter writer;
     const guint8* data;
     guint32 serial;
@@ -104,7 +104,7 @@ binder_logger_trace_resp(
 {
     static const GLogModule* log = &binder_logger_module;
     const BinderLoggerCallbacks* cb = logger->cb;
-    const char* name = cb->resp_name(code);
+    const char* name = cb->resp_name(logger->object, code);
     const char* error = (info->error == RADIO_ERROR_NONE) ? NULL :
         binder_radio_error_string(info->error);
     const char* arg1 = name ? name : error;
@@ -130,7 +130,7 @@ binder_logger_trace_ind(
     const GBinderReader* args)
 {
     const BinderLoggerCallbacks* cb = logger->cb;
-    const char* name = cb->ind_name(code);
+    const char* name = cb->ind_name(logger->object, code);
     static const GLogModule* log = &binder_logger_module;
 
     gutil_log(log, GLOG_LEVEL_VERBOSE, "%s> %u %s",
@@ -255,25 +255,28 @@ binder_logger_radio_dump_ind_cb(
 static
 const char*
 binder_logger_radio_req_name(
+    gpointer object,
     guint32 code)
 {
-    return radio_req_name(code);
+    return radio_req_name2(object, code);
 }
 
 static
 const char*
 binder_logger_radio_resp_name(
+    gpointer object,
     guint32 code)
 {
-    return radio_resp_name(code);
+    return radio_resp_name2(object, code);
 }
 
 static
 const char*
 binder_logger_radio_ind_name(
+    gpointer object,
     guint32 code)
 {
-    return radio_ind_name(code);
+    return radio_ind_name2(object, code);
 }
 
 static
@@ -411,25 +414,28 @@ binder_logger_config_dump_ind_cb(
 static
 const char*
 binder_logger_config_req_name(
+    gpointer object,
     guint32 code)
 {
-    return radio_config_req_name(NULL, code);
+    return radio_config_req_name(object, code);
 }
 
 static
 const char*
 binder_logger_config_resp_name(
+    gpointer object,
     guint32 code)
 {
-    return radio_config_resp_name(NULL, code);
+    return radio_config_resp_name(object, code);
 }
 
 static
 const char*
 binder_logger_config_ind_name(
+    gpointer object,
     guint32 code)
 {
-    return radio_config_ind_name(NULL, code);
+    return radio_config_ind_name(object, code);
 }
 
 static
