@@ -258,7 +258,7 @@ binder_logger_radio_req_name(
     gpointer object,
     guint32 code)
 {
-    return radio_req_name(code);
+    return radio_req_name(object, code);
 }
 
 static
@@ -267,7 +267,7 @@ binder_logger_radio_resp_name(
     gpointer object,
     guint32 code)
 {
-    return radio_resp_name(code);
+    return radio_resp_name(object, code);
 }
 
 static
@@ -276,7 +276,7 @@ binder_logger_radio_ind_name(
     gpointer object,
     guint32 code)
 {
-    return radio_ind_name(code);
+    return radio_ind_name(object, code);
 }
 
 static
