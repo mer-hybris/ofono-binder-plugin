@@ -499,6 +499,7 @@ binder_modem_remove(
     radio_request_group_cancel(self->g);
     radio_request_group_unref(self->g);
     radio_client_unref(modem->client);
+    radio_instance_unref(modem->instance);
 
     g_free(self->last_known_iccid);
     g_free(self->reset_iccid);
@@ -538,6 +539,7 @@ binder_modem_cleanup()
 
 BinderModem*
 binder_modem_create(
+    RadioInstance* instance,
     RadioClient* client,
     const char* log_prefix,
     const char* path,
@@ -579,6 +581,7 @@ binder_modem_create(
         modem->cell_info = ofono_cell_info_ref(cell_info);
         modem->data = binder_data_ref(data);
         modem->watch = ofono_watch_new(path);
+        modem->instance = radio_instance_ref(instance);
         modem->client = radio_client_ref(client);
         modem->ims = binder_ims_reg_new(client, ext, log_prefix);
         modem->ext = binder_ext_slot_ref(ext);

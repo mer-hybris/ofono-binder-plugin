@@ -22,6 +22,7 @@
 
 struct ofono_cell_info*
 binder_cell_info_new(
+    RadioInstance* instance,
     RadioClient* client,
     const char* log_prefix,
     BinderRadio* radio,

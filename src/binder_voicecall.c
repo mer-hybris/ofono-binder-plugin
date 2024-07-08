@@ -27,6 +27,7 @@
 #include <ofono/voicecall.h>
 
 #include <radio_client.h>
+#include <radio_instance.h>
 #include <radio_request.h>
 #include <radio_request_group.h>
 #include <radio_util.h>
@@ -64,6 +65,7 @@ typedef struct binder_voicecall {
     GSList* calls;
     BinderExtCall* ext;
     BinderImsReg* ims_reg;
+    RadioInstance* instance;
     RadioRequestGroup* g;
     ofono_voicecall_cb_t cb;
     void* data;
@@ -1591,12 +1593,12 @@ binder_voicecall_swap_with_fallback(
 
     if (binder_voicecall_have_ext_call(self)) {
         if (!binder_voicecall_ext_swap(self, cbd, flags)) {
-            DBG_(self, "%s (fallback)", radio_req_name(fallback));
+            DBG_(self, "%s (fallback)", radio_req_name2(self->instance, fallback));
             binder_voicecall_request_submit(self, fallback, cbd);
         }
     } else {
         /* Default action */
-        DBG_(self, "%s", radio_req_name(fallback));
+        DBG_(self, "%s", radio_req_name2(self->instance, fallback));
         binder_voicecall_request_submit(self, fallback, cbd);
     }
     binder_voicecall_cbd_unref(cbd);
@@ -1673,7 +1675,7 @@ binder_voicecall_hangup_with_fallback(
                         continue;
                     }
                 } else {
-                    DBG_(self, "%s %u", radio_req_name(fallback), id);
+                    DBG_(self, "%s %u", radio_req_name2(self->instance, fallback), id);
                 }
 
                 /* Request wasn't submitted - will use the fallback */
@@ -1682,11 +1684,11 @@ binder_voicecall_hangup_with_fallback(
         }
 
         if (use_fallback || !cbd->pending_call_count) {
-            DBG_(self, "%s", radio_req_name(fallback));
+            DBG_(self, "%s", radio_req_name2(self->instance, fallback));
             binder_voicecall_request_submit(self, fallback, cbd);
         }
     } else {
-        DBG_(self, "%s", radio_req_name(fallback));
+        DBG_(self, "%s", radio_req_name2(self->instance, fallback));
         binder_voicecall_request_submit(self, fallback, cbd);
     }
     binder_voicecall_cbd_unref(cbd);
@@ -1921,6 +1923,7 @@ binder_voicecall_probe(
 
     self->vc = vc;
     self->dtmf_queue = gutil_ring_new();
+    self->instance = radio_instance_ref(modem->instance);
     self->g = radio_request_group_new(modem->client); /* Keeps ref to client */
     self->local_hangup_reasons = gutil_ints_ref(cfg->local_hangup_reasons);
     self->remote_hangup_reasons = gutil_ints_ref(cfg->remote_hangup_reasons);
@@ -1956,6 +1959,7 @@ binder_voicecall_remove(
     radio_client_remove_all_handlers(self->g->client, self->radio_event);
     radio_request_group_cancel(self->g);
     radio_request_group_unref(self->g);
+    radio_instance_unref(self->instance);
 
     gutil_ring_unref(self->dtmf_queue);
     gutil_ints_unref(self->local_hangup_reasons);

@@ -58,6 +58,8 @@
 #include <radio_config.h>
 #include <radio_instance.h>
 
+#include <radio_modem_types.h>
+
 #include <gbinder_servicemanager.h>
 #include <gbinder_reader.h>
 
@@ -258,6 +260,7 @@ typedef struct ofono_slot_driver_data {
 typedef struct binder_slot {
     BINDER_PLUGIN_SLOT_FLAGS flags;
     GBinderServiceManager* svcmgr;
+    RADIO_INTERFACE_TYPE interface_type;
     RADIO_INTERFACE version;
     RadioInstance* instance;
     RadioClient* client;
@@ -694,8 +697,8 @@ binder_plugin_modem_check(
         BinderModem* modem;
 
         DBG("%s registering modem", slot->name);
-        modem = binder_modem_create(slot->client, slot->name, slot->path,
-            slot->imei, slot->imeisv, &slot->config, slot->ext_slot,
+        modem = binder_modem_create(slot->instance, slot->client, slot->name,
+            slot->path, slot->imei, slot->imeisv, &slot->config, slot->ext_slot,
             slot->radio, slot->network, slot->sim_card, slot->data,
             slot->sim_settings, slot->cell_info);
 
@@ -820,20 +823,31 @@ binder_plugin_device_identity_cb(
     radio_request_unref(slot->imei_req);
     slot->imei_req = NULL;
 
+    guint resp_code = RADIO_RESP_GET_DEVICE_IDENTITY;
+    if (slot->interface_type == RADIO_INTERFACE_TYPE_AIDL) {
+        resp_code = RADIO_MODEM_RESP_GET_DEVICE_IDENTITY;
+    }
+
     if (status == RADIO_TX_STATUS_OK) {
-        if (resp == RADIO_RESP_GET_DEVICE_IDENTITY) {
+        if (resp == resp_code) {
             /*
              * getDeviceIdentityResponse(RadioResponseInfo, string imei,
              *   string imeisv, string esn, string meid)
              */
             if (error == RADIO_ERROR_NONE) {
                 GBinderReader reader;
-                const char* imei;
-                const char* imeisv;
+                char* imei;
+                char* imeisv;
 
                 gbinder_reader_copy(&reader, args);
-                imei = gbinder_reader_read_hidl_string_c(&reader);
-                imeisv = gbinder_reader_read_hidl_string_c(&reader);
+
+                if (slot->interface_type == RADIO_INTERFACE_TYPE_HIDL) {
+                    imei = gbinder_reader_read_hidl_string(&reader);
+                    imeisv = gbinder_reader_read_hidl_string(&reader);
+                } else {
+                    imei = gbinder_reader_read_string16(&reader);
+                    imeisv = gbinder_reader_read_string16(&reader);
+                }
 
                 /*
                  * slot->imei should be either NULL (when we get connected
@@ -856,6 +870,9 @@ binder_plugin_device_identity_cb(
                 if (!slot->imeisv) {
                     slot->imeisv = g_strdup(imeisv ? imeisv : "");
                 }
+
+                g_free(imei);
+                g_free(imeisv);
             } else {
                 ofono_warn("getDeviceIdentity error %s",
                     binder_radio_error_string(error));
@@ -877,9 +894,14 @@ binder_plugin_slot_get_device_identity(
     gboolean blocking,
     int retries)
 {
+    guint req_code = RADIO_REQ_GET_DEVICE_IDENTITY;
+    if (slot->plugin->settings.interface_type == RADIO_INTERFACE_TYPE_AIDL) {
+        req_code = RADIO_MODEM_REQ_GET_DEVICE_IDENTITY;
+    }
+
     /* getDeviceIdentity(int32 serial) */
     RadioRequest* req = radio_request_new(slot->client,
-        RADIO_REQ_GET_DEVICE_IDENTITY, NULL,
+        req_code, NULL,
         binder_plugin_device_identity_cb, NULL, slot);
 
     radio_request_set_blocking(req, TRUE);
@@ -1028,7 +1050,7 @@ binder_plugin_slot_connected(
         &slot->config);
 
     GASSERT(!slot->cell_info);
-    slot->cell_info = binder_cell_info_new(slot->client,
+    slot->cell_info = binder_cell_info_new(slot->instance, slot->client,
         slot->name, slot->radio, slot->sim_card);
 
     GASSERT(!slot->caps);
@@ -1093,8 +1115,14 @@ binder_plugin_slot_service_list_proc(
     void* data)
 {
     BinderSlot* slot = data;
-    char* fqname = g_strconcat(binder_radio_ifaces[slot->version], "/",
-        slot->name, NULL);
+    char* fqname = NULL;
+
+    if (slot->plugin->settings.interface_type == RADIO_INTERFACE_TYPE_HIDL) {
+        fqname = g_strconcat(binder_radio_ifaces[slot->version], "/",
+                             slot->name, NULL);
+    } else if (slot->plugin->settings.interface_type == RADIO_INTERFACE_TYPE_AIDL) {
+        fqname = g_strconcat(RADIO_MODEM, "/", slot->name, NULL);
+    }
 
     slot->list_call_id = 0;
     if (gutil_strv_contains(services, fqname)) {
@@ -1245,8 +1273,15 @@ binder_plugin_slot_check_radio_client(
         const char* dev = gbinder_servicemanager_device(slot->svcmgr);
 
         DBG("Bringing up %s", slot->name);
-        slot->instance = radio_instance_new_with_modem_slot_and_version(dev,
-            slot->name, slot->path, slot->config.slot, slot->version);
+
+        RADIO_AIDL_INTERFACE aidl_interface = RADIO_AIDL_INTERFACE_NONE;
+        if (plugin->settings.interface_type == RADIO_INTERFACE_TYPE_AIDL) {
+            aidl_interface = RADIO_MODEM_INTERFACE;
+        }
+
+        slot->instance = radio_instance_new_with_modem_slot_version_and_interface(
+            dev, slot->name, slot->path, slot->config.slot, slot->version,
+            aidl_interface);
         slot->client = radio_client_new(slot->instance);
         if (slot->client) {
             radio_client_set_default_timeout(slot->client,
@@ -2282,11 +2317,18 @@ void
 binder_logger_slot_start(
     BinderSlot* slot)
 {
+    char* name = NULL;
+    if (slot->interface_type == RADIO_INTERFACE_TYPE_HIDL) {
+        name = g_strdup(binder_radio_ifaces[slot->version]);
+    } else if (slot->interface_type == RADIO_INTERFACE_TYPE_AIDL) {
+        name = g_strconcat(RADIO_MODEM, "/", slot->name, NULL);
+    }
+
     /* Watch the radio service */
     slot->radio_watch_id =
         gbinder_servicemanager_add_registration_handler(slot->svcmgr,
-            binder_radio_ifaces[slot->version],
-            binder_plugin_slot_service_registration_proc, slot);
+            name, binder_plugin_slot_service_registration_proc, slot);
+    g_free(name);
 
     /* They could be already there */
     binder_plugin_slot_check(slot);
@@ -2378,6 +2420,7 @@ binder_plugin_slot_driver_init(
         }
 
         slot->plugin = plugin;
+        slot->interface_type = plugin->settings.interface_type;
         slot->watch = ofono_watch_new(slot->path);
         slot->watch_event_id[WATCH_EVENT_MODEM] =
             ofono_watch_add_modem_changed_handler(slot->watch,

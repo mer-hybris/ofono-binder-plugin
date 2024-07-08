@@ -46,6 +46,7 @@ typedef struct binder_cell_info {
     GObject object;
     struct ofono_cell_info info;
     struct ofono_cell **cells;
+    RadioInstance* instance;
     RadioClient* client;
     BinderRadio* radio;
     BinderSimCard* sim_card;
@@ -749,7 +750,7 @@ binder_cell_info_list_cb(
                 }
             }
         } else {
-            DBG_(self, "%s error %d", radio_resp_name(resp), error);
+            DBG_(self, "%s error %d", radio_resp_name2(self->instance, resp), error);
         }
     }
 }
@@ -996,6 +997,7 @@ binder_cell_info_set_enabled_proc(
 
 struct ofono_cell_info*
 binder_cell_info_new(
+    RadioInstance* instance,
     RadioClient* client,
     const char* log_prefix,
     BinderRadio* radio,
@@ -1003,6 +1005,7 @@ binder_cell_info_new(
 {
     BinderCellInfo* self = g_object_new(THIS_TYPE, 0);
 
+    self->instance = radio_instance_ref(instance);
     self->client = radio_client_ref(client);
     self->radio = binder_radio_ref(radio);
     self->sim_card = binder_sim_card_ref(sim);
@@ -1078,6 +1081,7 @@ binder_cell_info_finalize(
     radio_request_drop(self->set_rate_req);
     radio_client_remove_all_handlers(self->client, self->event_id);
     radio_client_unref(self->client);
+    radio_instance_unref(self->instance);
     binder_radio_remove_handler(self->radio, self->radio_state_event_id);
     binder_radio_unref(self->radio);
     binder_sim_card_remove_handler(self->sim_card, self->sim_status_event_id);
