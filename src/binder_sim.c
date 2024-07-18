@@ -27,6 +27,7 @@
 #include <radio_client.h>
 #include <radio_request.h>
 #include <radio_request_group.h>
+#include <radio_sim_types.h>
 
 #include <gbinder_reader.h>
 #include <gbinder_writer.h>
@@ -79,6 +80,7 @@ typedef struct binder_sim {
     enum ofono_sim_password_type ofono_passwd_state;
     BinderSimCard* card;
     RadioRequestGroup* g;
+    RADIO_AIDL_INTERFACE interface_aidl;
     RadioRequest* query_pin_retries_req;
     GList* pin_cbd_list;
     int retries[OFONO_SIM_PASSWORD_INVALID];
@@ -155,6 +157,7 @@ typedef struct binder_sim_retry_query {
     const char* name;
     enum ofono_sim_password_type passwd_type;
     RADIO_REQ code;
+    RADIO_SIM_REQ code_aidl;
     RadioRequest* (*new_req)(BinderSim* self, RADIO_REQ code,
         RadioRequestCompleteFunc complete, GDestroyNotify destroy,
         void* user_data);
@@ -394,22 +397,43 @@ binder_sim_append_path(
 static
 BinderSimIoResponse*
 binder_sim_io_response_new(
-    const GBinderReader* args)
+    const GBinderReader* args,
+    RADIO_AIDL_INTERFACE interface_aidl)
 {
     const RadioIccIoResult* result;
     GBinderReader reader;
 
     gbinder_reader_copy(&reader, args);
-    result = gbinder_reader_read_hidl_struct(&reader, RadioIccIoResult);
-    if (result) {
-        BinderSimIoResponse* resp = g_slice_new0(BinderSimIoResponse);
-        const char* hex = result->response.data.str;
 
-        DBG("sw1=0x%02X,sw2=0x%02X,%s", result->sw1, result->sw2, hex);
-        resp->sw1 = result->sw1;
-        resp->sw2 = result->sw2;
-        resp->data = binder_decode_hex(hex, -1, &resp->data_len);
-        return resp;
+    if (interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+        result = gbinder_reader_read_hidl_struct(&reader, RadioIccIoResult);
+        if (result) {
+            BinderSimIoResponse* resp = g_slice_new0(BinderSimIoResponse);
+            const char* hex = result->response.data.str;
+
+            DBG("sw1=0x%02X,sw2=0x%02X,%s", result->sw1, result->sw2, hex);
+            resp->sw1 = result->sw1;
+            resp->sw2 = result->sw2;
+            resp->data = binder_decode_hex(hex, -1, &resp->data_len);
+            return resp;
+        }
+    } else {
+        gsize parcel_size = binder_read_parcelable_size(&reader);
+        if (parcel_size >= sizeof(guint32) * 3) {
+            BinderSimIoResponse* resp = g_slice_new0(BinderSimIoResponse);
+            gchar* hex;
+
+            gbinder_reader_read_uint32(&reader, &resp->sw1);
+            gbinder_reader_read_uint32(&reader, &resp->sw2);
+            hex = gbinder_reader_read_string16(&reader);
+
+            DBG("sw1=0x%02X,sw2=0x%02X,%s", resp->sw1, resp->sw2,
+                hex ? hex : "(null)");
+
+            resp->data = binder_decode_hex(hex, -1, &resp->data_len);
+            g_free(hex);
+            return resp;
+        }
     }
     return NULL;
 }
@@ -515,13 +539,16 @@ binder_sim_file_info_cb(
     BinderSim* self = cbd->self;
     ofono_sim_file_info_cb_t cb = cbd->cb.file_info;
     struct ofono_error err;
+    guint32 code = cbd->self->interface_aidl == RADIO_SIM_INTERFACE ?
+        RADIO_SIM_RESP_ICC_IO_FOR_APP : RADIO_RESP_ICC_IO_FOR_APP;
 
     DBG_(self, "");
 
     binder_error_init_failure(&err);
     if (status == RADIO_TX_STATUS_OK) {
-        if (resp == RADIO_RESP_ICC_IO_FOR_APP) {
-            BinderSimIoResponse* res = binder_sim_io_response_new(args);
+        if (resp == code) {
+            BinderSimIoResponse* res = binder_sim_io_response_new(args,
+                self->interface_aidl);
 
             if (!self->inserted) {
                 DBG_(self, "No SIM card");
@@ -591,36 +618,65 @@ binder_sim_request_io(
     BinderSimCbdIo* cbd = binder_sim_cbd_io_new(self, cb, data);
     guint parent;
     gboolean ok;
+    guint32 code = self->interface_aidl == RADIO_SIM_INTERFACE ?
+        RADIO_SIM_REQ_ICC_IO_FOR_APP : RADIO_REQ_ICC_IO_FOR_APP;
 
     /* iccIOForApp(int32 serial, IccIo iccIo); */
     GBinderWriter writer;
-    RadioRequest* req = radio_request_new2(self->g, RADIO_REQ_ICC_IO_FOR_APP,
+    RadioRequest* req = radio_request_new2(self->g, code,
         &writer, complete, binder_sim_cbd_io_free, cbd);
     RadioIccIo* io = gbinder_writer_new0(&writer, RadioIccIo);
 
     DBG_(self, "cmd=0x%.2X,fid=0x%.4X,%d,%d,%d,%s,pin2=(null),aid=%s",
         cmd, fid, p1, p2, p3, hex_data, aid);
 
-    io->command = cmd;
-    io->fileId = fid;
-    io->path.data.str = binder_sim_append_path(self, &writer, fid, path,
-        path_len);
-    io->path.len = strlen(io->path.data.str);
-    io->p1 = p1;
-    io->p2 = p2;
-    io->p3 = p3;
-    binder_copy_hidl_string(&writer, &io->data, hex_data);
-    io->pin2.data.str = empty;
-    binder_copy_hidl_string(&writer, &io->aid, aid);
+    if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+        io->command = cmd;
+        io->fileId = fid;
+        io->path.data.str = binder_sim_append_path(self, &writer, fid, path,
+            path_len);
+        io->path.len = strlen(io->path.data.str);
+        io->p1 = p1;
+        io->p2 = p2;
+        io->p3 = p3;
+        binder_copy_hidl_string(&writer, &io->data, hex_data);
+        io->pin2.data.str = empty;
+        binder_copy_hidl_string(&writer, &io->aid, aid);
 
-    /* Write the parent structure */
-    parent = gbinder_writer_append_buffer_object(&writer, io, sizeof(*io));
+        /* Write the parent structure */
+        parent = gbinder_writer_append_buffer_object(&writer, io, sizeof(*io));
 
-    /* Write the string data in the right order */
-    binder_append_hidl_string_data(&writer, io, path, parent);
-    binder_append_hidl_string_data(&writer, io, data, parent);
-    binder_append_hidl_string_data(&writer, io, pin2, parent);
-    binder_append_hidl_string_data(&writer, io, aid, parent);
+        /* Write the string data in the right order */
+        binder_append_hidl_string_data(&writer, io, path, parent);
+        binder_append_hidl_string_data(&writer, io, data, parent);
+        binder_append_hidl_string_data(&writer, io, pin2, parent);
+        binder_append_hidl_string_data(&writer, io, aid, parent);
+    } else {
+        gint32 initial_size;
+        const char* hex_path = binder_sim_append_path(self,
+            &writer, fid, path, path_len);
+        hex_data = hex_data ? hex_data : empty;
+
+        /* Non-null parcelable */
+        gbinder_writer_append_int32(&writer, 1);
+        initial_size = gbinder_writer_bytes_written(&writer);
+        /* Dummy parcelable size, replaced at the end */
+        gbinder_writer_append_int32(&writer, -1);
+
+        gbinder_writer_append_int32(&writer, cmd);
+        gbinder_writer_append_int32(&writer, fid);
+        gbinder_writer_append_string16(&writer, hex_path);
+        gbinder_writer_append_int32(&writer, p1);
+        gbinder_writer_append_int32(&writer, p2);
+        gbinder_writer_append_int32(&writer, p3);
+        gbinder_writer_append_string16(&writer, hex_data);
+        gbinder_writer_append_string16(&writer, empty); /* pin2 */
+        gbinder_writer_append_string16(&writer, aid);
+
+        /* Overwrite parcelable size */
+        gbinder_writer_overwrite_int32(&writer, initial_size,
+            gbinder_writer_bytes_written(&writer) - initial_size);
+    }
 
     radio_request_set_blocking(req, TRUE);
     radio_request_set_timeout(req, SIM_IO_TIMEOUT_SECS * 1000);
@@ -663,13 +719,17 @@ binder_sim_read_cb(
     BinderSim* self = cbd->self;
     ofono_sim_read_cb_t cb = cbd->cb.read;
     struct ofono_error err;
+    guint32 code = cbd->self->interface_aidl == RADIO_SIM_INTERFACE ?
+        RADIO_SIM_RESP_ICC_IO_FOR_APP :
+        RADIO_RESP_ICC_IO_FOR_APP;
 
     DBG_(self, "");
 
     binder_error_init_failure(&err);
     if (status == RADIO_TX_STATUS_OK) {
-        if (resp == RADIO_RESP_ICC_IO_FOR_APP) {
-            BinderSimIoResponse* res = binder_sim_io_response_new(args);
+        if (resp == code) {
+            BinderSimIoResponse* res = binder_sim_io_response_new(args,
+                self->interface_aidl);
 
             if (!self->inserted) {
                 DBG_(self, "No SIM card");
@@ -777,13 +837,17 @@ void binder_sim_write_cb(
     BinderSim* self = cbd->self;
     ofono_sim_write_cb_t cb = cbd->cb.write;
     struct ofono_error err;
+    guint32 code = cbd->self->interface_aidl == RADIO_SIM_INTERFACE ?
+        RADIO_SIM_RESP_ICC_IO_FOR_APP :
+        RADIO_RESP_ICC_IO_FOR_APP;
 
     DBG_(self, "");
 
     binder_error_init_failure(&err);
     if (status == RADIO_TX_STATUS_OK) {
-        if (resp == RADIO_RESP_ICC_IO_FOR_APP) {
-            BinderSimIoResponse* res = binder_sim_io_response_new(args);
+        if (resp == code) {
+            BinderSimIoResponse* res = binder_sim_io_response_new(args,
+                self->interface_aidl);
 
             if (!self->inserted) {
                 DBG_(self, "No SIM card");
@@ -897,18 +961,30 @@ binder_sim_get_imsi_cb(
     BinderSimCbdIo* cbd = user_data;
     ofono_sim_imsi_cb_t cb = cbd->cb.imsi;
     struct ofono_error err;
+    guint32 code = cbd->self->interface_aidl == RADIO_SIM_INTERFACE ?
+        RADIO_SIM_RESP_GET_IMSI_FOR_APP :
+        RADIO_RESP_GET_IMSI_FOR_APP;
 
     if (status == RADIO_TX_STATUS_OK) {
         /* getIMSIForAppResponse(RadioResponseInfo, string imsi); */
-        if (resp == RADIO_RESP_GET_IMSI_FOR_APP) {
+        if (resp == code) {
             if (error == RADIO_ERROR_NONE) {
-                const char* imsi = binder_read_hidl_string(args);
+                char* imsi;
+                GBinderReader reader;
+                gbinder_reader_copy(&reader, args);
+                if (cbd->self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+                    imsi = gbinder_reader_read_hidl_string(&reader);
+                } else {
+                    imsi = gbinder_reader_read_string16(&reader);
+                }
 
                 DBG_(cbd->self, "%s", imsi);
                 if (imsi) {
                     /* Success */
                     GASSERT(strlen(imsi) == 15);
                     cb(binder_error_ok(&err), imsi, cbd->data);
+
+                    g_free(imsi);
                     return;
                 }
             } else {
@@ -935,15 +1011,21 @@ binder_sim_read_imsi(
     BinderSimCbdIo* cbd = binder_sim_cbd_io_new(self, BINDER_CB(cb), data);
     const char* aid = binder_sim_card_app_aid(self->card);
     gboolean ok;
+    guint32 code = self->interface_aidl == RADIO_SIM_INTERFACE ?
+        RADIO_SIM_REQ_GET_IMSI_FOR_APP : RADIO_REQ_GET_IMSI_FOR_APP;
 
     /* getImsiForApp(int32 serial, string aid); */
     GBinderWriter writer;
     RadioRequest* req = radio_request_new2(self->g,
-        RADIO_REQ_GET_IMSI_FOR_APP, &writer,
+        code, &writer,
         binder_sim_get_imsi_cb, binder_sim_cbd_io_free, cbd);
 
     DBG_(self, "%s", aid);
-    binder_append_hidl_string(&writer, aid);
+    if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+        binder_append_hidl_string(&writer, aid);
+    } else {
+        gbinder_writer_append_string16(&writer, aid);
+    }
 
     /*
      * If we fail the .read_imsi call, ofono gets into "Unable to
@@ -1199,9 +1281,15 @@ binder_sim_enter_sim_pin_req(
     RadioRequest* req = radio_request_new2(self->g, code, &writer,
         complete, destroy, user_data);
 
-    binder_append_hidl_string(&writer, pin);
-    binder_append_hidl_string(&writer,
-        binder_sim_card_app_aid(self->card));
+    if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+        binder_append_hidl_string(&writer, pin);
+        binder_append_hidl_string(&writer,
+            binder_sim_card_app_aid(self->card));
+    } else {
+        gbinder_writer_append_string16(&writer, pin);
+        gbinder_writer_append_string16(&writer,
+            binder_sim_card_app_aid(self->card));
+    }
 
     radio_request_set_blocking(req, TRUE);
     return req;
@@ -1226,10 +1314,17 @@ binder_sim_enter_sim_puk_req(
     RadioRequest* req = radio_request_new2(self->g, code, &writer,
         complete, destroy, user_data);
 
-    binder_append_hidl_string(&writer, puk);
-    binder_append_hidl_string(&writer, pin);
-    binder_append_hidl_string(&writer,
-        binder_sim_card_app_aid(self->card));
+    if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+        binder_append_hidl_string(&writer, puk);
+        binder_append_hidl_string(&writer, pin);
+        binder_append_hidl_string(&writer,
+            binder_sim_card_app_aid(self->card));
+    } else {
+        gbinder_writer_append_string16(&writer, puk);
+        gbinder_writer_append_string16(&writer, pin);
+        gbinder_writer_append_string16(&writer,
+            binder_sim_card_app_aid(self->card));
+    }
 
     radio_request_set_blocking(req, TRUE);
     return req;
@@ -1271,21 +1366,25 @@ static const BinderSimRetryQuery binder_sim_retry_query_types[] = {
         "pin",
         OFONO_SIM_PASSWORD_SIM_PIN,
         RADIO_REQ_SUPPLY_ICC_PIN_FOR_APP,
+        RADIO_SIM_REQ_SUPPLY_ICC_PIN_FOR_APP,
         binder_sim_empty_sim_pin_req
     },{
         "pin2",
         OFONO_SIM_PASSWORD_SIM_PIN2,
         RADIO_REQ_SUPPLY_ICC_PIN2_FOR_APP,
+        RADIO_SIM_REQ_SUPPLY_ICC_PIN2_FOR_APP,
         binder_sim_empty_sim_pin_req
     },{
         "puk",
         OFONO_SIM_PASSWORD_SIM_PUK,
         RADIO_REQ_SUPPLY_ICC_PUK_FOR_APP,
+        RADIO_SIM_REQ_SUPPLY_ICC_PUK_FOR_APP,
         binder_sim_empty_sim_puk_req
     },{
         "puk2",
         OFONO_SIM_PASSWORD_SIM_PUK2,
         RADIO_REQ_SUPPLY_ICC_PUK2_FOR_APP,
+        RADIO_SIM_REQ_SUPPLY_ICC_PUK2_FOR_APP,
         binder_sim_empty_sim_puk_req
     }
 };
@@ -1332,7 +1431,9 @@ binder_sim_query_retry_count(
                 binder_sim_retry_query_types + i;
 
             if (self->retries[query->passwd_type] < 0) {
-                RadioRequest* req = query->new_req(self, query->code,
+                guint32 code = self->interface_aidl == RADIO_SIM_INTERFACE ?
+                    query->code_aidl : query->code;
+                RadioRequest* req = query->new_req(self, code,
                     binder_sim_query_retry_count_cb,
                     binder_sim_retry_query_cbd_free,
                     binder_sim_retry_query_cbd_new(self, i, cb, data));
@@ -1635,8 +1736,10 @@ binder_sim_pin_send(
     void* data)
 {
     BinderSim* self = binder_sim_get_data(sim);
+    guint32 code = self->interface_aidl == RADIO_SIM_INTERFACE ?
+        RADIO_SIM_REQ_SUPPLY_ICC_PIN_FOR_APP : RADIO_REQ_SUPPLY_ICC_PIN_FOR_APP;
     RadioRequest* req = binder_sim_enter_sim_pin_req(self,
-        RADIO_REQ_SUPPLY_ICC_PIN_FOR_APP, passwd,
+        code, passwd,
         binder_sim_pin_change_state_cb, binder_sim_pin_req_done,
         binder_sim_pin_cbd_new(self, OFONO_SIM_PASSWORD_SIM_PIN, TRUE,
         cb, data));
@@ -1746,17 +1849,28 @@ binder_sim_pin_change_state(
          * string password, int32 serviceClass, string appId);
          */
         GBinderWriter writer;
+        guint32 code = self->interface_aidl == RADIO_SIM_INTERFACE ?
+            RADIO_SIM_REQ_SET_FACILITY_LOCK_FOR_APP : RADIO_REQ_SET_FACILITY_LOCK_FOR_APP;
         RadioRequest* req = radio_request_new2(self->g,
-            RADIO_REQ_SET_FACILITY_LOCK_FOR_APP, &writer,
+            code, &writer,
             binder_sim_pin_change_state_cb, binder_sim_pin_req_done,
             binder_sim_pin_cbd_new(self, pwtype, FALSE, cb, data));
 
-        gbinder_writer_append_hidl_string(&writer, fac); /* facility */
-        gbinder_writer_append_bool(&writer, enable);     /* lockState */
-        binder_append_hidl_string(&writer, passwd);      /* password */
-        gbinder_writer_append_int32(&writer,             /* serviceClass */
-            RADIO_SERVICE_CLASS_NONE);
-        binder_append_hidl_string(&writer, aid);         /* appId */
+        if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+            gbinder_writer_append_hidl_string(&writer, fac); /* facility */
+            gbinder_writer_append_bool(&writer, enable);     /* lockState */
+            binder_append_hidl_string(&writer, passwd);      /* password */
+            gbinder_writer_append_int32(&writer,             /* serviceClass */
+                RADIO_SERVICE_CLASS_NONE);
+            binder_append_hidl_string(&writer, aid);         /* appId */
+        } else {
+            gbinder_writer_append_string16(&writer, fac);    /* facility */
+            gbinder_writer_append_bool(&writer, enable);     /* lockState */
+            gbinder_writer_append_string16(&writer, passwd); /* password */
+            gbinder_writer_append_int32(&writer,             /* serviceClass */
+                RADIO_SERVICE_CLASS_NONE);
+            gbinder_writer_append_string16(&writer, aid);    /* appId */
+        }
 
         radio_request_set_blocking(req, TRUE);
         ok = radio_request_submit(req);
@@ -1780,8 +1894,11 @@ binder_sim_pin_send_puk(
     void* data)
 {
     BinderSim* self = binder_sim_get_data(sim);
+    guint32 code = self->interface_aidl == RADIO_SIM_INTERFACE ?
+        RADIO_SIM_REQ_SUPPLY_ICC_PUK_FOR_APP :
+        RADIO_REQ_SUPPLY_ICC_PUK_FOR_APP;
     RadioRequest* req = binder_sim_enter_sim_puk_req(self,
-        RADIO_REQ_SUPPLY_ICC_PUK_FOR_APP, puk, pin,
+        code, puk, pin,
         binder_sim_pin_change_state_cb, binder_sim_pin_req_done,
         binder_sim_pin_cbd_new(self, OFONO_SIM_PASSWORD_SIM_PUK, TRUE,
         cb, data));
@@ -1814,10 +1931,14 @@ binder_sim_change_passwd(
 
     switch (passwd_type) {
     case OFONO_SIM_PASSWORD_SIM_PIN:
-        code = RADIO_REQ_CHANGE_ICC_PIN_FOR_APP;
+        code = self->interface_aidl == RADIO_SIM_INTERFACE ?
+            RADIO_SIM_REQ_CHANGE_ICC_PIN_FOR_APP :
+            RADIO_REQ_CHANGE_ICC_PIN_FOR_APP;
         break;
     case OFONO_SIM_PASSWORD_SIM_PIN2:
-        code = RADIO_REQ_CHANGE_ICC_PIN2_FOR_APP;
+        code = self->interface_aidl == RADIO_SIM_INTERFACE ?
+            RADIO_SIM_REQ_CHANGE_ICC_PIN2_FOR_APP :
+            RADIO_REQ_CHANGE_ICC_PIN2_FOR_APP;
         break;
     default:
         break;
@@ -1837,9 +1958,16 @@ binder_sim_change_passwd(
         const char* aid = binder_sim_card_app_aid(self->card);
 
         DBG_(self, "old=%s,new=%s,aid=%s", old_passwd, new_passwd, aid);
-        binder_append_hidl_string(&writer, old_passwd);
-        binder_append_hidl_string(&writer, new_passwd);
-        binder_append_hidl_string(&writer, aid);
+
+        if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+            binder_append_hidl_string(&writer, old_passwd);
+            binder_append_hidl_string(&writer, new_passwd);
+            binder_append_hidl_string(&writer, aid);
+        } else {
+            gbinder_writer_append_string16(&writer, old_passwd);
+            gbinder_writer_append_string16(&writer, new_passwd);
+            gbinder_writer_append_string16(&writer, aid);
+        }
         radio_request_set_blocking(req, TRUE);
         ok = radio_request_submit(req);
         radio_request_unref(req);
@@ -1865,10 +1993,13 @@ binder_sim_query_facility_lock_cb(
     BinderSimCbdIo* cbd = user_data;
     ofono_query_facility_lock_cb_t cb = cbd->cb.query_facility_lock;
     struct ofono_error err;
+    guint32 code = cbd->self->interface_aidl == RADIO_SIM_INTERFACE ?
+        RADIO_SIM_RESP_GET_FACILITY_LOCK_FOR_APP :
+        RADIO_RESP_GET_FACILITY_LOCK_FOR_APP;
 
     if (status == RADIO_TX_STATUS_OK) {
         /* getFacilityLockForAppResponse(RadioResponseInfo, int32 response); */
-        if (resp == RADIO_RESP_GET_FACILITY_LOCK_FOR_APP) {
+        if (resp == code) {
             if (error == RADIO_ERROR_NONE) {
                 gint32 locked;
 
@@ -1916,6 +2047,9 @@ binder_sim_query_facility_lock(
     const char* fac = binder_sim_facility_code(type);
     BinderSimCbdIo* cbd = binder_sim_cbd_io_new(self, BINDER_CB(cb), data);
     gboolean ok;
+    guint32 code = self->interface_aidl == RADIO_SIM_INTERFACE ?
+        RADIO_SIM_REQ_GET_FACILITY_LOCK_FOR_APP :
+        RADIO_REQ_GET_FACILITY_LOCK_FOR_APP;
 
     /*
      * getFacilityLockForApp(int32 serial, string facility, string password,
@@ -1923,15 +2057,24 @@ binder_sim_query_facility_lock(
      */
     GBinderWriter writer;
     RadioRequest* req = radio_request_new2(self->g,
-        RADIO_REQ_GET_FACILITY_LOCK_FOR_APP, &writer,
+        code, &writer,
         binder_sim_query_facility_lock_cb, binder_sim_cbd_io_free, cbd);
 
-    binder_append_hidl_string(&writer, fac); /* facility */
-    binder_append_hidl_string(&writer, "");  /* password */
-    gbinder_writer_append_int32(&writer,     /* serviceClass */
-        RADIO_SERVICE_CLASS_NONE);
-    binder_append_hidl_string(&writer,       /* appId */
-        binder_sim_card_app_aid(self->card));
+    if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+        binder_append_hidl_string(&writer, fac); /* facility */
+        binder_append_hidl_string(&writer, "");  /* password */
+        gbinder_writer_append_int32(&writer,     /* serviceClass */
+            RADIO_SERVICE_CLASS_NONE);
+        binder_append_hidl_string(&writer,       /* appId */
+            binder_sim_card_app_aid(self->card));
+    } else {
+        gbinder_writer_append_string16(&writer, fac); /* facility */
+        gbinder_writer_append_string16(&writer, "");  /* password */
+        gbinder_writer_append_int32(&writer,          /* serviceClass */
+            RADIO_SERVICE_CLASS_NONE);
+        gbinder_writer_append_string16(&writer,       /* appId */
+            binder_sim_card_app_aid(self->card));
+    }
 
     /* Make sure that this request gets completed sooner or later */
     radio_request_set_timeout(req, FAC_LOCK_QUERY_TIMEOUT_SECS * 1000);
@@ -2036,13 +2179,16 @@ binder_sim_open_channel_cb(
     BinderSimCbdIo* cbd = user_data;
     ofono_sim_open_channel_cb_t cb = cbd->cb.open_channel;
     struct ofono_error err;
+    guint32 code = cbd->self->interface_aidl == RADIO_SIM_INTERFACE ?
+        RADIO_SIM_RESP_ICC_OPEN_LOGICAL_CHANNEL :
+        RADIO_RESP_ICC_OPEN_LOGICAL_CHANNEL;
 
     if (status == RADIO_TX_STATUS_OK) {
         /*
          * iccOpenLogicalChannelResponse(RadioResponseInfo info,
          *   int32 channelId, vec<int8_t> selectResponse);
          */
-        if (resp == RADIO_RESP_ICC_OPEN_LOGICAL_CHANNEL) {
+        if (resp == code) {
             if (error == RADIO_ERROR_NONE) {
                 gint32 channel;
 
@@ -2079,17 +2225,24 @@ binder_sim_open_channel(
     BinderSim* self = binder_sim_get_data(sim);
     BinderSimCbdIo* cbd = binder_sim_cbd_io_new(self, BINDER_CB(cb), data);
     gboolean ok;
+    guint32 code = self->interface_aidl == RADIO_SIM_INTERFACE ?
+        RADIO_SIM_REQ_ICC_OPEN_LOGICAL_CHANNEL :
+        RADIO_REQ_ICC_OPEN_LOGICAL_CHANNEL;
 
     /* iccOpenLogicalChannel(int32 serial, string aid, int32 p2); */
     GBinderWriter writer;
     RadioRequest* req = radio_request_new2(self->g,
-        RADIO_REQ_ICC_OPEN_LOGICAL_CHANNEL, &writer,
+        code, &writer,
         binder_sim_open_channel_cb, binder_sim_cbd_io_free, cbd);
     char *aid_hex = binder_encode_hex(aid, len);
 
     DBG_(self, "%s", aid_hex);
     gbinder_writer_add_cleanup(&writer, g_free, aid_hex);
-    gbinder_writer_append_hidl_string(&writer, aid_hex); /* aid */
+    if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+        gbinder_writer_append_hidl_string(&writer, aid_hex); /* aid */
+    } else {
+        gbinder_writer_append_string16(&writer, aid_hex); /* aid */
+    }
     gbinder_writer_append_int32(&writer, 0);             /* p2 */
     radio_request_set_timeout(req, SIM_IO_TIMEOUT_SECS * 1000);
     ok = binder_sim_cbd_io_start(cbd, req);
@@ -2114,10 +2267,13 @@ binder_sim_close_channel_cb(
 {
     BinderSimCbdIo* cbd = user_data;
     struct ofono_error err;
+    guint32 code = cbd->self->interface_aidl == RADIO_SIM_INTERFACE ?
+        RADIO_SIM_RESP_ICC_CLOSE_LOGICAL_CHANNEL :
+        RADIO_RESP_ICC_CLOSE_LOGICAL_CHANNEL;
 
     binder_error_init_failure(&err);
     if (status == RADIO_TX_STATUS_OK) {
-        if (resp == RADIO_RESP_ICC_CLOSE_LOGICAL_CHANNEL) {
+        if (resp == code) {
             if (error == RADIO_ERROR_NONE) {
                 binder_error_init_ok(&err);
             } else {
@@ -2142,11 +2298,14 @@ binder_sim_close_channel(
     BinderSim* self = binder_sim_get_data(sim);
     BinderSimCbdIo* cbd = binder_sim_cbd_io_new(self, BINDER_CB(cb), data);
     gboolean ok;
+    guint32 code = self->interface_aidl == RADIO_SIM_INTERFACE ?
+        RADIO_SIM_REQ_ICC_CLOSE_LOGICAL_CHANNEL :
+        RADIO_REQ_ICC_CLOSE_LOGICAL_CHANNEL;
 
     /* iccCloseLogicalChannel(int32 serial, int32 channelId); */
     GBinderWriter writer;
     RadioRequest* req = radio_request_new2(self->g,
-        RADIO_REQ_ICC_CLOSE_LOGICAL_CHANNEL, &writer,
+        code, &writer,
         binder_sim_close_channel_cb, binder_sim_cbd_io_free, cbd);
 
     DBG_(self, "%u", channel);
@@ -2175,6 +2334,9 @@ binder_sim_logical_access_get_results_cb(
     BinderSimSessionCbData* cbd = user_data;
     ofono_sim_logical_access_cb_t cb = cbd->cb;
     struct ofono_error err;
+    guint32 code = cbd->self->interface_aidl == RADIO_SIM_INTERFACE ?
+        RADIO_SIM_RESP_ICC_TRANSMIT_APDU_LOGICAL_CHANNEL :
+        RADIO_RESP_ICC_TRANSMIT_APDU_LOGICAL_CHANNEL;
 
     binder_error_init_failure(&err);
     if (status == RADIO_TX_STATUS_OK) {
@@ -2182,8 +2344,9 @@ binder_sim_logical_access_get_results_cb(
          * iccTransmitApduLogicalChannelResponse(RadioResponseInfo,
          *   IccIoResult result);
          */
-        if (resp == RADIO_RESP_ICC_TRANSMIT_APDU_LOGICAL_CHANNEL) {
-            BinderSimIoResponse* res = binder_sim_io_response_new(args);
+        if (resp == code) {
+            BinderSimIoResponse* res = binder_sim_io_response_new(args,
+                cbd->self->interface_aidl);
 
             if (binder_sim_io_response_ok(res) && error == RADIO_ERROR_NONE) {
                 cb(binder_error_ok(&err), res->data, res->data_len, cbd->data);
@@ -2215,26 +2378,50 @@ binder_sim_logical_access_transmit(
     /* iccTransmitApduLogicalChannel(int32 serial, SimApdu message); */
     BinderSim* self = cbd->self;
     GBinderWriter writer;
+    guint32 code = self->interface_aidl == RADIO_SIM_INTERFACE ?
+        RADIO_SIM_REQ_ICC_TRANSMIT_APDU_LOGICAL_CHANNEL :
+        RADIO_REQ_ICC_TRANSMIT_APDU_LOGICAL_CHANNEL;
     RadioRequest* req = radio_request_new2(self->g,
-        RADIO_REQ_ICC_TRANSMIT_APDU_LOGICAL_CHANNEL, &writer,
+        code, &writer,
         cb, binder_sim_session_cbd_unref, cbd);
-    RadioSimApdu* apdu = gbinder_writer_new0(&writer, RadioSimApdu);
     gboolean ok;
     guint parent;
 
     DBG_(self, "session=%u,cmd=%02X,%02X,%02X,%02X,%02X,%s", cbd->channel,
         cbd->cla, ins, p1, p2, p3, hex_data ? hex_data : "");
 
-    apdu->sessionId = cbd->channel;
-    apdu->cla = cbd->cla;
-    apdu->instruction = ins;
-    apdu->p1 = p1;
-    apdu->p2 = p2;
-    apdu->p3 = p3;
+    if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+        RadioSimApdu* apdu = gbinder_writer_new0(&writer, RadioSimApdu);
+        apdu->sessionId = cbd->channel;
+        apdu->cla = cbd->cla;
+        apdu->instruction = ins;
+        apdu->p1 = p1;
+        apdu->p2 = p2;
+        apdu->p3 = p3;
 
-    binder_copy_hidl_string(&writer, &apdu->data, hex_data);
-    parent = gbinder_writer_append_buffer_object(&writer, apdu, sizeof(*apdu));
-    binder_append_hidl_string_data(&writer, apdu, data, parent);
+        binder_copy_hidl_string(&writer, &apdu->data, hex_data);
+        parent = gbinder_writer_append_buffer_object(&writer, apdu, sizeof(*apdu));
+        binder_append_hidl_string_data(&writer, apdu, data, parent);
+    } else {
+        gint32 initial_size;
+        /* Non-null parcelable */
+        gbinder_writer_append_int32(&writer, 1);
+        initial_size = gbinder_writer_bytes_written(&writer);
+        /* Dummy parcelable size, replaced at the end */
+        gbinder_writer_append_int32(&writer, -1);
+        gbinder_writer_append_int32(&writer, cbd->channel);
+        gbinder_writer_append_int32(&writer, cbd->cla);
+        gbinder_writer_append_int32(&writer, ins);
+        gbinder_writer_append_int32(&writer, p1);
+        gbinder_writer_append_int32(&writer, p2);
+        gbinder_writer_append_int32(&writer, p3);
+        gbinder_writer_append_string16(&writer, hex_data);
+        gbinder_writer_append_bool(&writer, FALSE);
+
+        /* Overwrite parcelable size */
+        gbinder_writer_overwrite_int32(&writer, initial_size,
+            gbinder_writer_bytes_written(&writer) - initial_size);
+    }
 
     radio_request_set_timeout(req, SIM_IO_TIMEOUT_SECS * 1000);
     ok = binder_sim_session_cbd_start(cbd, req);
@@ -2255,13 +2442,17 @@ binder_sim_logical_access_cb(
     BinderSimSessionCbData* cbd = user_data;
     ofono_sim_logical_access_cb_t cb = cbd->cb;
     struct ofono_error err;
+    guint32 code = cbd->self->interface_aidl == RADIO_SIM_INTERFACE ?
+        RADIO_SIM_RESP_ICC_TRANSMIT_APDU_LOGICAL_CHANNEL :
+        RADIO_RESP_ICC_TRANSMIT_APDU_LOGICAL_CHANNEL;
 
     DBG_(cbd->self, "");
     cbd->req_id = 0;
 
     if (status == RADIO_TX_STATUS_OK) {
-        if (resp == RADIO_RESP_ICC_TRANSMIT_APDU_LOGICAL_CHANNEL) {
-            BinderSimIoResponse* res = binder_sim_io_response_new(args);
+        if (resp == code) {
+            BinderSimIoResponse* res = binder_sim_io_response_new(args,
+                cbd->self->interface_aidl);
 
             if (res && error == RADIO_ERROR_NONE) {
                 /*
@@ -2434,10 +2625,17 @@ binder_sim_register(
             binder_sim_state_changed_cb, self);
 
     /* And IRadio events */
-    self->io_event_id[IO_EVENT_SIM_REFRESH] =
-        radio_client_add_indication_handler(client,
-            RADIO_IND_SIM_REFRESH,
-            binder_sim_refresh_cb, self);
+    if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+        self->io_event_id[IO_EVENT_SIM_REFRESH] =
+            radio_client_add_indication_handler(client,
+                RADIO_IND_SIM_REFRESH,
+                binder_sim_refresh_cb, self);
+    } else {
+        self->io_event_id[IO_EVENT_SIM_REFRESH] =
+            radio_client_add_indication_handler(client,
+                RADIO_SIM_IND_SIM_REFRESH,
+                binder_sim_refresh_cb, self);
+    }
 
     /* Check the current state */
     binder_sim_status_changed_cb(self->card, self);
@@ -2457,7 +2655,8 @@ binder_sim_probe(
     self->log_prefix = binder_dup_prefix(modem->log_prefix);
     self->empty_pin_query_allowed = modem->config.empty_pin_query;
     self->card = binder_sim_card_ref(modem->sim_card);
-    self->g = radio_request_group_new(modem->client); /* Keeps ref to client */
+    self->g = radio_request_group_new(modem->sim_client); /* Keeps ref to client */
+    self->interface_aidl = radio_client_aidl_interface(modem->sim_client);
     self->watch = ofono_watch_new(binder_modem_get_path(modem));
     self->sim = sim;
 

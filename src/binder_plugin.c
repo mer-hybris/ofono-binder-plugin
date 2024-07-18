@@ -724,6 +724,9 @@ binder_plugin_modem_check(
     BinderSlot* slot)
 {
     RADIO_AIDL_INTERFACE modem_interface = binder_plugin_modem_interface(slot);
+    RADIO_AIDL_INTERFACE sim_interface =
+        modem_interface != RADIO_AIDL_INTERFACE_NONE ?
+            RADIO_SIM_INTERFACE : RADIO_AIDL_INTERFACE_NONE;
 
     if (!slot->modem && slot->handle && slot->handle->enabled &&
         radio_client_connected(slot->client[modem_interface])) {
@@ -731,10 +734,11 @@ binder_plugin_modem_check(
 
         DBG("%s registering modem", slot->name);
         modem = binder_modem_create(slot->instance[modem_interface],
-            slot->client[modem_interface], slot->name,
-            slot->path, slot->imei, slot->imeisv, &slot->config, slot->ext_slot,
-            slot->radio, slot->network, slot->sim_card, slot->data,
-            slot->sim_settings, slot->cell_info);
+            slot->client[modem_interface],
+            slot->client[sim_interface],
+            slot->name, slot->path, slot->imei, slot->imeisv, &slot->config,
+            slot->ext_slot, slot->radio, slot->network, slot->sim_card,
+            slot->data, slot->sim_settings, slot->cell_info);
 
         if (modem) {
             slot->modem = modem;
@@ -1046,6 +1050,9 @@ binder_plugin_slot_connected(
     BinderPlugin* plugin = slot->plugin;
     const BinderPluginSettings* ps = &plugin->settings;
     RADIO_AIDL_INTERFACE modem_interface = binder_plugin_modem_interface(slot);
+    RADIO_AIDL_INTERFACE sim_interface =
+        modem_interface != RADIO_AIDL_INTERFACE_NONE ?
+            RADIO_SIM_INTERFACE : RADIO_AIDL_INTERFACE_NONE;
 
     GASSERT(radio_client_connected(slot->client[modem_interface]));
     GASSERT(!slot->client_event_id[CLIENT_EVENT_CONNECTED]);
@@ -1074,7 +1081,7 @@ binder_plugin_slot_connected(
     }
 
     GASSERT(!slot->sim_card);
-    slot->sim_card = binder_sim_card_new(slot->client[modem_interface],
+    slot->sim_card = binder_sim_card_new(slot->client[sim_interface],
         slot->config.slot);
     slot->sim_card_state_event_id =
         binder_sim_card_add_state_changed_handler(slot->sim_card,
@@ -1367,6 +1374,11 @@ binder_plugin_slot_check_radio_client(
         DBG("Bringing up %s", slot->name);
 
         binder_plugin_connect_to_interface(slot, dev, modem_interface);
+
+        if (modem_interface == RADIO_MODEM_INTERFACE) {
+            // AIDL, need to connect to the other interfaces as well
+            binder_plugin_connect_to_interface(slot, dev, RADIO_SIM_INTERFACE);
+        }
 
         binder_plugin_check_data_manager(plugin);
 
