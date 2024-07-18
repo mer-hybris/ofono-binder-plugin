@@ -226,6 +226,10 @@ binder_read_parcelable(
     const GBinderReader* reader,
     gsize* out_size);
 
+gsize
+binder_read_parcelable_size(
+    GBinderReader* reader);
+
 char**
 binder_strv_from_hidl_string_vec(
     const GBinderHidlVec* vec)

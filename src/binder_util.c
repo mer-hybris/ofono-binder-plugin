@@ -817,6 +817,21 @@ binder_read_parcelable(
     return gbinder_reader_read_parcelable(&reader, out_size);
 }
 
+gsize
+binder_read_parcelable_size(
+    GBinderReader* reader)
+{
+    /* Read a single AIDL parcelable header and return inner data size */
+    guint32 non_null = 0, payload_size = 0;
+    if (gbinder_reader_read_uint32(reader, &non_null) && non_null &&
+        gbinder_reader_read_uint32(reader, &payload_size) &&
+        payload_size >= sizeof(payload_size)) {
+
+        return payload_size - sizeof(payload_size);
+    }
+    return 0;
+}
+
 char**
 binder_strv_from_hidl_string_vec(
     const GBinderHidlVec* vec)
