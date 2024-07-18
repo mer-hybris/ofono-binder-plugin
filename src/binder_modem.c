@@ -540,6 +540,7 @@ BinderModem*
 binder_modem_create(
     RadioInstance* instance,
     RadioClient* client,
+    RadioClient* sim_client,
     const char* log_prefix,
     const char* path,
     const char* imei,
@@ -582,6 +583,7 @@ binder_modem_create(
         modem->watch = ofono_watch_new(path);
         modem->instance = radio_instance_ref(instance);
         modem->client = radio_client_ref(client);
+        modem->sim_client = radio_client_ref(sim_client);
         modem->ims = binder_ims_reg_new(client, ext, log_prefix);
         modem->ext = binder_ext_slot_ref(ext);
         self->g = radio_request_group_new(client);

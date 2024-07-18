@@ -24,6 +24,7 @@
 struct binder_modem {
     RadioInstance* instance;
     RadioClient* client;
+    RadioClient* sim_client;
     const char* path;
     const char* log_prefix;
     const char* imei;
@@ -56,6 +57,7 @@ BinderModem*
 binder_modem_create(
     RadioInstance* instance,
     RadioClient* client,
+    RadioClient* sim_client,
     const char* name,
     const char* path,
     const char* imei,
