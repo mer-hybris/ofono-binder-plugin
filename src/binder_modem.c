@@ -599,7 +599,7 @@ binder_modem_create(
         modem->network_client = radio_client_ref(network_client);
         modem->sim_client = radio_client_ref(sim_client);
         modem->voice_client = radio_client_ref(voice_client);
-        modem->ims = binder_ims_reg_new(client, ext, log_prefix);
+        modem->ims = binder_ims_reg_new(network_client, ext, log_prefix);
         modem->ext = binder_ext_slot_ref(ext);
         self->g = radio_request_group_new(client);
         self->last_known_iccid = g_strdup(modem->watch->iccid);
