@@ -47,6 +47,7 @@
 #include <ofono/watch.h>
 
 #include <radio_client.h>
+#include <radio_instance.h>
 #include <radio_request.h>
 #include <radio_request_group.h>
 
@@ -503,6 +504,7 @@ binder_modem_remove(
     radio_client_unref(modem->messaging_client);
     radio_client_unref(modem->network_client);
     radio_client_unref(modem->sim_client);
+    radio_client_unref(modem->voice_client);
     radio_instance_unref(modem->instance);
 
     g_free(self->last_known_iccid);
@@ -549,6 +551,7 @@ binder_modem_create(
     RadioClient* messaging_client,
     RadioClient* network_client,
     RadioClient* sim_client,
+    RadioClient* voice_client,
     const char* log_prefix,
     const char* path,
     const char* imei,
@@ -595,6 +598,7 @@ binder_modem_create(
         modem->messaging_client = radio_client_ref(messaging_client);
         modem->network_client = radio_client_ref(network_client);
         modem->sim_client = radio_client_ref(sim_client);
+        modem->voice_client = radio_client_ref(voice_client);
         modem->ims = binder_ims_reg_new(client, ext, log_prefix);
         modem->ext = binder_ext_slot_ref(ext);
         self->g = radio_request_group_new(client);
