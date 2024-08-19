@@ -17,6 +17,7 @@
 #define BINDER_DEVMON_H
 
 #include "binder_types.h"
+#include <radio_modem_types.h>
 
 #include <ofono/slot.h>
 
@@ -33,8 +34,8 @@ struct binder_devmon_io {
 
 struct binder_devmon {
     void (*free)(BinderDevmon* devmon);
-    BinderDevmonIo* (*start_io)(BinderDevmon* devmon, RadioClient* client,
-        struct ofono_slot* slot);
+    BinderDevmonIo* (*start_io)(BinderDevmon* devmon, RadioClient* ds_client,
+        RadioClient* if_client, struct ofono_slot* slot);
 };
 
 /*
@@ -70,7 +71,8 @@ binder_devmon_combine(
 BinderDevmonIo*
 binder_devmon_start_io(
     BinderDevmon* devmon,
-    RadioClient* client,
+    RadioClient* ds_client,
+    RadioClient* if_client,
     struct ofono_slot* slot)
     BINDER_INTERNAL;
 
