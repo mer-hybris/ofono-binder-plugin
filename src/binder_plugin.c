@@ -727,6 +727,8 @@ binder_plugin_modem_check(
     RADIO_AIDL_INTERFACE modem_interface = binder_plugin_modem_interface(slot);
     RADIO_AIDL_INTERFACE data_interface = modem_interface != RADIO_AIDL_INTERFACE_NONE ?
         RADIO_DATA_INTERFACE : RADIO_AIDL_INTERFACE_NONE;
+    RADIO_AIDL_INTERFACE messaging_interface = modem_interface != RADIO_AIDL_INTERFACE_NONE ?
+        RADIO_MESSAGING_INTERFACE : RADIO_AIDL_INTERFACE_NONE;
     RADIO_AIDL_INTERFACE network_interface = modem_interface != RADIO_AIDL_INTERFACE_NONE ?
         RADIO_NETWORK_INTERFACE : RADIO_AIDL_INTERFACE_NONE;
     RADIO_AIDL_INTERFACE sim_interface = modem_interface != RADIO_AIDL_INTERFACE_NONE ?
@@ -740,6 +742,7 @@ binder_plugin_modem_check(
         modem = binder_modem_create(slot->instance[modem_interface],
             slot->client[modem_interface],
             slot->client[data_interface],
+            slot->client[messaging_interface],
             slot->client[network_interface],
             slot->client[sim_interface], slot->name,
             slot->path, slot->imei, slot->imeisv, &slot->config, slot->ext_slot,
@@ -1379,6 +1382,7 @@ binder_plugin_slot_check_radio_client(
         if (modem_interface == RADIO_MODEM_INTERFACE) {
             // AIDL, need to connect to the other interfaces as well
             binder_plugin_connect_to_interface(slot, dev, RADIO_DATA_INTERFACE);
+            binder_plugin_connect_to_interface(slot, dev, RADIO_MESSAGING_INTERFACE);
             binder_plugin_connect_to_interface(slot, dev, RADIO_NETWORK_INTERFACE);
             binder_plugin_connect_to_interface(slot, dev, RADIO_SIM_INTERFACE);
         }
