@@ -1131,7 +1131,8 @@ binder_plugin_slot_connected(
     GASSERT(!slot->devmon_io);
     if (slot->devmon) {
         slot->devmon_io = binder_devmon_start_io(slot->devmon,
-            slot->client[network_interface], slot->handle);
+            slot->client[modem_interface], slot->client[network_interface],
+            slot->handle);
     }
 
     binder_plugin_slot_startup_check(slot);

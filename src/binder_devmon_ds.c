@@ -25,6 +25,7 @@
 
 #include <radio_client.h>
 #include <radio_request.h>
+#include <radio_modem_types.h>
 
 #include <gbinder_writer.h>
 
@@ -118,13 +119,16 @@ binder_devmon_ds_io_low_data_state_sent(
     gpointer user_data)
 {
     DevMonIo* self = user_data;
+    guint32 code =
+        radio_client_aidl_interface(self->client) == RADIO_MODEM_INTERFACE ?
+            RADIO_MODEM_RESP_SEND_DEVICE_STATE : RADIO_RESP_SEND_DEVICE_STATE;
 
     GASSERT(self->low_data_req == req);
     radio_request_unref(self->low_data_req);
     self->low_data_req = NULL;
 
     if (status == RADIO_TX_STATUS_OK) {
-        if (resp == RADIO_RESP_SEND_DEVICE_STATE) {
+        if (resp == code) {
             if (error == RADIO_ERROR_REQUEST_NOT_SUPPORTED) {
                 DBG_(self, "LOW_DATA_EXPECTED state is not supported");
                 self->low_data_supported = FALSE;
@@ -147,13 +151,16 @@ binder_devmon_ds_io_charging_state_sent(
     gpointer user_data)
 {
     DevMonIo* self = user_data;
+    guint32 code =
+        radio_client_aidl_interface(self->client) == RADIO_MODEM_INTERFACE ?
+            RADIO_MODEM_RESP_SEND_DEVICE_STATE : RADIO_RESP_SEND_DEVICE_STATE;
 
     GASSERT(self->charging_req == req);
     radio_request_unref(self->charging_req);
     self->charging_req = NULL;
 
     if (status == RADIO_TX_STATUS_OK) {
-        if (resp == RADIO_RESP_SEND_DEVICE_STATE) {
+        if (resp == code) {
             if (error == RADIO_ERROR_REQUEST_NOT_SUPPORTED) {
                 DBG_(self, "CHARGING state is not supported");
                 self->charging_supported = FALSE;
@@ -174,8 +181,13 @@ binder_devmon_ds_io_send_device_state(
     RadioRequestCompleteFunc callback)
 {
     GBinderWriter writer;
-    RadioRequest* req = radio_request_new(self->client,
-        RADIO_REQ_SEND_DEVICE_STATE, &writer, callback, NULL, self);
+    RadioRequest* req;
+    guint32 code =
+        radio_client_aidl_interface(self->client) == RADIO_MODEM_INTERFACE ?
+            RADIO_MODEM_REQ_SEND_DEVICE_STATE : RADIO_REQ_SEND_DEVICE_STATE;
+
+    req = radio_request_new(self->client,
+        code, &writer, callback, NULL, self);
 
     /* sendDeviceState(int32_t serial, DeviceStateType type, bool state); */
     gbinder_writer_append_int32(&writer, type);
@@ -318,7 +330,8 @@ static
 BinderDevmonIo*
 binder_devmon_ds_start_io(
     BinderDevmon* devmon,
-    RadioClient* client,
+    RadioClient* ds_client,
+    RadioClient* if_client,
     struct ofono_slot* slot)
 {
     DevMon* ds = binder_devmon_ds_cast(devmon);
@@ -327,7 +340,7 @@ binder_devmon_ds_start_io(
     self->pub.free = binder_devmon_ds_io_free;
     self->low_data_supported = TRUE;
     self->charging_supported = TRUE;
-    self->client = radio_client_ref(client);
+    self->client = radio_client_ref(ds_client);
     self->slot = ofono_slot_ref(slot);
 
     self->connman = binder_connman_ref(ds->connman);
