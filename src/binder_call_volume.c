@@ -21,8 +21,10 @@
 #include <ofono/call-volume.h>
 #include <ofono/log.h>
 
+#include <radio_client.h>
 #include <radio_request.h>
 #include <radio_request_group.h>
+#include <radio_voice_types.h>
 
 #include <gbinder_reader.h>
 #include <gbinder_writer.h>
@@ -30,11 +32,13 @@
 typedef struct binder_call_volume {
     struct ofono_call_volume* v;
     RadioRequestGroup* g;
+    RADIO_AIDL_INTERFACE interface_aidl;
     char* log_prefix;
     guint register_id;
 } BinderCallVolume;
 
 typedef struct binder_call_volume_req {
+    BinderCallVolume* self;
     ofono_call_volume_cb_t cb;
     gpointer data;
 } BinderCallVolumeCbData;
@@ -48,11 +52,13 @@ binder_call_volume_get_data(struct ofono_call_volume* v)
 static
 BinderCallVolumeCbData*
 binder_call_volume_callback_data_new(
+    BinderCallVolume* self,
     ofono_call_volume_cb_t cb,
     void* data)
 {
     BinderCallVolumeCbData* cbd = g_slice_new0(BinderCallVolumeCbData);
 
+    cbd->self = self;
     cbd->cb = cb;
     cbd->data = data;
     return cbd;
@@ -81,7 +87,9 @@ binder_call_volume_mute_cb(
     ofono_call_volume_cb_t cb = cbd->cb;
 
     if (status == RADIO_TX_STATUS_OK) {
-        if (resp == RADIO_RESP_SET_MUTE) {
+        guint32 code = cbd->self->interface_aidl == RADIO_VOICE_INTERFACE ?
+            RADIO_VOICE_RESP_SET_MUTE : RADIO_RESP_SET_MUTE;
+        if (resp == code) {
             if (error == RADIO_ERROR_NONE) {
                 cb(binder_error_ok(&err), cbd->data);
                 return;
@@ -104,14 +112,16 @@ binder_call_volume_mute(
     void* data)
 {
     BinderCallVolume* self = binder_call_volume_get_data(v);
+    guint32 code = self->interface_aidl == RADIO_VOICE_INTERFACE ?
+        RADIO_VOICE_REQ_SET_MUTE : RADIO_REQ_SET_MUTE;
 
     /* setMute(int32_t serial, bool enable); */
     GBinderWriter writer;
     RadioRequest* req = radio_request_new2(self->g,
-        RADIO_REQ_SET_MUTE, &writer,
+        code, &writer,
         binder_call_volume_mute_cb,
         binder_call_volume_callback_data_free,
-        binder_call_volume_callback_data_new(cb, data));
+        binder_call_volume_callback_data_new(self, cb, data));
 
     DBG_(self, "%d", muted);
     gbinder_writer_append_bool(&writer, muted);  /* enabled */
@@ -130,8 +140,11 @@ binder_call_volume_query_mute_cb(
     const GBinderReader* args,
     void* user_data)
 {
+    const BinderCallVolume* self = user_data;
     if (status == RADIO_TX_STATUS_OK) {
-        if (resp == RADIO_RESP_GET_MUTE) {
+        guint32 code = self->interface_aidl == RADIO_VOICE_INTERFACE ?
+            RADIO_VOICE_RESP_GET_MUTE : RADIO_RESP_GET_MUTE;
+        if (resp == code) {
             if (error == RADIO_ERROR_NONE) {
                 GBinderReader reader;
                 gboolean muted;
@@ -159,6 +172,8 @@ binder_call_volume_register(
     gpointer user_data)
 {
     BinderCallVolume* self = user_data;
+    guint32 code = self->interface_aidl == RADIO_VOICE_INTERFACE ?
+        RADIO_VOICE_REQ_GET_MUTE : RADIO_REQ_GET_MUTE;
 
     DBG_(self, "");
     GASSERT(self->register_id);
@@ -166,7 +181,7 @@ binder_call_volume_register(
     ofono_call_volume_register(self->v);
 
     /* Probe the mute state */
-    binder_submit_request2(self->g, RADIO_REQ_GET_MUTE,
+    binder_submit_request2(self->g, code,
         binder_call_volume_query_mute_cb, NULL, self);
 
     return G_SOURCE_REMOVE;
@@ -183,7 +198,8 @@ binder_call_volume_probe(
     BinderCallVolume* self = g_new0(BinderCallVolume, 1);
 
     self->v = v;
-    self->g = radio_request_group_new(modem->client);
+    self->g = radio_request_group_new(modem->voice_client);
+    self->interface_aidl = radio_client_aidl_interface(modem->voice_client);
     self->log_prefix = binder_dup_prefix(modem->log_prefix);
     self->register_id = g_idle_add(binder_call_volume_register, self);
 
