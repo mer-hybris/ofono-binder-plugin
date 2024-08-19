@@ -28,6 +28,8 @@
 #include <radio_request.h>
 #include <radio_request_group.h>
 
+#include <radio_modem_types.h>
+
 #include <gbinder_reader.h>
 #include <gbinder_writer.h>
 
@@ -86,6 +88,7 @@ typedef struct binder_radio_caps_object {
     char* log_prefix;
     RadioClient* client;
     RadioRequestGroup* g;
+    RADIO_AIDL_INTERFACE interface_aidl;
     GUtilIdlePool* idle_pool;
     gulong watch_event_id[WATCH_EVENT_COUNT];
     gulong settings_event_id[SETTINGS_EVENT_COUNT];
@@ -135,6 +138,7 @@ struct binder_radio_caps_request {
 typedef struct binder_radio_caps_check_data {
     BinderRadioCapsCheckFunc cb;
     void* cb_data;
+    RADIO_AIDL_INTERFACE interface_aidl;
 } BinderRadioCapsCheckData;
 
 typedef struct binder_radio_caps_request_tx_phase {
@@ -359,12 +363,31 @@ binder_radio_caps_check_done(
     void* user_data)
 {
     BinderRadioCapsCheckData* check = user_data;
-    const RadioCapability* result = NULL;
+    RadioCapability* result = NULL;
+    char* uuid_str = NULL;
 
     if (status == RADIO_TX_STATUS_OK) {
-        if (resp == RADIO_RESP_GET_RADIO_CAPABILITY) {
+        guint32 code = check->interface_aidl == RADIO_MODEM_INTERFACE ?
+            RADIO_MODEM_RESP_GET_RADIO_CAPABILITY :
+            RADIO_RESP_GET_RADIO_CAPABILITY;
+
+        if (resp == code) {
             if (error == RADIO_ERROR_NONE) {
-                result = binder_read_hidl_struct(args, RadioCapability);
+                if (check->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+                    result = (RadioCapability*)binder_read_hidl_struct(args, RadioCapability);
+                } else {
+                    GBinderReader reader;
+                    gbinder_reader_copy(&reader, args);
+                    result = g_malloc0(sizeof(RadioCapability));
+                    binder_read_parcelable_size(&reader);
+                    gbinder_reader_read_int32(&reader, &result->session);
+                    gbinder_reader_read_uint32(&reader, &result->phase);
+                    gbinder_reader_read_uint32(&reader, &result->raf);
+                    uuid_str = gbinder_reader_read_string16(&reader);
+                    result->logicalModemUuid.data.str = (const char*)uuid_str;
+                    result->logicalModemUuid.len = strlen(uuid_str);
+                    gbinder_reader_read_uint32(&reader, &result->status);
+                }
                 if (result) {
                     DBG("tx=%d,phase=%d,raf=0x%x,uuid=%s,status=%d",
                         result->session, result->phase, result->raf,
@@ -380,6 +403,10 @@ binder_radio_caps_check_done(
     }
 
     check->cb(result, check->cb_data);
+    if (check->interface_aidl == RADIO_MODEM_INTERFACE) {
+        g_free(result);
+        g_free(uuid_str);
+    }
 }
 
 static
@@ -412,14 +439,19 @@ binder_radio_caps_check(
     void* cb_data)
 {
     BinderRadioCapsCheckData* check = g_new0(BinderRadioCapsCheckData, 1);
+    const RADIO_AIDL_INTERFACE iface_aidl = radio_client_aidl_interface(client);
+    guint32 code = iface_aidl == RADIO_MODEM_INTERFACE ?
+        RADIO_MODEM_REQ_GET_RADIO_CAPABILITY :
+        RADIO_REQ_GET_RADIO_CAPABILITY;
 
     /* getRadioCapability(int32 serial) */
     RadioRequest* req = radio_request_new(client,
-        RADIO_REQ_GET_RADIO_CAPABILITY, NULL,
+        code, NULL,
         binder_radio_caps_check_done, g_free, check);
 
     check->cb = cb;
     check->cb_data = cb_data;
+    check->interface_aidl = iface_aidl;
 
     /*
      * Make is blocking because this is typically happening at startup
@@ -647,7 +679,10 @@ binder_radio_caps_initial_query_cb(
     const RadioCapability* cap = NULL;
 
     if (status == RADIO_TX_STATUS_OK) {
-        if (resp == RADIO_RESP_GET_RADIO_CAPABILITY) {
+        guint32 code = self->interface_aidl == RADIO_MODEM_INTERFACE ?
+            RADIO_MODEM_RESP_GET_RADIO_CAPABILITY :
+            RADIO_RESP_GET_RADIO_CAPABILITY;
+        if (resp == code) {
             /* getRadioCapabilityResponse(RadioResponseInfo, RadioCapability) */
             if (error == RADIO_ERROR_NONE) {
                 cap = binder_read_hidl_struct(args, RadioCapability);
@@ -688,6 +723,7 @@ binder_radio_caps_new(
         self->log_prefix = binder_dup_prefix(log_prefix);
 
         self->g = radio_request_group_new(client);
+        self->interface_aidl = radio_client_aidl_interface(client);
         self->radio = binder_radio_ref(radio);
         self->data = binder_data_ref(data);
         caps->mgr = binder_radio_caps_manager_ref(mgr);
@@ -1159,7 +1195,10 @@ binder_radio_caps_manager_abort_cb(
     BinderRadioCapsManager* self = caps->pub.mgr;
 
     if (status == RADIO_TX_STATUS_OK) {
-        if (resp == RADIO_RESP_SET_RADIO_CAPABILITY) {
+        guint32 code = caps->interface_aidl == RADIO_MODEM_INTERFACE ?
+            RADIO_MODEM_RESP_SET_RADIO_CAPABILITY :
+            RADIO_RESP_SET_RADIO_CAPABILITY;
+        if (resp == code) {
             if (error != RADIO_ERROR_NONE) {
                 DBG_(caps, "Failed to abort radio caps switch, error %s",
                     binder_radio_error_string(error));
@@ -1229,8 +1268,11 @@ void binder_radio_caps_manager_next_phase_cb(
 
     GASSERT(caps->tx_pending > 0);
     if (status == RADIO_TX_STATUS_OK) {
+        guint32 code = caps->interface_aidl ==  RADIO_MODEM_INTERFACE ?
+            RADIO_MODEM_RESP_SET_RADIO_CAPABILITY :
+            RADIO_RESP_SET_RADIO_CAPABILITY;
         /* getRadioCapabilityResponse(RadioResponseInfo, RadioCapability rc) */
-        if (resp == RADIO_RESP_SET_RADIO_CAPABILITY) {
+        if (resp == code) {
             if (error == RADIO_ERROR_NONE) {
                 GBinderReader reader;
                 const RadioCapability* rc;
