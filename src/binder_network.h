@@ -18,6 +18,8 @@
 
 #include "binder_types.h"
 
+#include <radio_network_types.h>
+
 #include <ofono/netreg.h>
 #include <ofono/radio-settings.h>
 
@@ -62,6 +64,7 @@ BinderNetwork*
 binder_network_new(
     const char* path,
     RadioClient* client,
+    RadioClient* modem_client,
     const char* log_prefix,
     BinderRadio* radio,
     BinderSimCard* sim_card,

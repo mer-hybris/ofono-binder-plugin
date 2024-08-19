@@ -724,6 +724,8 @@ binder_plugin_modem_check(
     BinderSlot* slot)
 {
     RADIO_AIDL_INTERFACE modem_interface = binder_plugin_modem_interface(slot);
+    RADIO_AIDL_INTERFACE network_interface = modem_interface != RADIO_AIDL_INTERFACE_NONE ?
+        RADIO_NETWORK_INTERFACE : RADIO_AIDL_INTERFACE_NONE;
     RADIO_AIDL_INTERFACE sim_interface = modem_interface != RADIO_AIDL_INTERFACE_NONE ?
         RADIO_SIM_INTERFACE : RADIO_AIDL_INTERFACE_NONE;
 
@@ -733,7 +735,7 @@ binder_plugin_modem_check(
 
         DBG("%s registering modem", slot->name);
         modem = binder_modem_create(slot->instance[modem_interface],
-            slot->client[modem_interface],
+            slot->client[modem_interface], slot->client[network_interface],
             slot->client[sim_interface], slot->name,
             slot->path, slot->imei, slot->imeisv, &slot->config, slot->ext_slot,
             slot->radio, slot->network, slot->sim_card, slot->data,
@@ -1046,6 +1048,8 @@ binder_plugin_slot_connected(
     BinderPlugin* plugin = slot->plugin;
     const BinderPluginSettings* ps = &plugin->settings;
     RADIO_AIDL_INTERFACE modem_interface = binder_plugin_modem_interface(slot);
+    RADIO_AIDL_INTERFACE network_interface = modem_interface != RADIO_AIDL_INTERFACE_NONE ?
+        RADIO_NETWORK_INTERFACE : RADIO_AIDL_INTERFACE_NONE;
     RADIO_AIDL_INTERFACE sim_interface = modem_interface != RADIO_AIDL_INTERFACE_NONE ?
         RADIO_SIM_INTERFACE : RADIO_AIDL_INTERFACE_NONE;
 
@@ -1089,7 +1093,8 @@ binder_plugin_slot_connected(
     GASSERT(!slot->received_sim_status);
 
     GASSERT(!slot->network);
-    slot->network = binder_network_new(slot->path, slot->client[modem_interface],
+    slot->network = binder_network_new(slot->path, slot->client[network_interface],
+        slot->client[modem_interface],
         slot->name, slot->radio, slot->sim_card, slot->sim_settings,
         &slot->config);
 
@@ -1099,8 +1104,8 @@ binder_plugin_slot_connected(
         &slot->config);
 
     GASSERT(!slot->cell_info);
-    slot->cell_info = binder_cell_info_new(slot->instance[modem_interface],
-        slot->client[modem_interface],
+    slot->cell_info = binder_cell_info_new(slot->instance[network_interface],
+        slot->client[network_interface],
         slot->name, slot->radio, slot->sim_card);
 
     GASSERT(!slot->caps);
@@ -1116,7 +1121,7 @@ binder_plugin_slot_connected(
     GASSERT(!slot->devmon_io);
     if (slot->devmon) {
         slot->devmon_io = binder_devmon_start_io(slot->devmon,
-            slot->client[modem_interface], slot->handle);
+            slot->client[network_interface], slot->handle);
     }
 
     binder_plugin_slot_startup_check(slot);
@@ -1364,6 +1369,7 @@ binder_plugin_slot_check_radio_client(
 
         if (modem_interface == RADIO_MODEM_INTERFACE) {
             // AIDL, need to connect to the other interfaces as well
+            binder_plugin_connect_to_interface(slot, dev, RADIO_NETWORK_INTERFACE);
             binder_plugin_connect_to_interface(slot, dev, RADIO_SIM_INTERFACE);
         }
 
