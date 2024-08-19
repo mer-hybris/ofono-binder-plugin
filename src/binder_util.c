@@ -826,6 +826,31 @@ binder_strv_from_hidl_string_vec(
     return NULL;
 }
 
+char**
+binder_strv_from_string16_array(
+    GBinderReader* reader)
+{
+    if (reader) {
+        gint32 count;
+        gbinder_reader_read_int32(reader, &count);
+        if (count < 0) {
+            count = 0;
+        }
+        char** out = g_new(char*, count + 1);
+        char** ptr = out;
+        guint i;
+
+        for (i = 0; i < count; i++, ptr++) {
+            char* str = gbinder_reader_read_string16(reader);
+
+            *ptr = str ? str : g_strdup("");
+        }
+        *ptr = NULL;
+        return out;
+    }
+    return NULL;
+}
+
 guint
 binder_append_vec_with_data(
     GBinderWriter* writer,

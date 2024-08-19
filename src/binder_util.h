@@ -226,6 +226,11 @@ binder_strv_from_hidl_string_vec(
     const GBinderHidlVec* vec)
     BINDER_INTERNAL;
 
+char**
+binder_strv_from_string16_array(
+    GBinderReader* reader)
+    BINDER_INTERNAL;
+
 guint
 binder_append_vec_with_data(
     GBinderWriter* writer,
