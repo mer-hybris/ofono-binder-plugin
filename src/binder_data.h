@@ -132,6 +132,7 @@ BinderData*
 binder_data_new(
     BinderDataManager* dm,
     RadioClient* client,
+    RadioClient* network_client,
     const char* name,
     BinderRadio* radio,
     BinderNetwork* network,
