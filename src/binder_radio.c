@@ -359,14 +359,20 @@ binder_radio_new(
 {
     BinderRadioObject* self = g_object_new(THIS_TYPE, NULL);
     BinderRadio* radio = &self->pub;
+    const RADIO_AIDL_INTERFACE iface_aidl = radio_client_aidl_interface(client);
 
     self->client = radio_client_ref(client);
     self->g = radio_request_group_new(client);
     self->log_prefix = binder_dup_prefix(log_prefix);
     DBG_(self, "");
 
-    self->state_event_id = radio_client_add_indication_handler(client,
-        RADIO_IND_RADIO_STATE_CHANGED, binder_radio_state_changed, self);
+    if (iface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+        self->state_event_id = radio_client_add_indication_handler(client,
+            RADIO_IND_RADIO_STATE_CHANGED, binder_radio_state_changed, self);
+    } else if (iface_aidl == RADIO_MODEM_INTERFACE) {
+        self->state_event_id = radio_client_add_indication_handler(client,
+            RADIO_MODEM_IND_RADIO_STATE_CHANGED, binder_radio_state_changed, self);
+    }
 
     /*
      * Some modem adaptations like to receive power off request at startup
