@@ -770,6 +770,17 @@ binder_read_hidl_string(
     return gbinder_reader_read_hidl_string_c(&reader);
 }
 
+char*
+binder_read_string16(
+    const GBinderReader* args)
+{
+    GBinderReader reader;
+
+    /* Read a single string arg */
+    gbinder_reader_copy(&reader, args);
+    return gbinder_reader_read_string16(&reader);
+}
+
 gboolean
 binder_read_int32(
     const GBinderReader* args,

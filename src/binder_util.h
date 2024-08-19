@@ -202,6 +202,11 @@ binder_read_hidl_string(
     const GBinderReader* args)
     BINDER_INTERNAL;
 
+char*
+binder_read_string16(
+    const GBinderReader* args)
+    BINDER_INTERNAL;
+
 gboolean
 binder_read_int32(
     const GBinderReader* args,
