@@ -33,6 +33,7 @@
 #include <radio_request.h>
 #include <radio_request_group.h>
 
+#include <radio_data_types.h>
 #include <radio_modem_types.h>
 #include <radio_network_types.h>
 
@@ -105,6 +106,7 @@ typedef struct binder_network_data_profile {
 typedef struct binder_network_object {
     BinderBase base;
     BinderNetwork pub;
+    RadioClient* data_client;
     RadioClient* modem_client;
     RadioRequestGroup* g;
     RADIO_AIDL_INTERFACE interface_aidl;
@@ -1323,6 +1325,55 @@ binder_network_fill_radio_data_profile_1_5(
 }
 
 static
+void
+binder_network_fill_radio_data_profile_aidl(
+    GBinderWriter* writer,
+    const BinderNetworkDataProfile* src,
+    const BinderDataProfileConfig* dpc)
+{
+    gint32 initial_size;
+
+    /* dataProfileInfo */
+    /* Non-null parcelable */
+    gbinder_writer_append_int32(writer, 1);
+    initial_size = gbinder_writer_bytes_written(writer);
+    /* Dummy parcelable size, replaced at the end */
+    gbinder_writer_append_int32(writer, -1);
+
+    // profile id is only meaningful when it's persistent on the modem.
+    gbinder_writer_append_int32(writer, RADIO_DATA_PROFILE_INVALID);
+    gbinder_writer_append_string16(writer, src->apn);
+    gbinder_writer_append_int32(writer,
+        binder_proto_from_ofono_proto(src->proto)); /* protocol */
+    gbinder_writer_append_int32(writer,
+        binder_proto_from_ofono_proto(src->proto)); /* roamingProtocol */
+    gbinder_writer_append_int32(writer, binder_radio_auth_from_ofono_method(src->auth_method));
+    gbinder_writer_append_string16(writer, src->username);
+    gbinder_writer_append_string16(writer, src->password);
+    gbinder_writer_append_int32(writer, 0);    /* type */
+    gbinder_writer_append_int32(writer, 0);    /* maxConnsTime */
+    gbinder_writer_append_int32(writer, 0);    /* maxConns */
+    gbinder_writer_append_int32(writer, 0);    /* waitTime */
+    gbinder_writer_append_bool(writer, TRUE);  /* enabled */
+    gbinder_writer_append_int32(writer,
+        binder_radio_apn_types_for_profile(src->id, dpc));
+    gbinder_writer_append_int32(writer, 0);    /* bearerBitmap */
+    gbinder_writer_append_int32(writer, 0);    /* mtuV4 */
+    gbinder_writer_append_int32(writer, 0);    /* mtuV6 */
+    gbinder_writer_append_bool(writer, TRUE);  /* preferred */
+    gbinder_writer_append_bool(writer, FALSE); /* persistent */
+    gbinder_writer_append_bool(writer, FALSE); /* alwaysOn */
+    gbinder_writer_append_int32(writer, 1);    /* trafficDescriptor */
+    gbinder_writer_append_int32(writer, 3 * sizeof(gint32));
+    gbinder_writer_append_string16(writer, NULL); /* trafficDescriptor.dnn */
+    gbinder_writer_append_int32(writer, 0); /* trafficDescriptor.osAppId */
+
+    /* Overwrite parcelable size */
+    gbinder_writer_overwrite_int32(writer, initial_size,
+        gbinder_writer_bytes_written(writer) - initial_size);
+}
+
+static
 RadioDataProfile_1_4*
 binder_network_new_radio_data_profile_1_4(
     GBinderWriter* writer,
@@ -1431,7 +1482,7 @@ void
 binder_network_set_data_profiles(
     BinderNetworkObject* self)
 {
-    RadioClient* client = self->g->client;
+    RadioClient* client = self->data_client;
     const BinderDataProfileConfig* dpc = &self->data_profile_config;
     const RADIO_INTERFACE iface = radio_client_interface(client);
     const guint n = g_slist_length(self->data_profiles);
@@ -1489,7 +1540,14 @@ binder_network_set_data_profiles(
             gbinder_writer_append_bool(&writer, FALSE); /* isRoaming */
         }
     } else {
-        req = NULL;
+        /* setDataProfile(int32 serial, DataProfileInfo[]); */
+        req = radio_request_new(client, RADIO_DATA_REQ_SET_DATA_PROFILE,
+            &writer, binder_network_set_data_profiles_done, NULL, self);
+
+        for (l = self->data_profiles, i = 0; i < n; l = l->next, i++) {
+            binder_network_fill_radio_data_profile_aidl(&writer,
+                (BinderNetworkDataProfile*) l->data, dpc);
+        }
     }
 
     radio_request_drop(self->set_data_profiles_req);
@@ -1618,7 +1676,12 @@ binder_network_set_initial_attach_apn(
             gbinder_writer_append_bool(&writer, FALSE); /* isRoaming */
         }
     } else {
-        req = NULL;
+        /* setInitialAttachApn(int32 serial, DataProfileInfo profile); */
+        req = radio_request_new(self->data_client,
+            RADIO_DATA_REQ_SET_INITIAL_ATTACH_APN,
+            &writer, NULL, NULL, NULL);
+
+        binder_network_fill_radio_data_profile_aidl(&writer, &profile, dpc);
     }
 
     DBG_(self, "\"%s\"", ctx->apn);
@@ -2483,6 +2546,7 @@ BinderNetwork*
 binder_network_new(
     const char* path,
     RadioClient* client,
+    RadioClient* data_client,
     RadioClient* modem_client,
     const char* log_prefix,
     BinderRadio* radio,
@@ -2496,6 +2560,7 @@ binder_network_new(
 
     net->settings = binder_sim_settings_ref(settings);
     self->g = radio_request_group_new(client); /* Keeps ref to client */
+    self->data_client = radio_client_ref(data_client);
     self->modem_client = radio_client_ref(modem_client);
     self->interface_aidl = radio_client_aidl_interface(client);
     self->radio = binder_radio_ref(radio);
@@ -2742,6 +2807,7 @@ binder_network_object_finalize(
     radio_client_remove_all_handlers(self->g->client, self->ind_id);
     radio_request_group_cancel(self->g);
     radio_request_group_unref(self->g);
+    radio_client_unref(self->data_client);
     radio_client_unref(self->modem_client);
 
     binder_network_release_radio_caps(self);

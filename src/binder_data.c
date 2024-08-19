@@ -28,6 +28,9 @@
 #include <radio_request.h>
 #include <radio_request_group.h>
 
+#include <radio_data_types.h>
+#include <radio_network_types.h>
+
 #include <gbinder_reader.h>
 #include <gbinder_writer.h>
 
@@ -106,6 +109,7 @@ typedef struct binder_data_object {
     BinderBase base;
     BinderData pub;
     RadioRequestGroup* g;
+    RADIO_AIDL_INTERFACE interface_aidl;
     BinderRadio* radio;
     BinderNetwork* network;
     BinderDataManager* dm;
@@ -120,6 +124,7 @@ typedef struct binder_data_object {
     BinderDataProfileConfig profile_config;
     guint slot;
     char* log_prefix;
+    RadioClient* network_client;
     RadioRequest* query_req;
     gulong io_event_id[IO_EVENT_COUNT];
     gulong settings_event_id[SETTINGS_EVENT_COUNT];
@@ -335,31 +340,45 @@ binder_data_deactivate_data_call_request_new(
 {
     RadioClient* client = group->client;
     const RADIO_INTERFACE iface = radio_client_interface(client);
+    const RADIO_AIDL_INTERFACE iface_aidl = radio_client_aidl_interface(client);
     RadioRequest* req;
     GBinderWriter args;
 
-    if (iface >= RADIO_INTERFACE_1_2) {
-        req = radio_request_new(client,
-            RADIO_REQ_DEACTIVATE_DATA_CALL_1_2, &args,
-            complete, destroy, user_data);
+    if (iface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+        if (iface >= RADIO_INTERFACE_1_2) {
+            req = radio_request_new(client,
+                RADIO_REQ_DEACTIVATE_DATA_CALL_1_2, &args,
+                complete, destroy, user_data);
 
+            /*
+             * deactivateDataCall_1_2(int32 serial, int32 cid,
+             *   DataRequestReason reason);
+             */
+            gbinder_writer_append_int32(&args, cid);
+            gbinder_writer_append_int32(&args,
+                RADIO_DATA_REQUEST_REASON_NORMAL);
+        } else {
+            req = radio_request_new(client,
+                RADIO_REQ_DEACTIVATE_DATA_CALL, &args,
+                complete, destroy, user_data);
+
+            /*
+             * deactivateDataCall(int32 serial, int32 cid,
+             *   bool reasonRadioShutDown);
+             */
+            gbinder_writer_append_int32(&args, cid);
+            gbinder_writer_append_bool(&args, FALSE);
+        }
+    } else {
+        req = radio_request_new(client,
+            RADIO_DATA_REQ_DEACTIVATE_DATA_CALL, &args,
+            complete, destroy, user_data);
         /*
-         * deactivateDataCall_1_2(int32 serial, int32 cid,
+         * deactivateDataCall(int32 serial, int32 cid,
          *   DataRequestReason reason);
          */
         gbinder_writer_append_int32(&args, cid);
         gbinder_writer_append_int32(&args, RADIO_DATA_REQUEST_REASON_NORMAL);
-    } else {
-        req = radio_request_new(client,
-            RADIO_REQ_DEACTIVATE_DATA_CALL, &args,
-            complete, destroy, user_data);
-
-        /*
-         * deactivateDataCall(int32 serial, int32 cid,
-         *   bool reasonRadioShutDown);
-         */
-        gbinder_writer_append_int32(&args, cid);
-        gbinder_writer_append_bool(&args, FALSE);
     }
 
     return req;
@@ -374,8 +393,11 @@ binder_data_set_data_allowed_request_new(
     void* user_data)
 {
     GBinderWriter args;
+    guint32 code =
+        radio_client_aidl_interface(group->client) == RADIO_DATA_INTERFACE ?
+            RADIO_DATA_REQ_SET_DATA_ALLOWED : RADIO_REQ_SET_DATA_ALLOWED;
     RadioRequest* req = radio_request_new2(group,
-        RADIO_REQ_SET_DATA_ALLOWED, &args,
+        code, &args,
         complete, destroy, user_data);
 
     /* setDataAllowed(int32 serial, bool allow) */
@@ -571,6 +593,92 @@ binder_data_call_new_1_5(
 }
 
 static
+BinderDataCall*
+binder_data_call_new_aidl(
+    GBinderReader* reader)
+{
+    BinderDataCall* call = binder_data_call_new();
+
+    gsize data_read;
+    gsize parcel_size = binder_read_parcelable_size(reader);
+    gsize initial_size = gbinder_reader_bytes_read(reader);
+    gint64 retry_time;
+
+    gbinder_reader_read_int32(reader, &call->status);
+    gbinder_reader_read_int64(reader, &retry_time);
+    // Is there better way to do this?
+    if (retry_time == G_MAXINT64) {
+        call->retry_time = G_MAXINT32;
+    } else if (retry_time < 0) {
+        call->retry_time = -1;
+    } else {
+        call->retry_time = (retry_time & 0xffffffff);
+    }
+    gbinder_reader_read_int32(reader, &call->cid);
+    gbinder_reader_read_uint32(reader, &call->active);
+    gbinder_reader_read_uint32(reader, &call->prot);
+    call->ifname = gbinder_reader_read_string16(reader);
+
+    // addresses
+    {
+        gint32 addresses_count = 0;
+        guint i;
+        char** out;
+        char** ptr;
+        gbinder_reader_read_int32(reader, &addresses_count);
+
+        if (addresses_count < 0) {
+            addresses_count = 0;
+        }
+
+        out = g_new0(char*, addresses_count + 1);
+        ptr = out;
+
+        for (i = 0; i < addresses_count; i++, ptr++) {
+            gsize address_data_read;
+            gsize address_parcel_size = binder_read_parcelable_size(reader);
+            gsize address_initial_size = gbinder_reader_bytes_read(reader);
+
+            if (!address_parcel_size) {
+                continue;
+            }
+
+            char* str = gbinder_reader_read_string16(reader);
+            *ptr = str ? str : g_strdup("");
+
+            // Ignore rest of values for now
+            address_data_read = gbinder_reader_bytes_read(reader) - address_initial_size;
+            while (address_data_read < address_parcel_size) {
+                gbinder_reader_read_uint32(reader, NULL);
+                address_data_read += sizeof(guint32);
+            }
+        }
+        call->addresses = out;
+    }
+    call->dnses = binder_strv_from_string16_array(reader);
+    call->gateways = binder_strv_from_string16_array(reader);
+    call->pcscf = binder_strv_from_string16_array(reader);
+    // mtuV4
+    gbinder_reader_read_int32(reader, &call->mtu);
+    // Ignore rest of the values for now
+    data_read = gbinder_reader_bytes_read(reader) - initial_size;
+    while (data_read < parcel_size) {
+        gbinder_reader_read_uint32(reader, NULL);
+        data_read += sizeof(guint32);
+    }
+
+    DBG("[status=%d,retry=%d,cid=%d,active=%d,type=%d,ifname=%s,"
+        "mtu=%d,address=%s,dns=%s,gateways=%s,pcscf=%s]",
+        call->status, call->retry_time, call->cid, call->active,
+        call->prot, call->ifname, call->mtu,
+        binder_print_strv(call->addresses, " "),
+        binder_print_strv(call->dnses, " "),
+        binder_print_strv(call->gateways, " "),
+        binder_print_strv(call->pcscf, " "));
+    return call;
+}
+
+static
 GSList*
 binder_data_call_list_1_4(
     const RadioDataCall_1_4* calls,
@@ -605,6 +713,29 @@ binder_data_call_list_1_5(
         DBG("num=%u", (guint) n);
         for (i = 0; i < n; i++) {
             l = g_slist_insert_sorted(l, binder_data_call_new_1_5(calls + i),
+                binder_data_call_compare);
+        }
+        return l;
+    } else {
+        DBG("no data calls");
+        return NULL;
+    }
+}
+
+static
+GSList*
+binder_data_call_list_aidl(
+    GBinderReader* reader)
+{
+    gint32 n;
+    gbinder_reader_read_int32(reader, &n);
+    if (n > 0) {
+        gsize i;
+        GSList* l = NULL;
+
+        DBG("num=%u", (guint) n);
+        for (i = 0; i < n; i++) {
+            l = g_slist_insert_sorted(l, binder_data_call_new_aidl(reader),
                 binder_data_call_compare);
         }
         return l;
@@ -727,7 +858,9 @@ binder_data_set_calls(
             key = GINT_TO_POINTER(dc->cid);
             if (!g_hash_table_contains(self->grab, key)) {
                 DBG_(self, "stray call %u", dc->cid);
-                binder_data_call_deact_cid(self, dc->cid);
+                if (dc->cid > 0) {
+                    binder_data_call_deact_cid(self, dc->cid);
+                }
                 break;
             }
         }
@@ -770,9 +903,12 @@ binder_data_restricted_state_changed(
     BinderDataObject* data = THIS(user_data);
     GBinderReader reader;
     gint32 state;
+    guint32 ind_code = data->interface_aidl == RADIO_NETWORK_INTERFACE ?
+        RADIO_NETWORK_IND_RESTRICTED_STATE_CHANGED :
+        RADIO_IND_RESTRICTED_STATE_CHANGED;
 
     /* restrictedStateChanged(RadioIndicationType, PhoneRestrictedState); */
-    GASSERT(code == RADIO_IND_RESTRICTED_STATE_CHANGED);
+    GASSERT(code == ind_code);
     gbinder_reader_copy(&reader, args);
     if (gbinder_reader_read_int32(&reader, &state)) {
         if (data->restricted_state != state) {
@@ -862,6 +998,24 @@ binder_data_call_list_changed_1_5(
 }
 
 static
+void
+binder_data_call_list_changed_aidl(
+    RadioClient* client,
+    RADIO_IND code,
+    const GBinderReader* args,
+    gpointer user_data)
+{
+    BinderDataObject* data = THIS(user_data);
+    GBinderReader reader;
+
+    /* dataCallListChanged(RadioIndicationType,SetupDataCallResult[]) */
+    GASSERT((RADIO_DATA_IND)code == RADIO_DATA_IND_DATA_CALL_LIST_CHANGED);
+
+    gbinder_reader_copy(&reader, args);
+    binder_data_call_list_changed(data, binder_data_call_list_aidl(&reader));
+}
+
+static
 void binder_data_query_data_calls_cb(
     RadioRequest* req,
     RADIO_TX_STATUS status,
@@ -885,41 +1039,50 @@ void binder_data_query_data_calls_cb(
 
         if (error == RADIO_ERROR_NONE) {
             GBinderReader reader;
-            gsize count = 0;
 
             gbinder_reader_copy(&reader, args);
-            if (resp == RADIO_RESP_GET_DATA_CALL_LIST) {
-                /*
-                 *  getDataCallListResponse(RadioResponseInfo,
-                 *      vec<SetupDataCallResult> dcResponse);
-                 */
-                const RadioDataCall* calls =
-                    gbinder_reader_read_hidl_type_vec(&reader,
-                        RadioDataCall, &count);
 
-                list = binder_data_call_list_1_0(calls, count);
-            } else if (resp == RADIO_RESP_GET_DATA_CALL_LIST_1_4) {
-                /*
-                 * getDataCallListResponse_1_4(RadioResponseInfo,
-                 *     vec<SetupDataCallResult> dcResponse);
-                 */
-                const RadioDataCall_1_4* calls =
-                    gbinder_reader_read_hidl_type_vec(&reader,
-                        RadioDataCall_1_4, &count);
+            if (data->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+                gsize count = 0;
+                if (resp == RADIO_RESP_GET_DATA_CALL_LIST) {
+                    /*
+                     *  getDataCallListResponse(RadioResponseInfo,
+                     *      vec<SetupDataCallResult> dcResponse);
+                     */
+                    const RadioDataCall* calls =
+                        gbinder_reader_read_hidl_type_vec(&reader,
+                            RadioDataCall, &count);
 
-                list = binder_data_call_list_1_4(calls, count);
-            } else if (resp == RADIO_RESP_GET_DATA_CALL_LIST_1_5) {
-                /*
-                 * getDataCallListResponse_1_5(RadioResponseInfo,
-                 *     vec<SetupDataCallResult> dcResponse);
-                 */
-                const RadioDataCall_1_5* calls =
-                    gbinder_reader_read_hidl_type_vec(&reader,
-                        RadioDataCall_1_5, &count);
+                    list = binder_data_call_list_1_0(calls, count);
+                } else if (resp == RADIO_RESP_GET_DATA_CALL_LIST_1_4) {
+                    /*
+                     * getDataCallListResponse_1_4(RadioResponseInfo,
+                     *     vec<SetupDataCallResult> dcResponse);
+                     */
+                    const RadioDataCall_1_4* calls =
+                        gbinder_reader_read_hidl_type_vec(&reader,
+                            RadioDataCall_1_4, &count);
 
-                list = binder_data_call_list_1_5(calls, count);
+                    list = binder_data_call_list_1_4(calls, count);
+                } else if (resp == RADIO_RESP_GET_DATA_CALL_LIST_1_5) {
+                    /*
+                     * getDataCallListResponse_1_5(RadioResponseInfo,
+                     *     vec<SetupDataCallResult> dcResponse);
+                     */
+                    const RadioDataCall_1_5* calls =
+                        gbinder_reader_read_hidl_type_vec(&reader,
+                            RadioDataCall_1_5, &count);
+
+                    list = binder_data_call_list_1_5(calls, count);
+                } else {
+                    ofono_error("Unexpected getDataCallList response %d", resp);
+                }
             } else {
-                ofono_error("Unexpected getDataCallList response %d", resp);
+                /*
+                 * getDataCallListResponse(RadioResponseInfo,
+                 *     SetupDataCallResult[] dcResponse);
+                 */
+                list = binder_data_call_list_aidl(&reader);
             }
         } else {
             DBG_(data, "setupDataCall error %s",
@@ -1223,41 +1386,49 @@ binder_data_call_setup_cb(
             GBinderReader reader;
 
             gbinder_reader_copy(&reader, args);
-            if (resp == RADIO_RESP_SETUP_DATA_CALL) {
+            if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+                if (resp == RADIO_RESP_SETUP_DATA_CALL) {
+                    /*
+                     * setupDataCallResponse(RadioResponseInfo,
+                     *     SetupDataCallResult dcResponse);
+                     */
+                    const RadioDataCall* dc =
+                        gbinder_reader_read_hidl_struct(&reader, RadioDataCall);
+
+                    if (dc) {
+                        call = binder_data_call_new_1_0(dc);
+                    }
+                } else if (resp == RADIO_RESP_SETUP_DATA_CALL_1_4) {
+                    /*
+                     * setupDataCallResponse_1_4(RadioResponseInfo,
+                     *     SetupDataCallResult dcResponse);
+                     */
+                    const RadioDataCall_1_4* dc =
+                        gbinder_reader_read_hidl_struct(&reader, RadioDataCall_1_4);
+
+                    if (dc) {
+                        call = binder_data_call_new_1_4(dc);
+                    }
+                } else if (resp == RADIO_RESP_SETUP_DATA_CALL_1_5) {
+                    /*
+                     * setupDataCallResponse_1_5(RadioResponseInfo,
+                     *     SetupDataCallResult dcResponse);
+                     */
+                    const RadioDataCall_1_5* dc =
+                        gbinder_reader_read_hidl_struct(&reader, RadioDataCall_1_5);
+
+                    if (dc) {
+                        call = binder_data_call_new_1_5(dc);
+                    }
+                } else {
+                    ofono_error("Unexpected setupDataCall response %d", resp);
+                }
+            } else {
                 /*
                  * setupDataCallResponse(RadioResponseInfo,
                  *     SetupDataCallResult dcResponse);
                  */
-                const RadioDataCall* dc =
-                    gbinder_reader_read_hidl_struct(&reader, RadioDataCall);
-
-                if (dc) {
-                    call = binder_data_call_new_1_0(dc);
-                }
-            } else if (resp == RADIO_RESP_SETUP_DATA_CALL_1_4) {
-                /*
-                 * setupDataCallResponse_1_4(RadioResponseInfo,
-                 *     SetupDataCallResult dcResponse);
-                 */
-                const RadioDataCall_1_4* dc =
-                    gbinder_reader_read_hidl_struct(&reader, RadioDataCall_1_4);
-
-                if (dc) {
-                    call = binder_data_call_new_1_4(dc);
-                }
-            } else if (resp == RADIO_RESP_SETUP_DATA_CALL_1_5) {
-                /*
-                 * setupDataCallResponse_1_5(RadioResponseInfo,
-                 *     SetupDataCallResult dcResponse);
-                 */
-                const RadioDataCall_1_5* dc =
-                    gbinder_reader_read_hidl_struct(&reader, RadioDataCall_1_5);
-
-                if (dc) {
-                    call = binder_data_call_new_1_5(dc);
-                }
-            } else {
-                ofono_error("Unexpected setupDataCall response %d", resp);
+                call = binder_data_call_new_aidl(&reader);
             }
         } else {
             DBG_(self, "setupDataCall error %s",
@@ -1347,130 +1518,189 @@ binder_data_call_setup_submit(
         binder_radio_auth_from_ofono_method(setup->auth_method) :
         RADIO_APN_AUTH_NONE;
 
-    if (iface >= RADIO_INTERFACE_1_5) {
-        RadioDataProfile_1_5* dp;
+    if (data->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+        if (iface >= RADIO_INTERFACE_1_5) {
+            RadioDataProfile_1_5* dp;
 
-        req = radio_request_new2(g, RADIO_REQ_SETUP_DATA_CALL_1_5,
-            &writer, binder_data_call_setup_cb, NULL, setup);
+            req = radio_request_new2(g, RADIO_REQ_SETUP_DATA_CALL_1_5,
+                &writer, binder_data_call_setup_cb, NULL, setup);
 
-        /*
-         * setupDataCall_1_4(int32_t serial, AccessNetwork accessNetwork,
-         *   DataProfileInfo dataProfileInfo, bool roamingAllowed,
-         *   DataRequestReason reason, vec<string> addresses,
-         *   vec<string> dnses);
-         */
-        dp = gbinder_writer_new0(&writer, RadioDataProfile_1_5);
-        // profile id is only meaningful when it's persistent on the modem.
-        // dp->profileId = setup->profile_id;
-        dp->profileId = RADIO_DATA_PROFILE_INVALID;
-        binder_copy_hidl_string(&writer, &dp->apn, setup->apn);
-        dp->protocol = dp->roamingProtocol =
-            binder_proto_from_ofono_proto(setup->proto);
-        dp->authType = auth;
-        binder_copy_hidl_string(&writer, &dp->user, setup->username);
-        binder_copy_hidl_string(&writer, &dp->password, setup->password);
-        dp->enabled = TRUE;
-        dp->supportedApnTypesBitmap =
-            binder_radio_apn_types_for_profile(setup->profile_id,
-                &data->profile_config);
-
-        gbinder_writer_append_int32(&writer,
-            binder_radio_access_network_for_tech(tech)); /* accessNetwork */
-        gbinder_writer_append_struct(&writer, dp,
-            &binder_data_profile_1_5_type, NULL);   /* dataProfileInfo */
-        gbinder_writer_append_bool(&writer, TRUE);  /* roamingAllowed */
-        gbinder_writer_append_int32(&writer,
-            RADIO_DATA_REQUEST_REASON_NORMAL);      /* reason */
-        gbinder_writer_append_hidl_string_vec(&writer, &nothing, -1);
-        gbinder_writer_append_hidl_string_vec(&writer, &nothing, -1);
-    } else if (iface >= RADIO_INTERFACE_1_4) {
-        RadioDataProfile_1_4* dp;
-
-        req = radio_request_new2(g, RADIO_REQ_SETUP_DATA_CALL_1_4,
-            &writer, binder_data_call_setup_cb, NULL, setup);
-
-        /*
-         * setupDataCall_1_4(int32_t serial, AccessNetwork accessNetwork,
-         *   DataProfileInfo dataProfileInfo, bool roamingAllowed,
-         *   DataRequestReason reason, vec<string> addresses,
-         *   vec<string> dnses);
-         */
-        dp = gbinder_writer_new0(&writer, RadioDataProfile_1_4);
-        // profile id is only meaningful when it's persistent on the modem.
-        // dp->profileId = setup->profile_id;
-        dp->profileId = RADIO_DATA_PROFILE_INVALID;
-        binder_copy_hidl_string(&writer, &dp->apn, setup->apn);
-        dp->protocol = dp->roamingProtocol =
-            binder_proto_from_ofono_proto(setup->proto);
-        dp->authType = auth;
-        binder_copy_hidl_string(&writer, &dp->user, setup->username);
-        binder_copy_hidl_string(&writer, &dp->password, setup->password);
-        dp->enabled = TRUE;
-        dp->supportedApnTypesBitmap =
-            binder_radio_apn_types_for_profile(setup->profile_id,
-                &data->profile_config);
-
-        gbinder_writer_append_int32(&writer,
-            binder_radio_access_network_for_tech(tech)); /* accessNetwork */
-        gbinder_writer_append_struct(&writer, dp,
-            &binder_data_profile_1_4_type, NULL);   /* dataProfileInfo */
-        gbinder_writer_append_bool(&writer, TRUE);  /* roamingAllowed */
-        gbinder_writer_append_int32(&writer,
-            RADIO_DATA_REQUEST_REASON_NORMAL);      /* reason */
-        gbinder_writer_append_hidl_string_vec(&writer, &nothing, -1);
-        gbinder_writer_append_hidl_string_vec(&writer, &nothing, -1);
-    } else {
-        RadioDataProfile* dp;
-        const char* proto_str = binder_proto_str_from_ofono_proto(setup->proto);
-
-        req = radio_request_new2(g, (iface >= RADIO_INTERFACE_1_2) ?
-            RADIO_REQ_SETUP_DATA_CALL_1_2 : RADIO_REQ_SETUP_DATA_CALL,
-            &writer, binder_data_call_setup_cb, NULL, setup);
-
-        dp = gbinder_writer_new0(&writer, RadioDataProfile);
-        dp->profileId = setup->profile_id;
-        binder_copy_hidl_string(&writer, &dp->apn, setup->apn);
-        binder_copy_hidl_string(&writer, &dp->protocol, proto_str);
-        dp->roamingProtocol = dp->protocol;
-        dp->authType = auth;
-        binder_copy_hidl_string(&writer, &dp->user, setup->username);
-        binder_copy_hidl_string(&writer, &dp->password, setup->password);
-        dp->enabled = TRUE;
-        dp->supportedApnTypesBitmap =
-            binder_radio_apn_types_for_profile(setup->profile_id,
-                &data->profile_config);
-        binder_copy_hidl_string(&writer, &dp->mvnoMatchData, NULL);
-
-        if (iface >= RADIO_INTERFACE_1_2) {
             /*
-             * setupDataCall_1_2(int32_t serial, AccessNetwork accessNetwork,
-             *   DataProfileInfo dataProfileInfo, bool modemCognitive,
-             *   bool roamingAllowed, bool isRoaming, DataRequestReason reason,
-             *   vec<string> addresses, vec<string> dnses);
+             * setupDataCall_1_4(int32_t serial, AccessNetwork accessNetwork,
+             *   DataProfileInfo dataProfileInfo, bool roamingAllowed,
+             *   DataRequestReason reason, vec<string> addresses,
+             *   vec<string> dnses);
              */
+            dp = gbinder_writer_new0(&writer, RadioDataProfile_1_5);
+            // profile id is only meaningful when it's persistent on the modem.
+            // dp->profileId = setup->profile_id;
+            dp->profileId = RADIO_DATA_PROFILE_INVALID;
+            binder_copy_hidl_string(&writer, &dp->apn, setup->apn);
+            dp->protocol = dp->roamingProtocol =
+                binder_proto_from_ofono_proto(setup->proto);
+            dp->authType = auth;
+            binder_copy_hidl_string(&writer, &dp->user, setup->username);
+            binder_copy_hidl_string(&writer, &dp->password, setup->password);
+            dp->enabled = TRUE;
+            dp->supportedApnTypesBitmap =
+                binder_radio_apn_types_for_profile(setup->profile_id,
+                    &data->profile_config);
+
             gbinder_writer_append_int32(&writer,
                 binder_radio_access_network_for_tech(tech)); /* accessNetwork */
-        } else {
-            /*
-             * setupDataCall(int32 serial, RadioTechnology radioTechnology,
-             *   DataProfileInfo dataProfileInfo, bool modemCognitive,
-             *   bool roamingAllowed, bool isRoaming);
-             */
-            gbinder_writer_append_int32(&writer, tech); /* radioTechnology */
-        }
-
-        gbinder_writer_append_struct(&writer, dp,
-            &binder_data_profile_type, NULL);       /* dataProfileInfo */
-        gbinder_writer_append_bool(&writer, FALSE); /* modemCognitive */
-        gbinder_writer_append_bool(&writer, TRUE);  /* roamingAllowed */
-        gbinder_writer_append_bool(&writer, FALSE); /* isRoaming */
-
-        if (iface >= RADIO_INTERFACE_1_2) {
+            gbinder_writer_append_struct(&writer, dp,
+                &binder_data_profile_1_5_type, NULL);   /* dataProfileInfo */
+            gbinder_writer_append_bool(&writer, TRUE);  /* roamingAllowed */
             gbinder_writer_append_int32(&writer,
                 RADIO_DATA_REQUEST_REASON_NORMAL);      /* reason */
             gbinder_writer_append_hidl_string_vec(&writer, &nothing, -1);
             gbinder_writer_append_hidl_string_vec(&writer, &nothing, -1);
+        } else if (iface >= RADIO_INTERFACE_1_4) {
+            RadioDataProfile_1_4* dp;
+
+            req = radio_request_new2(g, RADIO_REQ_SETUP_DATA_CALL_1_4,
+                &writer, binder_data_call_setup_cb, NULL, setup);
+
+            /*
+             * setupDataCall_1_4(int32_t serial, AccessNetwork accessNetwork,
+             *   DataProfileInfo dataProfileInfo, bool roamingAllowed,
+             *   DataRequestReason reason, vec<string> addresses,
+             *   vec<string> dnses);
+             */
+            dp = gbinder_writer_new0(&writer, RadioDataProfile_1_4);
+            // profile id is only meaningful when it's persistent on the modem.
+            // dp->profileId = setup->profile_id;
+            dp->profileId = RADIO_DATA_PROFILE_INVALID;
+            binder_copy_hidl_string(&writer, &dp->apn, setup->apn);
+            dp->protocol = dp->roamingProtocol =
+                binder_proto_from_ofono_proto(setup->proto);
+            dp->authType = auth;
+            binder_copy_hidl_string(&writer, &dp->user, setup->username);
+            binder_copy_hidl_string(&writer, &dp->password, setup->password);
+            dp->enabled = TRUE;
+            dp->supportedApnTypesBitmap =
+                binder_radio_apn_types_for_profile(setup->profile_id,
+                    &data->profile_config);
+
+            gbinder_writer_append_int32(&writer,
+                binder_radio_access_network_for_tech(tech)); /* accessNetwork */
+            gbinder_writer_append_struct(&writer, dp,
+                &binder_data_profile_1_4_type, NULL);   /* dataProfileInfo */
+            gbinder_writer_append_bool(&writer, TRUE);  /* roamingAllowed */
+            gbinder_writer_append_int32(&writer,
+                RADIO_DATA_REQUEST_REASON_NORMAL);      /* reason */
+            gbinder_writer_append_hidl_string_vec(&writer, &nothing, -1);
+            gbinder_writer_append_hidl_string_vec(&writer, &nothing, -1);
+        } else {
+            RadioDataProfile* dp;
+            const char* proto_str = binder_proto_str_from_ofono_proto(setup->proto);
+
+            req = radio_request_new2(g, (iface >= RADIO_INTERFACE_1_2) ?
+                RADIO_REQ_SETUP_DATA_CALL_1_2 : RADIO_REQ_SETUP_DATA_CALL,
+                &writer, binder_data_call_setup_cb, NULL, setup);
+
+            dp = gbinder_writer_new0(&writer, RadioDataProfile);
+            dp->profileId = setup->profile_id;
+            binder_copy_hidl_string(&writer, &dp->apn, setup->apn);
+            binder_copy_hidl_string(&writer, &dp->protocol, proto_str);
+            dp->roamingProtocol = dp->protocol;
+            dp->authType = auth;
+            binder_copy_hidl_string(&writer, &dp->user, setup->username);
+            binder_copy_hidl_string(&writer, &dp->password, setup->password);
+            dp->enabled = TRUE;
+            dp->supportedApnTypesBitmap =
+                binder_radio_apn_types_for_profile(setup->profile_id,
+                    &data->profile_config);
+            binder_copy_hidl_string(&writer, &dp->mvnoMatchData, NULL);
+
+            if (iface >= RADIO_INTERFACE_1_2) {
+                /*
+                 * setupDataCall_1_2(int32_t serial, AccessNetwork accessNetwork,
+                 *   DataProfileInfo dataProfileInfo, bool modemCognitive,
+                 *   bool roamingAllowed, bool isRoaming, DataRequestReason reason,
+                 *   vec<string> addresses, vec<string> dnses);
+                 */
+                gbinder_writer_append_int32(&writer,
+                    binder_radio_access_network_for_tech(tech)); /* accessNetwork */
+            } else {
+                /*
+                 * setupDataCall(int32 serial, RadioTechnology radioTechnology,
+                 *   DataProfileInfo dataProfileInfo, bool modemCognitive,
+                 *   bool roamingAllowed, bool isRoaming);
+                 */
+                gbinder_writer_append_int32(&writer, tech); /* radioTechnology */
+            }
+
+            gbinder_writer_append_struct(&writer, dp,
+                &binder_data_profile_type, NULL);       /* dataProfileInfo */
+            gbinder_writer_append_bool(&writer, FALSE); /* modemCognitive */
+            gbinder_writer_append_bool(&writer, TRUE);  /* roamingAllowed */
+            gbinder_writer_append_bool(&writer, FALSE); /* isRoaming */
+
+            if (iface >= RADIO_INTERFACE_1_2) {
+                gbinder_writer_append_int32(&writer,
+                    RADIO_DATA_REQUEST_REASON_NORMAL);      /* reason */
+                gbinder_writer_append_hidl_string_vec(&writer, &nothing, -1);
+                gbinder_writer_append_hidl_string_vec(&writer, &nothing, -1);
+            }
         }
+    } else {
+        gint32 initial_size;
+
+        req = radio_request_new2(g, RADIO_DATA_REQ_SETUP_DATA_CALL,
+            &writer, binder_data_call_setup_cb, NULL, setup);
+
+        gbinder_writer_append_int32(&writer,
+            binder_radio_access_network_for_tech(tech)); /* accessNetwork */
+
+        /* dataProfileInfo */
+        /* Non-null parcelable */
+        gbinder_writer_append_int32(&writer, 1);
+        initial_size = gbinder_writer_bytes_written(&writer);
+        /* Dummy parcelable size, replaced at the end */
+        gbinder_writer_append_int32(&writer, -1);
+
+        // profile id is only meaningful when it's persistent on the modem.
+        gbinder_writer_append_int32(&writer, RADIO_DATA_PROFILE_INVALID);
+        gbinder_writer_append_string16(&writer, setup->apn);
+        gbinder_writer_append_int32(&writer,
+            binder_proto_from_ofono_proto(setup->proto)); /* protocol */
+        gbinder_writer_append_int32(&writer,
+            binder_proto_from_ofono_proto(setup->proto)); /* roamingProtocol */
+        gbinder_writer_append_int32(&writer, auth);
+        gbinder_writer_append_string16(&writer, setup->username);
+        gbinder_writer_append_string16(&writer, setup->password);
+        gbinder_writer_append_int32(&writer, 0);    /* type */
+        gbinder_writer_append_int32(&writer, 0);    /* maxConnsTime */
+        gbinder_writer_append_int32(&writer, 0);    /* maxConns */
+        gbinder_writer_append_int32(&writer, 0);    /* waitTime */
+        gbinder_writer_append_bool(&writer, TRUE);  /* enabled */
+        gbinder_writer_append_int32(&writer,
+            binder_radio_apn_types_for_profile(setup->profile_id,
+                &data->profile_config));
+        gbinder_writer_append_int32(&writer, 0);    /* bearerBitmap */
+        gbinder_writer_append_int32(&writer, 0);    /* mtuV4 */
+        gbinder_writer_append_int32(&writer, 0);    /* mtuV6 */
+        gbinder_writer_append_bool(&writer, FALSE); /* preferred */
+        gbinder_writer_append_bool(&writer, FALSE); /* persistent */
+        gbinder_writer_append_bool(&writer, FALSE); /* alwaysOn */
+        gbinder_writer_append_int32(&writer, 1);    /* trafficDescriptor */
+        gbinder_writer_append_int32(&writer, 3 * sizeof(gint32));
+        gbinder_writer_append_string16(&writer, NULL); /* trafficDescriptor.dnn */
+        gbinder_writer_append_int32(&writer, 0); /* trafficDescriptor.osAppId */
+
+        /* Overwrite parcelable size */
+        gbinder_writer_overwrite_int32(&writer, initial_size,
+            gbinder_writer_bytes_written(&writer) - initial_size);
+
+        gbinder_writer_append_bool(&writer, TRUE);  /* roamingAllowed */
+        gbinder_writer_append_int32(&writer,
+            RADIO_DATA_REQUEST_REASON_NORMAL);      /* reason */
+        gbinder_writer_append_int32(&writer, 0);    /* addresses count */
+        gbinder_writer_append_int32(&writer, 0);    /* dnses count */
+        gbinder_writer_append_int32(&writer, 0);    /* pduSessionId */
+        gbinder_writer_append_int32(&writer, 0);    /* sliceInfo */
+        gbinder_writer_append_bool(&writer, FALSE); /* matchAllRuleAllowed */
     }
 
     return binder_data_request_call(dr, req);
@@ -1572,6 +1802,9 @@ binder_data_call_deact_cb(
     BinderData* data = &self->pub;
     BinderBase* base = &self->base;
     BinderDataCall* call = NULL;
+    guint32 code = self->interface_aidl == RADIO_DATA_INTERFACE ?
+        RADIO_DATA_RESP_DEACTIVATE_DATA_CALL :
+        RADIO_RESP_DEACTIVATE_DATA_CALL;
 
     GASSERT(dr->radio_req == ioreq);
     radio_request_unref(dr->radio_req);
@@ -1579,9 +1812,10 @@ binder_data_call_deact_cb(
 
     binder_data_request_completed(dr);
 
+
     if (status == RADIO_TX_STATUS_OK) {
         if (error == RADIO_ERROR_NONE) {
-            if (resp == RADIO_RESP_DEACTIVATE_DATA_CALL) {
+            if (resp == code) {
                 /*
                  * If RADIO_REQ_DEACTIVATE_DATA_CALL succeeds, some adaptations
                  * don't send dataCallListChanged even though the list of calls
@@ -1685,7 +1919,11 @@ binder_data_set_preferred_data_modem_cb(
 
     if (status == RADIO_TX_STATUS_OK) {
         if (error == RADIO_ERROR_NONE) {
-            if (resp == RADIO_CONFIG_RESP_SET_PREFERRED_DATA_MODEM) {
+            guint32 code =
+                radio_config_interface_type(data->dm->rc) == RADIO_INTERFACE_TYPE_AIDL ?
+                    RADIO_CONFIG_AIDL_RESP_SET_PREFERRED_DATA_MODEM :
+                    RADIO_CONFIG_RESP_SET_PREFERRED_DATA_MODEM;
+            if (resp == code) {
                 const gboolean was_allowed = binder_data_is_allowed(data);
 
                 data->flags |= BINDER_DATA_FLAG_ON;
@@ -1712,8 +1950,12 @@ binder_data_set_preferred_data_modem_submit(
     GBinderWriter args;
     BinderDataObject* data = dr->data;
     BinderDataManager* dm = data->dm;
+    guint32 code =
+        radio_config_interface_type(dm->rc) == RADIO_INTERFACE_TYPE_AIDL ?
+            RADIO_CONFIG_AIDL_REQ_SET_PREFERRED_DATA_MODEM :
+            RADIO_CONFIG_REQ_SET_PREFERRED_DATA_MODEM;
     RadioRequest* req = radio_config_request_new(dm->rc,
-            RADIO_CONFIG_REQ_SET_PREFERRED_DATA_MODEM, &args,
+            code, &args,
             binder_data_set_preferred_data_modem_cb, NULL, dr);
 
     /* setPreferredDataModem(serial, uint8 modemId) */
@@ -1760,6 +2002,8 @@ binder_data_allow_cb(
     BinderDataRequestAllowData* ad = user_data;
     BinderDataRequest* dr = &ad->req;
     BinderDataObject* data = dr->data;
+    guint32 code = data->interface_aidl == RADIO_DATA_INTERFACE ?
+        RADIO_DATA_RESP_SET_DATA_ALLOWED : RADIO_RESP_SET_DATA_ALLOWED;
 
     GASSERT(dr->radio_req == req);
     radio_request_unref(dr->radio_req);
@@ -1769,7 +2013,7 @@ binder_data_allow_cb(
 
     if (status == RADIO_TX_STATUS_OK) {
         if (error == RADIO_ERROR_NONE) {
-            if (resp == RADIO_RESP_SET_DATA_ALLOWED) {
+            if (resp == code) {
                 const gboolean was_allowed = binder_data_is_allowed(data);
 
                 if (ad->allow) {
@@ -1963,6 +2207,7 @@ BinderData*
 binder_data_new(
     BinderDataManager* dm,
     RadioClient* client,
+    RadioClient* network_client,
     const char* name,
     BinderRadio* radio,
     BinderNetwork* network,
@@ -1980,26 +2225,39 @@ binder_data_new(
         self->profile_config = config->data_profile_config;
         self->slot = config->slot;
         self->g = radio_request_group_new(client); /* Keeps ref to client */
+        self->interface_aidl = radio_client_aidl_interface(client);
         self->dm = binder_data_manager_ref(dm);
         self->radio = binder_radio_ref(radio);
         self->network = binder_network_ref(network);
+        self->network_client = radio_client_ref(network_client);
 
-        self->io_event_id[IO_EVENT_DATA_CALL_LIST_CHANGED_1_0] =
-            radio_client_add_indication_handler(client,
-                RADIO_IND_DATA_CALL_LIST_CHANGED,
-                binder_data_call_list_changed_1_0, self);
-        self->io_event_id[IO_EVENT_DATA_CALL_LIST_CHANGED_1_4] =
-            radio_client_add_indication_handler(client,
-                RADIO_IND_DATA_CALL_LIST_CHANGED_1_4,
-                binder_data_call_list_changed_1_4, self);
-        self->io_event_id[IO_EVENT_DATA_CALL_LIST_CHANGED_1_5] =
-            radio_client_add_indication_handler(client,
-                RADIO_IND_DATA_CALL_LIST_CHANGED_1_5,
-                binder_data_call_list_changed_1_5, self);
-        self->io_event_id[IO_EVENT_RESTRICTED_STATE_CHANGED] =
-            radio_client_add_indication_handler(client,
-                RADIO_IND_RESTRICTED_STATE_CHANGED,
-                binder_data_restricted_state_changed, self);
+        if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+            self->io_event_id[IO_EVENT_DATA_CALL_LIST_CHANGED_1_0] =
+                radio_client_add_indication_handler(client,
+                    RADIO_IND_DATA_CALL_LIST_CHANGED,
+                    binder_data_call_list_changed_1_0, self);
+            self->io_event_id[IO_EVENT_DATA_CALL_LIST_CHANGED_1_4] =
+                radio_client_add_indication_handler(client,
+                    RADIO_IND_DATA_CALL_LIST_CHANGED_1_4,
+                    binder_data_call_list_changed_1_4, self);
+            self->io_event_id[IO_EVENT_DATA_CALL_LIST_CHANGED_1_5] =
+                radio_client_add_indication_handler(client,
+                    RADIO_IND_DATA_CALL_LIST_CHANGED_1_5,
+                    binder_data_call_list_changed_1_5, self);
+            self->io_event_id[IO_EVENT_RESTRICTED_STATE_CHANGED] =
+                radio_client_add_indication_handler(client,
+                    RADIO_IND_RESTRICTED_STATE_CHANGED,
+                    binder_data_restricted_state_changed, self);
+        } else {
+            self->io_event_id[IO_EVENT_DATA_CALL_LIST_CHANGED_1_0] =
+                radio_client_add_indication_handler(client,
+                    RADIO_DATA_IND_DATA_CALL_LIST_CHANGED,
+                    binder_data_call_list_changed_aidl, self);
+            self->io_event_id[IO_EVENT_RESTRICTED_STATE_CHANGED] =
+                radio_client_add_indication_handler(network_client,
+                    RADIO_NETWORK_IND_RESTRICTED_STATE_CHANGED,
+                    binder_data_restricted_state_changed, self);
+        }
         self->io_event_id[IO_EVENT_DEATH] =
             radio_client_add_death_handler(client,
                 binder_data_client_dead_cb, self);
@@ -2049,10 +2307,13 @@ binder_data_poll_call_state(
     BinderData* data)
 {
     BinderDataObject* self = binder_data_cast(data);
+    guint32 code = self->interface_aidl == RADIO_DATA_INTERFACE ?
+        RADIO_DATA_REQ_GET_DATA_CALL_LIST :
+        RADIO_REQ_GET_DATA_CALL_LIST;
 
     if (G_LIKELY(self) && !self->query_req) {
         RadioRequest* ioreq = radio_request_new2(self->g,
-            RADIO_REQ_GET_DATA_CALL_LIST, NULL,
+            code, NULL,
             binder_data_query_data_calls_cb, NULL, self);
 
         radio_request_set_retry(ioreq, BINDER_RETRY_SECS*1000, -1);
@@ -2369,6 +2630,7 @@ binder_data_object_finalize(
     radio_request_drop(self->query_req);
     radio_request_group_cancel(self->g);
     radio_request_group_unref(self->g);
+    radio_client_unref(self->network_client);
 
     binder_radio_power_off(self->radio, self);
     binder_radio_unref(self->radio);
@@ -2755,7 +3017,9 @@ gboolean
 binder_data_manager_need_set_data_allowed(
     BinderDataManager* dm)
 {
-    return dm && radio_config_interface(dm->rc) < RADIO_CONFIG_INTERFACE_1_1;
+    return dm &&
+        radio_config_interface_type(dm->rc) == RADIO_INTERFACE_TYPE_HIDL &&
+        radio_config_interface(dm->rc) < RADIO_CONFIG_INTERFACE_1_1;
 }
 
 /*
