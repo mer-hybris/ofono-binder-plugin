@@ -27,6 +27,7 @@
 #include <radio_client.h>
 #include <radio_request.h>
 #include <radio_request_group.h>
+#include <radio_network_types.h>
 #include <radio_sim_types.h>
 
 #include <gbinder_reader.h>
@@ -81,6 +82,7 @@ typedef struct binder_sim {
     BinderSimCard* card;
     RadioRequestGroup* g;
     RADIO_AIDL_INTERFACE interface_aidl;
+    RadioClient* network_client;
     RadioRequest* query_pin_retries_req;
     GList* pin_cbd_list;
     int retries[OFONO_SIM_PASSWORD_INVALID];
@@ -1766,13 +1768,17 @@ binder_perso_change_state(
     void *data)
 {
     BinderSim* self = binder_sim_get_data(sim);
-    RADIO_REQ code = RADIO_REQ_NONE;
+    guint32 code = RADIO_REQ_NONE;
     gboolean ok = FALSE;
+    const RADIO_AIDL_INTERFACE iface_aidl =
+        radio_client_aidl_interface(self->network_client);
 
     switch (passwd_type) {
     case OFONO_SIM_PASSWORD_PHNET_PIN:
         if (!enable) {
-            code = RADIO_REQ_SUPPLY_NETWORK_DEPERSONALIZATION;
+            code = iface_aidl == RADIO_NETWORK_INTERFACE ?
+                RADIO_NETWORK_REQ_SUPPLY_NETWORK_DEPERSONALIZATION :
+                RADIO_REQ_SUPPLY_NETWORK_DEPERSONALIZATION;
         } else {
             DBG_(self, "Not supported, enable=%d", enable);
         }
@@ -1789,7 +1795,11 @@ binder_perso_change_state(
             binder_sim_pin_change_state_cb, binder_sim_pin_req_done,
             binder_sim_pin_cbd_new(self, passwd_type, FALSE, cb, data));
 
-        binder_append_hidl_string(&writer, passwd);
+        if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+            binder_append_hidl_string(&writer, passwd);
+        } else {
+            gbinder_writer_append_string16(&writer, passwd);
+        }
         ok = radio_request_submit(req);
         radio_request_unref(req);
     }
@@ -2657,6 +2667,7 @@ binder_sim_probe(
     self->card = binder_sim_card_ref(modem->sim_card);
     self->g = radio_request_group_new(modem->sim_client); /* Keeps ref to client */
     self->interface_aidl = radio_client_aidl_interface(modem->sim_client);
+    self->network_client = radio_client_ref(modem->network_client);
     self->watch = ofono_watch_new(binder_modem_get_path(modem));
     self->sim = sim;
 
@@ -2680,6 +2691,7 @@ static void binder_sim_remove(struct ofono_sim *sim)
     radio_request_drop(self->query_pin_retries_req);
     radio_request_group_cancel(self->g);
     radio_request_group_unref(self->g);
+    radio_client_unref(self->network_client);
 
     if (self->list_apps_id) {
         g_source_remove(self->list_apps_id);

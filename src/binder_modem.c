@@ -499,6 +499,7 @@ binder_modem_remove(
     radio_request_group_cancel(self->g);
     radio_request_group_unref(self->g);
     radio_client_unref(modem->client);
+    radio_client_unref(modem->network_client);
     radio_client_unref(modem->sim_client);
     radio_instance_unref(modem->instance);
 
@@ -542,6 +543,7 @@ BinderModem*
 binder_modem_create(
     RadioInstance* instance,
     RadioClient* client,
+    RadioClient* network_client,
     RadioClient* sim_client,
     const char* log_prefix,
     const char* path,
@@ -585,6 +587,7 @@ binder_modem_create(
         modem->watch = ofono_watch_new(path);
         modem->instance = radio_instance_ref(instance);
         modem->client = radio_client_ref(client);
+        modem->network_client = radio_client_ref(network_client);
         modem->sim_client = radio_client_ref(sim_client);
         modem->ims = binder_ims_reg_new(client, ext, log_prefix);
         modem->ext = binder_ext_slot_ref(ext);
@@ -626,9 +629,14 @@ binder_modem_create(
              * the only reason for making this call.
              */
             if (config->query_available_band_mode) {
+                 guint32 code =
+                     radio_client_aidl_interface(
+                         modem->network_client) == RADIO_NETWORK_INTERFACE ?
+                             RADIO_NETWORK_REQ_GET_AVAILABLE_BAND_MODES :
+                             RADIO_REQ_GET_AVAILABLE_BAND_MODES;
                 /* oneway getAvailableBandModes(int32 serial); */
                 RadioRequest* req = radio_request_new2(self->g,
-                    RADIO_REQ_GET_AVAILABLE_BAND_MODES, NULL,
+                    code, NULL,
                     NULL, NULL, NULL);
 
                 radio_request_submit(req);
