@@ -500,6 +500,7 @@ binder_modem_remove(
     radio_request_group_unref(self->g);
     radio_client_unref(modem->client);
     radio_client_unref(modem->data_client);
+    radio_client_unref(modem->messaging_client);
     radio_client_unref(modem->network_client);
     radio_client_unref(modem->sim_client);
     radio_instance_unref(modem->instance);
@@ -545,6 +546,7 @@ binder_modem_create(
     RadioInstance* instance,
     RadioClient* client,
     RadioClient* data_client,
+    RadioClient* messaging_client,
     RadioClient* network_client,
     RadioClient* sim_client,
     const char* log_prefix,
@@ -590,6 +592,7 @@ binder_modem_create(
         modem->instance = radio_instance_ref(instance);
         modem->client = radio_client_ref(client);
         modem->data_client = radio_client_ref(data_client);
+        modem->messaging_client = radio_client_ref(messaging_client);
         modem->network_client = radio_client_ref(network_client);
         modem->sim_client = radio_client_ref(sim_client);
         modem->ims = binder_ims_reg_new(client, ext, log_prefix);

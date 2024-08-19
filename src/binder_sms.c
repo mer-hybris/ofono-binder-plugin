@@ -31,6 +31,7 @@
 #include <radio_client.h>
 #include <radio_request.h>
 #include <radio_request_group.h>
+#include <radio_messaging_types.h>
 
 #include <gbinder_reader.h>
 #include <gbinder_writer.h>
@@ -81,6 +82,7 @@ typedef struct binder_sms {
     BinderExtSms* sms_ext;
     BinderImsReg* ims_reg;
     RadioRequestGroup* g;
+    RADIO_AIDL_INTERFACE interface_aidl;
     gulong ext_event[SMS_EXT_EVENT_COUNT];
     gulong radio_event[SMS_RADIO_EVENT_COUNT];
     guint register_id;
@@ -226,7 +228,10 @@ binder_sms_sca_set_cb(
     struct ofono_error err;
 
     if (status == RADIO_TX_STATUS_OK) {
-        if (resp == RADIO_RESP_SET_SMSC_ADDRESS) {
+        guint32 code = cbd->self->interface_aidl == RADIO_MESSAGING_INTERFACE ?
+            RADIO_MESSAGING_RESP_SET_SMSC_ADDRESS :
+            RADIO_RESP_SET_SMSC_ADDRESS;
+        if (resp == code) {
             if (error == RADIO_ERROR_NONE) {
                 cb(binder_error_ok(&err), cbd->data);
                 return;
@@ -255,14 +260,21 @@ binder_sms_sca_set(
     GBinderWriter writer;
     const char* number = (sca->type == OFONO_NUMBER_TYPE_INTERNATIONAL) ?
         (tmp = g_strconcat("+", sca->number, NULL)) : sca->number;
+    guint32 code = self->interface_aidl == RADIO_MESSAGING_INTERFACE ?
+        RADIO_MESSAGING_REQ_SET_SMSC_ADDRESS :
+        RADIO_REQ_SET_SMSC_ADDRESS;
 
     /* setSmscAddress(int32_t serial, string smsc); */
     RadioRequest* req = radio_request_new2(self->g,
-        RADIO_REQ_SET_SMSC_ADDRESS, &writer, binder_sms_sca_set_cb,
+        code, &writer, binder_sms_sca_set_cb,
         binder_sms_cbd_free, binder_sms_cbd_new(self, BINDER_CB(cb), data));
 
     DBG_(self, "setting sca: %s", number);
-    binder_append_hidl_string(&writer, number);
+    if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+        binder_append_hidl_string(&writer, number);
+    } else {
+        gbinder_writer_append_string16(&writer, number);
+    }
 
     if (!radio_request_submit(req)) {
         struct ofono_error err;
@@ -285,29 +297,40 @@ binder_sms_sca_query_cb(
     gpointer user_data)
 {
     BinderSmsCbData* cbd = user_data;
+    BinderSms* self = cbd->self;
     ofono_sms_sca_query_cb_t cb = cbd->cb.sca_query;
     struct ofono_error err;
 
     if (status == RADIO_TX_STATUS_OK) {
-        if (resp == RADIO_RESP_GET_SMSC_ADDRESS) {
+        guint32 code = self->interface_aidl == RADIO_MESSAGING_INTERFACE ?
+            RADIO_MESSAGING_RESP_GET_SMSC_ADDRESS :
+            RADIO_RESP_GET_SMSC_ADDRESS;
+        if (resp == code) {
             if (error == RADIO_ERROR_NONE) {
                 GBinderReader reader;
-                const char* smsc;
+                char* smsc;
 
                 gbinder_reader_copy(&reader, args);
-                smsc = gbinder_reader_read_hidl_string_c(&reader);
+                if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+                    smsc = gbinder_reader_read_hidl_string(&reader);
+                } else {
+                    smsc = gbinder_reader_read_string16(&reader);
+                }
                 if (smsc) {
                     struct ofono_phone_number sca;
+                    const char* str = smsc;
 
-                    if (smsc[0] == '+') {
-                        smsc++;
+                    if (str[0] == '+') {
+                        str++;
                         sca.type = OFONO_NUMBER_TYPE_INTERNATIONAL;
                     } else {
                         sca.type = OFONO_NUMBER_TYPE_UNKNOWN;
                     }
-                    g_strlcpy(sca.number, smsc, sizeof(sca.number));
+                    g_strlcpy(sca.number, str, sizeof(sca.number));
                     DBG("csca_query_cb: %s, %d", sca.number, sca.type);
                     cb(binder_error_ok(&err), &sca, cbd->data);
+
+                    g_free(smsc);
                     return;
                 }
             } else {
@@ -331,8 +354,11 @@ binder_sms_sca_query(
     void* data)
 {
     BinderSms* self = binder_sms_get_data(sms);
+    guint32 code = self->interface_aidl == RADIO_MESSAGING_INTERFACE ?
+        RADIO_MESSAGING_REQ_GET_SMSC_ADDRESS :
+        RADIO_REQ_GET_SMSC_ADDRESS;
     RadioRequest* req = radio_request_new2(self->g,
-        RADIO_REQ_GET_SMSC_ADDRESS, NULL, binder_sms_sca_query_cb,
+        code, NULL, binder_sms_sca_query_cb,
         binder_sms_cbd_free, binder_sms_cbd_new(self, BINDER_CB(cb), data));
 
     DBG_(self, "sending csca_query");
@@ -373,12 +399,15 @@ binder_sms_submit_cb(
     gpointer user_data)
 {
     BinderSmsSubmitCbData* cbd = user_data;
+    BinderSms* self = cbd->self;
     ofono_sms_submit_cb_t cb = cbd->cb;
     struct ofono_error err;
 
     binder_error_init_failure(&err);
     if (status == RADIO_TX_STATUS_OK) {
-        const gboolean ims = (resp == RADIO_RESP_SEND_IMS_SMS);
+        const gboolean ims = self->interface_aidl == RADIO_MESSAGING_INTERFACE ?
+            ((RADIO_MESSAGING_RESP)resp == RADIO_MESSAGING_RESP_SEND_IMS_SMS) :
+            (resp == RADIO_RESP_SEND_IMS_SMS);
 
         /*
          * Luckily, all 3 responses that we're handling here have the
@@ -388,47 +417,95 @@ binder_sms_submit_cb(
          * sendSMSExpectMoreResponse(RadioResponseInfo, SendSmsResult sms);
          * sendImsSmsResponse(RadioResponseInfo, SendSmsResult sms);
          */
-        if (resp == RADIO_RESP_SEND_SMS ||
-            resp == RADIO_RESP_SEND_SMS_EXPECT_MORE ||
-            resp == RADIO_RESP_SEND_IMS_SMS) {
-            if (error == RADIO_ERROR_NONE) {
-                const RadioSendSmsResult* res;
-                GBinderReader reader;
+        if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+            if (resp == RADIO_RESP_SEND_SMS ||
+                resp == RADIO_RESP_SEND_SMS_EXPECT_MORE ||
+                resp == RADIO_RESP_SEND_IMS_SMS) {
+                if (error == RADIO_ERROR_NONE) {
+                    const RadioSendSmsResult* res;
+                    GBinderReader reader;
 
-                gbinder_reader_copy(&reader, args);
-                res = gbinder_reader_read_hidl_struct(&reader,
-                    RadioSendSmsResult);
+                    gbinder_reader_copy(&reader, args);
+                    res = gbinder_reader_read_hidl_struct(&reader,
+                        RadioSendSmsResult);
 
-                if (res) {
-                    DBG("%ssms msg ref: %d, ack: %s err: %d", ims ? "ims " : "",
-                        res->messageRef, res->ackPDU.data.str, res->errorCode);
+                    if (res) {
+                        DBG("%ssms msg ref: %d, ack: %s err: %d", ims ? "ims " : "",
+                            res->messageRef, res->ackPDU.data.str, res->errorCode);
 
-                    /*
-                     * Error is -1 if unknown or not applicable,
-                     * otherwise 3GPP 27.005, 3.2.5
-                     */
-                   if (res->errorCode > 0) {
-                        err.type = OFONO_ERROR_TYPE_CMS;
-                        err.error = res->errorCode;
-                    } else {
-                        /* Success */
-                        cb(binder_error_ok(&err), res->messageRef, cbd->data);
-                        return;
+                        /*
+                         * Error is -1 if unknown or not applicable,
+                         * otherwise 3GPP 27.005, 3.2.5
+                         */
+                        if (res->errorCode > 0) {
+                            err.type = OFONO_ERROR_TYPE_CMS;
+                            err.error = res->errorCode;
+                        } else {
+                            /* Success */
+                            cb(binder_error_ok(&err), res->messageRef, cbd->data);
+                            return;
+                        }
                     }
+                } else {
+                    ofono_error("%ssms send error %s", ims ? "ims " : "",
+                        binder_radio_error_string(error));
+                }
+                if (ims && cbd->pdu) {
+                    /* Failed to send IMS SMS, try GSM */
+                    binder_sms_send(cbd->self, cbd->pdu, cbd->pdu_len,
+                        cbd->tpdu_len, BINDER_SMS_SEND_FLAG_FORCE_GSM,
+                        cbd->cb, cbd->data);
+                    return;
                 }
             } else {
-                ofono_error("%ssms send error %s", ims ? "ims " : "",
-                    binder_radio_error_string(error));
-            }
-            if (ims && cbd->pdu) {
-                /* Failed to send IMS SMS, try GSM */
-                binder_sms_send(cbd->self, cbd->pdu, cbd->pdu_len,
-                    cbd->tpdu_len, BINDER_SMS_SEND_FLAG_FORCE_GSM,
-                    cbd->cb, cbd->data);
-                return;
+                ofono_error("Unexpected send sms response %d", resp);
             }
         } else {
-            ofono_error("Unexpected send sms response %d", resp);
+            if ((RADIO_MESSAGING_RESP)resp == RADIO_MESSAGING_RESP_SEND_SMS ||
+                (RADIO_MESSAGING_RESP)resp == RADIO_MESSAGING_RESP_SEND_SMS_EXPECT_MORE ||
+                (RADIO_MESSAGING_RESP)resp == RADIO_MESSAGING_RESP_SEND_IMS_SMS) {
+                if (error == RADIO_ERROR_NONE) {
+                    GBinderReader reader;
+                    gint32 message_ref;
+                    char* ack_pdu = NULL;
+                    gint32 error_code;
+
+                    gbinder_reader_copy(&reader, args);
+
+                    if (binder_read_parcelable_size(&reader)) {
+                        gbinder_reader_read_int32(&reader, &message_ref);
+                        ack_pdu = gbinder_reader_read_string16(&reader);
+                        gbinder_reader_read_int32(&reader, &error_code);
+                        DBG("%ssms msg ref: %d, ack: %s err: %d", ims ? "ims " : "",
+                        message_ref, ack_pdu, error_code);
+                        g_free(ack_pdu);
+
+                        /*
+                         * Error is -1 if unknown or not applicable,
+                         * otherwise 3GPP 27.005, 3.2.5
+                         */
+                        if (error_code > 0) {
+                            err.type = OFONO_ERROR_TYPE_CMS;
+                            err.error = error_code;
+                        } else {
+                            /* Success */
+                            cb(binder_error_ok(&err), message_ref, cbd->data);
+                            return;
+                        }
+                    }
+                    g_free(ack_pdu);
+                } else {
+                    ofono_error("%ssms send error %s", ims ? "ims " : "",
+                        binder_radio_error_string(error));
+                }
+                if (ims && cbd->pdu) {
+                    /* Failed to send IMS SMS, try GSM */
+                    binder_sms_send(cbd->self, cbd->pdu, cbd->pdu_len,
+                        cbd->tpdu_len, BINDER_SMS_SEND_FLAG_FORCE_GSM,
+                        cbd->cb, cbd->data);
+                    return;
+                }
+            }
         }
     }
     /* Error path */
@@ -549,6 +626,79 @@ binder_sms_ims_message(
 
 static
 void
+binder_sms_gsm_message_aidl(
+    BinderSms* self,
+    GBinderWriter* writer,
+    const unsigned char* pdu,
+    int pdu_len,
+    int tpdu_len)
+{
+    /*
+     * SMSC address:
+     *
+     * smsc_len == 1, then zero-length SMSC was specified but IRadio
+     * interface expects an empty string for default SMSC.
+     */
+    char* tpdu;
+    tpdu = g_malloc0(sizeof(char) * (tpdu_len * 2));
+    int smsc_len = pdu_len - tpdu_len;
+    gint32 initial_size;
+
+    /* PDU is sent as an ASCII hex string */
+    ofono_encode_hex(pdu + smsc_len, tpdu_len, tpdu);
+    DBG_(self, "%s", tpdu);
+
+    /* Non-null parcelable */
+    gbinder_writer_append_int32(writer, 1);
+    initial_size = gbinder_writer_bytes_written(writer);
+    /* Dummy parcelable size, replaced at the end */
+    gbinder_writer_append_int32(writer, -1);
+
+    gbinder_writer_append_string16_len(writer, (const char*) pdu, smsc_len);
+    gbinder_writer_append_string16_len(writer, tpdu, tpdu_len * 2);
+
+    /* Overwrite parcelable size */
+    gbinder_writer_overwrite_int32(writer, initial_size,
+        gbinder_writer_bytes_written(writer) - initial_size);
+
+    g_free(tpdu);
+}
+
+static
+void
+binder_sms_ims_message_aidl(
+    BinderSms* self,
+    GBinderWriter* writer,
+    const unsigned char* pdu,
+    int pdu_len,
+    int tpdu_len)
+{
+    gint32 initial_size;
+    /* Non-null parcelable */
+    gbinder_writer_append_int32(writer, 1);
+    initial_size = gbinder_writer_bytes_written(writer);
+    /* Dummy parcelable size, replaced at the end */
+    gbinder_writer_append_int32(writer, -1);
+
+    gbinder_writer_append_int32(writer, RADIO_TECH_FAMILY_3GPP2);
+    gbinder_writer_append_bool(writer, FALSE);
+    gbinder_writer_append_int32(writer, 0);
+
+    /* CDMA message count */
+    gbinder_writer_append_int32(writer, 0);
+
+    /* GSM message count */
+    gbinder_writer_append_int32(writer, 1);
+
+    /* Overwrite parcelable size */
+    gbinder_writer_overwrite_int32(writer, initial_size,
+        gbinder_writer_bytes_written(writer) - initial_size);
+
+    binder_sms_gsm_message_aidl(self, writer, pdu, pdu_len, tpdu_len);
+}
+
+static
+void
 binder_sms_send(
     BinderSms* self,
     const unsigned char* pdu,
@@ -591,16 +741,26 @@ binder_sms_send(
          * sendSMSExpectMore(serial, GsmSmsMessage message);
          */
         GBinderWriter writer;
+        guint32 code = self->interface_aidl == RADIO_MESSAGING_INTERFACE ?
+            ((flags & BINDER_SMS_SEND_FLAG_EXPECT_MORE) ?
+                RADIO_MESSAGING_REQ_SEND_SMS_EXPECT_MORE :
+                RADIO_MESSAGING_REQ_SEND_SMS) :
+            ((flags & BINDER_SMS_SEND_FLAG_EXPECT_MORE) ?
+                RADIO_REQ_SEND_SMS_EXPECT_MORE : RADIO_REQ_SEND_SMS);
         RadioRequest* req = radio_request_new2(self->g,
-            (flags & BINDER_SMS_SEND_FLAG_EXPECT_MORE) ?
-            RADIO_REQ_SEND_SMS_EXPECT_MORE : RADIO_REQ_SEND_SMS, &writer,
+            code, &writer,
             binder_sms_submit_cb, binder_sms_submit_cbd_free,
             cbd ? cbd : /* No need to copy the PDU */
             binder_sms_submit_cbd_new(self, NULL, 0, 0, cb, data));
 
-        binder_sms_gsm_message(self, &writer,
-            gbinder_writer_new0(&writer, RadioGsmSmsMessage),
-            pdu, pdu_len, tpdu_len, NULL);
+        if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+            binder_sms_gsm_message(self, &writer,
+                gbinder_writer_new0(&writer, RadioGsmSmsMessage),
+                pdu, pdu_len, tpdu_len, NULL);
+        } else {
+            binder_sms_gsm_message_aidl(self, &writer,
+                pdu, pdu_len, tpdu_len);
+        }
         if (radio_request_submit(req)) {
             radio_request_unref(req);
             /* Request submitted */
@@ -609,14 +769,21 @@ binder_sms_send(
     } else if (self->use_standard_ims_sms_api) {
         /* sendImsSms(serial, ImsSmsMessage message); */
         GBinderWriter writer;
+        guint32 code = self->interface_aidl == RADIO_MESSAGING_INTERFACE ?
+            RADIO_MESSAGING_REQ_SEND_IMS_SMS : RADIO_REQ_SEND_IMS_SMS;
         RadioRequest* req = radio_request_new2(self->g,
-            RADIO_REQ_SEND_IMS_SMS, &writer,
+            code, &writer,
             binder_sms_submit_cb, binder_sms_submit_cbd_free,
             cbd ? cbd :  /* Copy the PDU for GSM SMS fallback */
             binder_sms_submit_cbd_new(self, pdu, pdu_len, tpdu_len, cb, data));
 
         DBG("sending ims message");
-        binder_sms_ims_message(self, &writer, pdu, pdu_len, tpdu_len);
+
+        if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+            binder_sms_ims_message(self, &writer, pdu, pdu_len, tpdu_len);
+        } else {
+            binder_sms_ims_message_aidl(self, &writer, pdu, pdu_len, tpdu_len);
+        }
         if (radio_request_submit(req)) {
             radio_request_unref(req);
             /* Request submitted */
@@ -657,8 +824,12 @@ binder_sms_ack_cb(
     const GBinderReader* args,
     gpointer user_data)
 {
+    BinderSms* self = user_data;
     if (status == RADIO_TX_STATUS_OK) {
-        if (resp == RADIO_RESP_ACKNOWLEDGE_LAST_INCOMING_GSM_SMS) {
+        guint32 code = self->interface_aidl == RADIO_MESSAGING_INTERFACE ?
+            RADIO_MESSAGING_RESP_ACKNOWLEDGE_LAST_INCOMING_GSM_SMS :
+            RADIO_RESP_ACKNOWLEDGE_LAST_INCOMING_GSM_SMS;
+        if (resp == code) {
             if (error != RADIO_ERROR_NONE) {
                 ofono_error("SMS acknowledgement failed: %s",
                     binder_radio_error_string(error));
@@ -679,14 +850,17 @@ binder_sms_ack(
     gboolean ok)
 {
     GBinderWriter writer;
+    guint32 code = self->interface_aidl == RADIO_MESSAGING_INTERFACE ?
+        RADIO_MESSAGING_REQ_ACKNOWLEDGE_LAST_INCOMING_GSM_SMS :
+        RADIO_REQ_ACKNOWLEDGE_LAST_INCOMING_GSM_SMS;
 
     /*
      * acknowledgeLastIncomingGsmSms(int32 serial, bool success,
      *     SmsAcknowledgeFailCause cause);
      */
     RadioRequest* req = radio_request_new2(self->g,
-        RADIO_REQ_ACKNOWLEDGE_LAST_INCOMING_GSM_SMS, &writer,
-        binder_sms_ack_cb, NULL, NULL);
+        code, &writer,
+        binder_sms_ack_cb, NULL, self);
 
     DBG_(self, "%s", ok ? "ok" : "fail");
     gbinder_writer_append_bool(&writer, ok);
@@ -717,12 +891,19 @@ binder_sms_incoming(
      * newSmsStatusReport(RadioIndicationType, vec<uint8_t> pdu);
      */
     gbinder_reader_copy(&reader, args);
-    pdu = gbinder_reader_read_hidl_byte_vec(&reader, &len);
+    if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+        pdu = gbinder_reader_read_hidl_byte_vec(&reader, &len);
+    } else {
+        pdu = gbinder_reader_read_byte_array(&reader, &len);
+    }
     if (pdu) {
         const guint pdu_len = (guint) len;
         const guint smsc_len = (guint) pdu[0] + 1;
 
-        ofono_info("%s, %u bytes",(code == RADIO_IND_NEW_SMS) ?
+        guint32 ind_code = self->interface_aidl == RADIO_MESSAGING_INTERFACE ?
+            RADIO_MESSAGING_IND_NEW_SMS : RADIO_IND_NEW_SMS;
+
+        ofono_info("%s, %u bytes",(code == ind_code) ?
             "incoming sms" : "sms status", pdu_len);
         if (pdu_len > smsc_len) {
             /* The PDU starts with the SMSC address per TS 27.005 (+CMT:) */
@@ -731,18 +912,34 @@ binder_sms_incoming(
             DBG_(self, "smsc: %s", binder_print_hex(pdu, smsc_len));
             DBG_(self, "tpdu: %s", binder_print_hex(pdu + smsc_len, tpdu_len));
 
-            switch (code) {
-            case RADIO_IND_NEW_SMS:
-                ofono_sms_deliver_notify(self->sms, pdu, pdu_len, tpdu_len);
-                binder_sms_ack(self, TRUE);
-                break;
-            case RADIO_IND_NEW_SMS_STATUS_REPORT:
-                ofono_sms_status_notify(self->sms, pdu, pdu_len, tpdu_len);
-                binder_sms_ack(self, TRUE);
-                break;
-            default:
-                binder_sms_ack(self, FALSE);
-                break;
+            if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+                switch (code) {
+                case RADIO_IND_NEW_SMS:
+                    ofono_sms_deliver_notify(self->sms, pdu, pdu_len, tpdu_len);
+                    binder_sms_ack(self, TRUE);
+                    break;
+                case RADIO_IND_NEW_SMS_STATUS_REPORT:
+                    ofono_sms_status_notify(self->sms, pdu, pdu_len, tpdu_len);
+                    binder_sms_ack(self, TRUE);
+                    break;
+                default:
+                    binder_sms_ack(self, FALSE);
+                    break;
+                }
+            } else {
+                switch (code) {
+                case RADIO_MESSAGING_IND_NEW_SMS:
+                    ofono_sms_deliver_notify(self->sms, pdu, pdu_len, tpdu_len);
+                    binder_sms_ack(self, TRUE);
+                    break;
+                case RADIO_MESSAGING_IND_NEW_SMS_STATUS_REPORT:
+                    ofono_sms_status_notify(self->sms, pdu, pdu_len, tpdu_len);
+                    binder_sms_ack(self, TRUE);
+                    break;
+                default:
+                    binder_sms_ack(self, FALSE);
+                    break;
+                }
             }
             return;
         }
@@ -825,8 +1022,12 @@ binder_sms_delete_on_sim_cb(
     const GBinderReader* args,
     gpointer user_data)
 {
+    BinderSms* self = user_data;
     if (status == RADIO_TX_STATUS_OK) {
-        if (resp == RADIO_RESP_DELETE_SMS_ON_SIM) {
+        guint32 code = self->interface_aidl == RADIO_MESSAGING_INTERFACE ?
+            RADIO_MESSAGING_RESP_DELETE_SMS_ON_SIM :
+            RADIO_RESP_DELETE_SMS_ON_SIM;
+        if (resp == code) {
             if (error == RADIO_ERROR_NONE) {
                 ofono_info("sms deleted from sim");
             } else {
@@ -869,6 +1070,10 @@ binder_sms_on_sim_cb(
                 RadioRequest* req;
                 GBinderWriter writer;
                 const guint tpdu_len = pdu_len - smsc_len;
+                guint32 code =
+                    self->interface_aidl == RADIO_MESSAGING_INTERFACE ?
+                        RADIO_MESSAGING_REQ_DELETE_SMS_ON_SIM :
+                        RADIO_REQ_DELETE_SMS_ON_SIM;
 
                 ofono_info("read sms from sim, %u bytes", pdu_len);
                 DBG_(self, "smsc: %s", binder_print_hex(pdu, smsc_len));
@@ -880,8 +1085,8 @@ binder_sms_on_sim_cb(
                 /* deleteSmsOnSim(int32 serial, int32 index); */
                 DBG_(self, "deleting record: %d", cbd->record);
                 req = radio_request_new2(self->g,
-                    RADIO_REQ_DELETE_SMS_ON_SIM, &writer,
-                    binder_sms_delete_on_sim_cb, NULL, NULL);
+                    code, &writer,
+                    binder_sms_delete_on_sim_cb, NULL, self);
                 gbinder_writer_append_int32(&writer, cbd->record);
                 radio_request_submit(req);
                 radio_request_unref(req);
@@ -911,9 +1116,11 @@ binder_sms_on_sim(
     gint32 rec;
 
     ofono_info("new sms on sim");
+    guint32 ind_code = self->interface_aidl == RADIO_MESSAGING_INTERFACE ?
+        RADIO_MESSAGING_IND_NEW_SMS_ON_SIM : RADIO_IND_NEW_SMS_ON_SIM;
 
     /* newSmsOnSim(RadioIndicationType type, int32 recordNumber); */
-    GASSERT(code == RADIO_IND_NEW_SMS_ON_SIM);
+    GASSERT(code == ind_code);
     gbinder_reader_copy(&reader, args);
     if (gbinder_reader_read_int32(&reader, &rec)) {
         DBG("rec %d", rec);
@@ -940,15 +1147,27 @@ gboolean binder_sms_register(
     ofono_sms_register(self->sms);
 
     /* Register event handlers */
-    self->radio_event[SMS_RADIO_EVENT_NEW_SMS] =
-        radio_client_add_indication_handler(client,
-            RADIO_IND_NEW_SMS, binder_sms_incoming, self);
-    self->radio_event[SMS_RADIO_EVENT_NEW_STATUS_REPORT] =
-        radio_client_add_indication_handler(client,
-            RADIO_IND_NEW_SMS_STATUS_REPORT, binder_sms_incoming, self);
-    self->radio_event[SMS_RADIO_EVENT_NEW_SMS_ON_SIM] =
-        radio_client_add_indication_handler(client,
-            RADIO_IND_NEW_SMS_ON_SIM, binder_sms_on_sim, self);
+    if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+        self->radio_event[SMS_RADIO_EVENT_NEW_SMS] =
+            radio_client_add_indication_handler(client,
+                RADIO_IND_NEW_SMS, binder_sms_incoming, self);
+        self->radio_event[SMS_RADIO_EVENT_NEW_STATUS_REPORT] =
+            radio_client_add_indication_handler(client,
+                RADIO_IND_NEW_SMS_STATUS_REPORT, binder_sms_incoming, self);
+        self->radio_event[SMS_RADIO_EVENT_NEW_SMS_ON_SIM] =
+            radio_client_add_indication_handler(client,
+                RADIO_IND_NEW_SMS_ON_SIM, binder_sms_on_sim, self);
+    } else {
+        self->radio_event[SMS_RADIO_EVENT_NEW_SMS] =
+            radio_client_add_indication_handler(client,
+                RADIO_MESSAGING_IND_NEW_SMS, binder_sms_incoming, self);
+        self->radio_event[SMS_RADIO_EVENT_NEW_STATUS_REPORT] =
+            radio_client_add_indication_handler(client,
+                RADIO_MESSAGING_IND_NEW_SMS_STATUS_REPORT, binder_sms_incoming, self);
+        self->radio_event[SMS_RADIO_EVENT_NEW_SMS_ON_SIM] =
+            radio_client_add_indication_handler(client,
+                RADIO_MESSAGING_IND_NEW_SMS_ON_SIM, binder_sms_on_sim, self);
+    }
 
     if (self->sms_ext) {
         /* Extension */
@@ -980,7 +1199,8 @@ binder_sms_probe(
     self->watch = ofono_watch_new(binder_modem_get_path(modem));
     self->sim_context = ofono_sim_context_create(self->watch->sim);
     self->ims_reg = binder_ims_reg_ref(modem->ims);
-    self->g = radio_request_group_new(modem->client); /* Keeps ref to client */
+    self->g = radio_request_group_new(modem->messaging_client); /* Keeps ref to client */
+    self->interface_aidl = radio_client_aidl_interface(modem->messaging_client);
 
     if (modem->ext && (self->sms_ext = binder_ext_slot_get_interface(modem->ext,
         BINDER_EXT_TYPE_SMS)) != NULL) {
