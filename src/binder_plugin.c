@@ -60,6 +60,7 @@
 
 #include <radio_data_types.h>
 #include <radio_modem_types.h>
+#include <radio_voice_types.h>
 
 #include <gbinder_servicemanager.h>
 #include <gbinder_reader.h>
@@ -733,6 +734,8 @@ binder_plugin_modem_check(
         RADIO_NETWORK_INTERFACE : RADIO_AIDL_INTERFACE_NONE;
     RADIO_AIDL_INTERFACE sim_interface = modem_interface != RADIO_AIDL_INTERFACE_NONE ?
         RADIO_SIM_INTERFACE : RADIO_AIDL_INTERFACE_NONE;
+    RADIO_AIDL_INTERFACE voice_interface = modem_interface != RADIO_AIDL_INTERFACE_NONE ?
+        RADIO_VOICE_INTERFACE : RADIO_AIDL_INTERFACE_NONE;
 
     if (!slot->modem && slot->handle && slot->handle->enabled &&
         radio_client_connected(slot->client[modem_interface])) {
@@ -744,7 +747,8 @@ binder_plugin_modem_check(
             slot->client[data_interface],
             slot->client[messaging_interface],
             slot->client[network_interface],
-            slot->client[sim_interface], slot->name,
+            slot->client[sim_interface],
+            slot->client[voice_interface], slot->name,
             slot->path, slot->imei, slot->imeisv, &slot->config, slot->ext_slot,
             slot->radio, slot->network, slot->sim_card, slot->data,
             slot->sim_settings, slot->cell_info);
@@ -1385,6 +1389,7 @@ binder_plugin_slot_check_radio_client(
             binder_plugin_connect_to_interface(slot, dev, RADIO_MESSAGING_INTERFACE);
             binder_plugin_connect_to_interface(slot, dev, RADIO_NETWORK_INTERFACE);
             binder_plugin_connect_to_interface(slot, dev, RADIO_SIM_INTERFACE);
+            binder_plugin_connect_to_interface(slot, dev, RADIO_VOICE_INTERFACE);
         }
 
         binder_plugin_check_data_manager(plugin);
