@@ -397,8 +397,8 @@ binder_cell_info_new_cell_gsm_aidl(
     /* CellIdentityGsm */
     parcel_size = binder_read_parcelable_size(reader);
     initial_size = gbinder_reader_bytes_read(reader);
-    gutil_parse_int(gbinder_reader_read_string16(reader), 10, &gsm->mcc);
-    gutil_parse_int(gbinder_reader_read_string16(reader), 10, &gsm->mnc);
+    binder_read_string16_parse_int(reader, &gsm->mcc);
+    binder_read_string16_parse_int(reader, &gsm->mnc);
     gbinder_reader_read_int32(reader, &gsm->lac);
     gbinder_reader_read_int32(reader, &gsm->cid);
     gbinder_reader_read_int32(reader, &gsm->arfcn);
@@ -450,8 +450,8 @@ binder_cell_info_new_cell_wcdma_aidl(
     /* CellIdentityWcdma */
     parcel_size = binder_read_parcelable_size(reader);
     initial_size = gbinder_reader_bytes_read(reader);
-    gutil_parse_int(gbinder_reader_read_string16(reader), 10, &wcdma->mcc);
-    gutil_parse_int(gbinder_reader_read_string16(reader), 10, &wcdma->mnc);
+    binder_read_string16_parse_int(reader, &wcdma->mcc);
+    binder_read_string16_parse_int(reader, &wcdma->mnc);
     gbinder_reader_read_int32(reader, &wcdma->lac);
     gbinder_reader_read_int32(reader, &wcdma->cid);
     gbinder_reader_read_int32(reader, &wcdma->psc);
@@ -502,8 +502,8 @@ binder_cell_info_new_cell_lte_aidl(
     /* CellIdentityLte */
     parcel_size = binder_read_parcelable_size(reader);
     initial_size = gbinder_reader_bytes_read(reader);
-    gutil_parse_int(gbinder_reader_read_string16(reader), 10, &lte->mcc);
-    gutil_parse_int(gbinder_reader_read_string16(reader), 10, &lte->mnc);
+    binder_read_string16_parse_int(reader, &lte->mcc);
+    binder_read_string16_parse_int(reader, &lte->mnc);
     gbinder_reader_read_int32(reader, &lte->ci);
     gbinder_reader_read_int32(reader, &lte->pci);
     gbinder_reader_read_int32(reader, &lte->tac);
@@ -560,8 +560,8 @@ binder_cell_info_new_cell_nr_aidl(
     /* CellIdentityNr */
     parcel_size = binder_read_parcelable_size(reader);
     initial_size = gbinder_reader_bytes_read(reader);
-    gutil_parse_int(gbinder_reader_read_string16(reader), 10, &nr->mcc);
-    gutil_parse_int(gbinder_reader_read_string16(reader), 10, &nr->mnc);
+    binder_read_string16_parse_int(reader, &nr->mcc);
+    binder_read_string16_parse_int(reader, &nr->mnc);
     gbinder_reader_read_int64(reader, &nr->nci);
     gbinder_reader_read_int32(reader, &nr->pci);
     gbinder_reader_read_int32(reader, &nr->tac);

@@ -983,6 +983,10 @@ binder_sim_get_imsi_cb(
                     /* Success */
                     GASSERT(strlen(imsi) == 15);
                     cb(binder_error_ok(&err), imsi, cbd->data);
+
+                    if (cbd->self->interface_aidl != RADIO_AIDL_INTERFACE_NONE) {
+                        g_free(imsi);
+                    }
                     return;
                 }
             } else {

@@ -307,6 +307,12 @@ binder_network_poll_operator_ok(
         binder_base_emit_property_change(&self->base,
             BINDER_NETWORK_PROPERTY_OPERATOR);
     }
+
+    if (iface_aidl != RADIO_AIDL_INTERFACE_NONE) {
+        g_free((char*)lalpha);
+        g_free((char*)salpha);
+        g_free((char*)numeric);
+    }
 }
 
 static
@@ -2322,7 +2328,9 @@ binder_network_modem_reset_cb(
     if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
         DBG_(self, "%s", binder_read_hidl_string(args));
     } else {
-        DBG_(self, "%s", binder_read_string16(args));
+        char* reason = binder_read_string16(args);
+        DBG_(self, "%s", reason);
+        g_free(reason);
     }
     GASSERT(code == ind_code);
 

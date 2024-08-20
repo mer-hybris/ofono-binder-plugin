@@ -275,8 +275,8 @@ binder_voicecall_info_new_aidl(
     struct ofono_call* oc = &call->oc;
     gboolean is_mt;
     gboolean is_voice;
-    const char *number;
-    const char *name;
+    char *number;
+    char *name;
 
     gsize address_data_read;
     gsize address_parcel_size = binder_read_parcelable_size(reader);
@@ -297,6 +297,7 @@ binder_voicecall_info_new_aidl(
         OFONO_CALL_MODE_VOICE :
         OFONO_CALL_MODE_UNKNOWN;
     gbinder_reader_read_bool(reader, NULL);
+
     number = gbinder_reader_read_string16(reader);
     if (number && strlen(number)) {
         oc->clip_validity = OFONO_CLIP_VALIDITY_VALID;
@@ -305,11 +306,15 @@ binder_voicecall_info_new_aidl(
     } else {
         oc->clip_validity = OFONO_CLIP_VALIDITY_NOT_AVAILABLE;
     }
+    g_free(number);
+
     gbinder_reader_read_int32(reader, NULL); /* als */
+
     name = gbinder_reader_read_string16(reader);
     if (name && strlen(name) > 0) {
         g_strlcpy(oc->name, name, OFONO_MAX_CALLER_NAME_LENGTH);
     }
+    g_free(name);
 
     // Ignore rest of values for now
     address_data_read = gbinder_reader_bytes_read(reader) - address_initial_size;
@@ -566,7 +571,7 @@ binder_voicecall_lastcause_cb(
                     cause_code = info->causeCode;
                 } else {
                     gbinder_reader_read_int32(&reader, &cause_code);
-                    g_free(gbinder_reader_read_string16(&reader));
+                    gbinder_reader_skip_string16(&reader);
                 }
                 if (info) {
                     enum ofono_disconnect_reason reason =
@@ -1434,6 +1439,7 @@ binder_voicecall_supp_svc_notification(
             /* MO intermediate result code */
             ofono_voicecall_ssn_mo_notify(self->vc, 0, ssn->code, ssn->index);
         }
+        g_free(number);
     }
 }
 
@@ -2013,7 +2019,12 @@ binder_voicecall_ecclist_changed(
     }
 
     ofono_voicecall_en_list_notify(self->vc, (char**) en_list);
-    g_free(en_list);
+
+    if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+        g_free(en_list);
+    } else {
+        g_strfreev((char**)en_list);
+    }
 }
 
 static

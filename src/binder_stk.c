@@ -280,6 +280,10 @@ binder_stk_proactive_command(
     } else {
         ofono_warn("Failed to parse STK command %s", pcmd);
     }
+
+    if (self->interface_aidl != RADIO_AIDL_INTERFACE_NONE) {
+        g_free((char*)pcmd);
+    }
 }
 
 static

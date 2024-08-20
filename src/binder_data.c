@@ -614,7 +614,7 @@ binder_data_call_new_aidl(
     gbinder_reader_read_int32(reader, &call->cid);
     gbinder_reader_read_uint32(reader, &call->active);
     gbinder_reader_read_uint32(reader, &call->prot);
-    call->ifname = g_strdup(gbinder_reader_read_string16(reader));
+    call->ifname = gbinder_reader_read_string16(reader);
 
     // addresses
     {
@@ -640,9 +640,8 @@ binder_data_call_new_aidl(
                 continue;
             }
 
-            const char* str = gbinder_reader_read_string16(reader);
-
-            *ptr = str ? g_strdup(str) : g_strdup("");
+            char* str = gbinder_reader_read_string16(reader);
+            *ptr = str ? str : g_strdup("");
 
             // Ignore rest of values for now
             address_data_read = gbinder_reader_bytes_read(reader) - address_initial_size;

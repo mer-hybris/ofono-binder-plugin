@@ -976,6 +976,8 @@ binder_netreg_scan_op_copy_name_aidl(
     } else if (alpha_short) {
         g_strlcpy(dest->name, alpha_short, sizeof(dest->name));
     }
+    g_free(alpha_long);
+    g_free(alpha_short);
 }
 
 static
@@ -1096,8 +1098,8 @@ binder_netreg_scan_op_convert_aidl(
     for (i = 0; i < count; i++) {
         gboolean registered;
         gint32 type;
-        const char* mcc;
-        const char* mnc;
+        char* mcc;
+        char* mnc;
         gsize data_read;
         gsize initial_size;
         gsize parcel_size;
@@ -1207,6 +1209,9 @@ binder_netreg_scan_op_convert_aidl(
 
         g_strlcpy(dest->mcc, mcc, sizeof(dest->mcc));
         g_strlcpy(dest->mnc, mnc, sizeof(dest->mnc));
+        g_free(mcc);
+        g_free(mnc);
+
         DBG("[registered=%d, operator=%s, %s, %s, %s, %s]",
             registered, dest->name, dest->mcc, dest->mnc,
             binder_ofono_access_technology_string(dest->tech),
@@ -2004,6 +2009,10 @@ binder_netreg_nitz_notify(
     } else {
         ofono_warn("Failed to parse NITZ string \"%s\"", nitz);
     }
+
+    if (self->interface_aidl == RADIO_NETWORK_INTERFACE) {
+        g_free((char*)nitz);
+    }
 }
 
 static
@@ -2019,7 +2028,9 @@ binder_netreg_modem_reset_notify(
     if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
         DBG_(self, "%s", binder_read_hidl_string(args));
     } else {
-        DBG_(self, "%s", binder_read_string16(args));
+        char* reason = binder_read_string16(args);
+        DBG_(self, "%s", reason);
+        g_free(reason);
     }
 
     /* Drop pending requests */

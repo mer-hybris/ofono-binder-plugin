@@ -931,6 +931,11 @@ binder_plugin_device_identity_cb(
                 if (!slot->imeisv) {
                     slot->imeisv = g_strdup(imeisv ? imeisv : "");
                 }
+
+                if (slot->interface_type == RADIO_INTERFACE_TYPE_AIDL) {
+                    g_free((char*)imei);
+                    g_free((char*)imeisv);
+                }
             } else {
                 ofono_warn("getDeviceIdentity error %s",
                     binder_radio_error_string(error));

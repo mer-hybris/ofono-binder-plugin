@@ -42,7 +42,6 @@ static const char PROTO_IPV4V6_STR[] = "IPV4V6";
 #define RADIO_ACCESS_FAMILY_NR \
     (RAF_NR)
 
-static
 const char*
 binder_pool_string(
     char* str)
@@ -770,7 +769,7 @@ binder_read_hidl_string(
     return gbinder_reader_read_hidl_string_c(&reader);
 }
 
-const char*
+char*
 binder_read_string16(
     const GBinderReader* args)
 {
@@ -853,6 +852,22 @@ binder_strv_from_hidl_string_vec(
     return NULL;
 }
 
+gboolean
+binder_read_string16_parse_int(
+    GBinderReader* reader,
+    gint32* value)
+{
+    /* Read a string and parse integer value from it */
+    gboolean ret = FALSE;
+    char* str = gbinder_reader_read_string16(reader);
+
+    if (str) {
+        ret = gutil_parse_int(str, 10, value);
+        g_free(str);
+    }
+    return ret;
+}
+
 char**
 binder_strv_from_string16_array(
     GBinderReader* reader)
@@ -868,9 +883,9 @@ binder_strv_from_string16_array(
         guint i;
 
         for (i = 0; i < count; i++, ptr++) {
-            const char* str = gbinder_reader_read_string16(reader);
+            char* str = gbinder_reader_read_string16(reader);
 
-            *ptr = str ? g_strdup(str) : g_strdup("");
+            *ptr = str ? str : g_strdup("");
         }
         *ptr = NULL;
         return out;

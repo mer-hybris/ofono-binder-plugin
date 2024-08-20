@@ -100,10 +100,12 @@ binder_devinfo_query_revision_ok(
     struct ofono_error err;
     GBinderReader reader;
     const char* res;
+    RADIO_AIDL_INTERFACE interface_aidl =
+        radio_client_aidl_interface(cbd->self->g->client);
 
     /* getBasebandVersionResponse(RadioResponseInfo, string version); */
     gbinder_reader_copy(&reader, args);
-    if (radio_client_aidl_interface(cbd->self->g->client) == RADIO_AIDL_INTERFACE_NONE) {
+    if (interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
         res = gbinder_reader_read_hidl_string_c(&reader);
     } else {
         res = gbinder_reader_read_string16(&reader);
@@ -111,6 +113,10 @@ binder_devinfo_query_revision_ok(
 
     DBG_(cbd->self, "%s", res);
     cbd->cb(binder_error_ok(&err), res ? res : "", cbd->data);
+
+    if (interface_aidl != RADIO_AIDL_INTERFACE_NONE) {
+        g_free(res);
+    }
 }
 
 static

@@ -318,16 +318,21 @@ binder_sms_sca_query_cb(
                 }
                 if (smsc) {
                     struct ofono_phone_number sca;
+                    const char* str = smsc;
 
-                    if (smsc[0] == '+') {
-                        smsc++;
+                    if (str[0] == '+') {
+                        str++;
                         sca.type = OFONO_NUMBER_TYPE_INTERNATIONAL;
                     } else {
                         sca.type = OFONO_NUMBER_TYPE_UNKNOWN;
                     }
-                    g_strlcpy(sca.number, smsc, sizeof(sca.number));
+                    g_strlcpy(sca.number, str, sizeof(sca.number));
                     DBG("csca_query_cb: %s, %d", sca.number, sca.type);
                     cb(binder_error_ok(&err), &sca, cbd->data);
+
+                    if (self->interface_aidl == RADIO_MESSAGING_INTERFACE) {
+                        g_free((char*)smsc);
+                    }
                     return;
                 }
             } else {
@@ -462,28 +467,31 @@ binder_sms_submit_cb(
                 (RADIO_MESSAGING_RESP)resp == RADIO_MESSAGING_RESP_SEND_SMS_EXPECT_MORE ||
                 (RADIO_MESSAGING_RESP)resp == RADIO_MESSAGING_RESP_SEND_IMS_SMS) {
                 if (error == RADIO_ERROR_NONE) {
-                    RadioSendSmsResult res;
                     GBinderReader reader;
+                    gint32 message_ref;
+                    char* ack_pdu;
+                    gint32 error_code;
 
                     gbinder_reader_copy(&reader, args);
                     binder_read_parcelable_size(&reader);
-                    gbinder_reader_read_int32(&reader, &res.messageRef);
-                    res.ackPDU.data.str = gbinder_reader_read_string16(&reader);
-                    gbinder_reader_read_int32(&reader, &res.errorCode);
+                    gbinder_reader_read_int32(&reader, &message_ref);
+                    ack_pdu = gbinder_reader_read_string16(&reader);
+                    gbinder_reader_read_int32(&reader, &error_code);
 
                     DBG("%ssms msg ref: %d, ack: %s err: %d", ims ? "ims " : "",
-                        res.messageRef, res.ackPDU.data.str, res.errorCode);
+                        message_ref, ack_pdu, error_code);
+                    g_free(ack_pdu);
 
                     /*
                      * Error is -1 if unknown or not applicable,
                      * otherwise 3GPP 27.005, 3.2.5
                      */
-                    if (res.errorCode > 0) {
+                    if (error_code > 0) {
                         err.type = OFONO_ERROR_TYPE_CMS;
-                        err.error = res.errorCode;
+                        err.error = error_code;
                     } else {
                         /* Success */
-                        cb(binder_error_ok(&err), res.messageRef, cbd->data);
+                        cb(binder_error_ok(&err), message_ref, cbd->data);
                         return;
                     }
                 } else {
