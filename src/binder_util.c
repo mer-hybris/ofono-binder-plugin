@@ -826,6 +826,21 @@ binder_strv_from_hidl_string_vec(
     return NULL;
 }
 
+gboolean
+binder_read_string16_parse_int(
+    GBinderReader* reader,
+    gint32* value)
+{
+    /* Read a string and parse integer value from it */
+    gboolean ret = FALSE;
+    char* str = gbinder_reader_read_string16(reader);
+
+    ret = gutil_parse_int(str, 10, value);
+    g_free(str);
+
+    return ret;
+}
+
 char**
 binder_strv_from_string16_array(
     GBinderReader* reader)

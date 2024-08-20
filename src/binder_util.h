@@ -231,6 +231,12 @@ binder_strv_from_string16_array(
     GBinderReader* reader)
     BINDER_INTERNAL;
 
+gboolean
+binder_read_string16_parse_int(
+    GBinderReader* reader,
+    gint32* value)
+    BINDER_INTERNAL;
+
 guint
 binder_append_vec_with_data(
     GBinderWriter* writer,
