@@ -721,26 +721,35 @@ binder_plugin_modem_interface(
 }
 
 static
+guint
+binder_plugin_interface_index(
+    BinderSlot* slot,
+    RADIO_AIDL_INTERFACE interface)
+{
+    if (slot->plugin->settings.interface_type == RADIO_INTERFACE_TYPE_AIDL) {
+        return interface;
+    }
+    // Use index 0 for HIDL because RADIO_AIDL_INTERFACE_NONE is -1
+    return 0;
+}
+
+static
 void
 binder_plugin_modem_check(
     BinderSlot* slot)
 {
-    RADIO_AIDL_INTERFACE modem_interface = binder_plugin_modem_interface(slot);
-    RADIO_AIDL_INTERFACE data_interface =
-        modem_interface != RADIO_AIDL_INTERFACE_NONE ?
-            RADIO_DATA_INTERFACE : RADIO_AIDL_INTERFACE_NONE;
-    RADIO_AIDL_INTERFACE messaging_interface =
-        modem_interface != RADIO_AIDL_INTERFACE_NONE ?
-            RADIO_MESSAGING_INTERFACE : RADIO_AIDL_INTERFACE_NONE;
-    RADIO_AIDL_INTERFACE network_interface =
-        modem_interface != RADIO_AIDL_INTERFACE_NONE ?
-            RADIO_NETWORK_INTERFACE : RADIO_AIDL_INTERFACE_NONE;
-    RADIO_AIDL_INTERFACE sim_interface =
-        modem_interface != RADIO_AIDL_INTERFACE_NONE ?
-            RADIO_SIM_INTERFACE : RADIO_AIDL_INTERFACE_NONE;
-    RADIO_AIDL_INTERFACE voice_interface =
-        modem_interface != RADIO_AIDL_INTERFACE_NONE ?
-            RADIO_VOICE_INTERFACE : RADIO_AIDL_INTERFACE_NONE;
+    guint modem_interface =
+        binder_plugin_interface_index(slot, RADIO_MODEM_INTERFACE);
+    guint data_interface =
+        binder_plugin_interface_index(slot, RADIO_DATA_INTERFACE);
+    guint messaging_interface =
+        binder_plugin_interface_index(slot, RADIO_MESSAGING_INTERFACE);
+    guint network_interface =
+        binder_plugin_interface_index(slot, RADIO_NETWORK_INTERFACE);
+    guint sim_interface =
+        binder_plugin_interface_index(slot, RADIO_SIM_INTERFACE);
+    guint voice_interface =
+        binder_plugin_interface_index(slot, RADIO_VOICE_INTERFACE);
 
     if (!slot->modem && slot->handle && slot->handle->enabled &&
         radio_client_connected(slot->client[modem_interface])) {
@@ -797,7 +806,8 @@ binder_plugin_slot_startup_check(
     BinderSlot* slot)
 {
     BinderPlugin* plugin = slot->plugin;
-    RADIO_AIDL_INTERFACE modem_interface = binder_plugin_modem_interface(slot);
+    guint modem_interface =
+        binder_plugin_interface_index(slot, RADIO_MODEM_INTERFACE);
 
     if (!slot->handle && radio_client_connected(slot->client[modem_interface]) &&
         !slot->imei_req && slot->imei) {
@@ -967,7 +977,8 @@ binder_plugin_slot_get_device_identity(
     }
 
     /* getDeviceIdentity(int32 serial) */
-    RadioRequest* req = radio_request_new(slot->client[modem_interface],
+    RadioRequest* req = radio_request_new(
+        slot->client[binder_plugin_interface_index(slot, modem_interface)],
         req_code, NULL,
         binder_plugin_device_identity_cb, NULL, slot);
 
@@ -1033,7 +1044,8 @@ binder_plugin_slot_radio_caps_cb(
     void *user_data)
 {
     BinderSlot* slot = user_data;
-    RADIO_AIDL_INTERFACE modem_interface = binder_plugin_modem_interface(slot);
+    guint modem_interface =
+        binder_plugin_interface_index(slot, RADIO_MODEM_INTERFACE);
 
     DBG("radio caps %s", cap ? "ok" : "NOT supported");
     GASSERT(slot->caps_check_req);
@@ -1067,16 +1079,14 @@ binder_plugin_slot_connected(
 {
     BinderPlugin* plugin = slot->plugin;
     const BinderPluginSettings* ps = &plugin->settings;
-    RADIO_AIDL_INTERFACE modem_interface = binder_plugin_modem_interface(slot);
-    RADIO_AIDL_INTERFACE data_interface =
-        modem_interface != RADIO_AIDL_INTERFACE_NONE ?
-            RADIO_DATA_INTERFACE : RADIO_AIDL_INTERFACE_NONE;
-    RADIO_AIDL_INTERFACE network_interface =
-        modem_interface != RADIO_AIDL_INTERFACE_NONE ?
-            RADIO_NETWORK_INTERFACE : RADIO_AIDL_INTERFACE_NONE;
-    RADIO_AIDL_INTERFACE sim_interface =
-        modem_interface != RADIO_AIDL_INTERFACE_NONE ?
-            RADIO_SIM_INTERFACE : RADIO_AIDL_INTERFACE_NONE;
+    guint modem_interface =
+        binder_plugin_interface_index(slot, RADIO_MODEM_INTERFACE);
+    guint data_interface =
+        binder_plugin_interface_index(slot, RADIO_DATA_INTERFACE);
+    guint network_interface =
+        binder_plugin_interface_index(slot, RADIO_NETWORK_INTERFACE);
+    guint sim_interface =
+        binder_plugin_interface_index(slot, RADIO_SIM_INTERFACE);
 
     GASSERT(radio_client_connected(slot->client[modem_interface]));
     GASSERT(!slot->client_event_id[CLIENT_EVENT_CONNECTED]);
@@ -1349,15 +1359,16 @@ binder_plugin_connect_to_interface(
     const char* dev,
     RADIO_AIDL_INTERFACE aidl_interface) {
 
-    slot->instance[aidl_interface] =
+    guint index = binder_plugin_interface_index(slot, aidl_interface);
+    slot->instance[index] =
         radio_instance_new_with_modem_slot_version_and_interface(
             dev, slot->name, slot->path, slot->config.slot, slot->version,
             aidl_interface);
-    slot->client[aidl_interface] =
-        radio_client_new(slot->instance[aidl_interface]);
+    slot->client[index] =
+        radio_client_new(slot->instance[index]);
 
-    if (slot->client[aidl_interface]) {
-        RadioClient* client = slot->client[aidl_interface];
+    if (slot->client[index]) {
+        RadioClient* client = slot->client[index];
         RADIO_AIDL_INTERFACE modem_interface =
             binder_plugin_modem_interface(slot);
 
@@ -1374,11 +1385,11 @@ binder_plugin_connect_to_interface(
         } else {
             /* No rilConnected indication on other interfaces,
              * so force-set connected state */
-            slot->instance[aidl_interface]->connected = TRUE;
+            slot->instance[index]->connected = TRUE;
         }
     } else {
-        radio_instance_unref(slot->instance[aidl_interface]);
-        slot->instance[aidl_interface] = NULL;
+        radio_instance_unref(slot->instance[index]);
+        slot->instance[index] = NULL;
     }
 }
 
@@ -1396,6 +1407,7 @@ binder_plugin_slot_check_radio_client(
     if (!binder_plugin_is_slot_client_connected(slot) && need_client) {
         RADIO_AIDL_INTERFACE modem_interface =
             binder_plugin_modem_interface(slot);
+        guint modem_index = binder_plugin_interface_index(slot, modem_interface);
         const char* dev = gbinder_servicemanager_device(slot->svcmgr);
 
         DBG("Bringing up %s", slot->name);
@@ -1413,18 +1425,18 @@ binder_plugin_slot_check_radio_client(
 
         binder_plugin_check_data_manager(plugin);
 
-        if (radio_client_connected(slot->client[modem_interface])) {
+        if (radio_client_connected(slot->client[modem_index])) {
             binder_plugin_slot_connected(slot);
         } else {
             slot->client_event_id[CLIENT_EVENT_CONNECTED] =
                 radio_client_add_connected_handler(
-                    slot->client[modem_interface],
+                    slot->client[modem_index],
                     binder_plugin_slot_connected_cb, slot);
         }
 
         /* binder_ext_slot_new just returns NULL if plugin is NULL */
         slot->ext_slot = binder_ext_slot_new(slot->ext_plugin,
-            slot->instance[modem_interface], slot->ext_params);
+            slot->instance[modem_index], slot->ext_params);
 
     } else if (binder_plugin_is_slot_client_connected(slot) && !need_client) {
         DBG("Shutting down %s", slot->name);
