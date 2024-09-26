@@ -21,6 +21,7 @@
 #include <radio_client.h>
 #include <radio_request.h>
 #include <radio_request_group.h>
+#include <radio_sim_types.h>
 
 #include <gbinder_reader.h>
 #include <gbinder_writer.h>
@@ -59,6 +60,7 @@ typedef struct binder_sim_card_object {
     RadioRequest* status_req;
     RadioRequest* sub_req;
     RadioRequestGroup* g;
+    RADIO_AIDL_INTERFACE interface_aidl;
     guint sub_start_timer;
     gulong event_id[EVENT_COUNT];
     guint sim_io_idle_id;
@@ -252,8 +254,10 @@ binder_sim_card_subscribe_cb(
     gpointer user_data)
 {
     BinderSimCardObject* self = THIS(user_data);
+    guint32 code = self->interface_aidl == RADIO_SIM_INTERFACE ?
+        RADIO_SIM_RESP_SET_UICC_SUBSCRIPTION: RADIO_RESP_SET_UICC_SUBSCRIPTION;
 
-    GASSERT(resp == RADIO_RESP_SET_UICC_SUBSCRIPTION);
+    GASSERT(resp == code);
     GASSERT(status == RADIO_TX_STATUS_OK);
     GASSERT(error == RADIO_ERROR_NONE);
     GASSERT(self->sub_req == req);
@@ -272,17 +276,27 @@ binder_sim_card_subscribe(
 {
     BinderSimCard* card = &self->card;
     GBinderWriter args;
+    guint32 code = self->interface_aidl == RADIO_SIM_INTERFACE ?
+        RADIO_SIM_REQ_SET_UICC_SUBSCRIPTION : RADIO_REQ_SET_UICC_SUBSCRIPTION;
+
     RadioRequest* req = radio_request_new2(self->g,
-        RADIO_REQ_SET_UICC_SUBSCRIPTION, &args,
+        code, &args,
         binder_sim_card_subscribe_cb, NULL, self);
+
     RadioSelectUiccSub* sub = gbinder_writer_new0(&args, RadioSelectUiccSub);
 
     /* setUiccSubscription(serial, SelectUiccSub uiccSub) */
     DBG("%u,%d", card->slot, app_index);
+
     sub->slot = card->slot;
     sub->appIndex = app_index;
     sub->actStatus = RADIO_UICC_SUB_ACTIVATE;
-    gbinder_writer_append_buffer_object(&args, sub, sizeof(*sub));
+
+    if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+        gbinder_writer_append_buffer_object(&args, sub, sizeof(*sub));
+    } else {
+        gbinder_writer_append_parcelable(&args, sub, sizeof(*sub));
+    }
 
     radio_request_set_retry(req, UICC_SUBSCRIPTION_RETRY_MS, -1);
     radio_request_set_timeout(req, UICC_SUBSCRIPTION_TIMEOUT_MS);
@@ -474,6 +488,89 @@ binder_sim_card_status_new(
 }
 
 static
+BinderSimCardStatus*
+binder_sim_card_status_new_from_aidl(
+    GBinderReader* reader)
+{
+    gint32 card_state, pin_state;
+    gint32 gsm_umts_index, cdma_index, ims_index;
+    guint32 num_apps = 0;
+    gsize parcel_size = binder_read_parcelable_size(reader);
+    BinderSimCardStatus* status = NULL;
+    char* atr, *iccid, *eid = NULL;
+
+    if (!parcel_size) {
+        return NULL;
+    }
+
+    gbinder_reader_read_int32(reader, &card_state);
+    gbinder_reader_read_int32(reader, &pin_state);
+    gbinder_reader_read_int32(reader, &gsm_umts_index);
+    gbinder_reader_read_int32(reader, &cdma_index);
+    gbinder_reader_read_int32(reader, &ims_index);
+    gbinder_reader_read_uint32(reader, &num_apps);
+
+    DBG("card_state=%d, universal_pin_state=%d, gsm_umts_index=%d, "
+        "ims_index=%d, cdma_index=%d, num_apps=%d",
+        card_state, pin_state, gsm_umts_index, cdma_index,
+        ims_index, num_apps);
+
+    /* The observed size of parcel for empty SIM slot */
+    GASSERT(parcel_size >= 64);
+
+    status = g_malloc0(sizeof(BinderSimCardStatus) +
+        num_apps * sizeof(BinderSimCardApp));
+
+    status->card_state = card_state;
+    status->pin_state = pin_state;
+    status->gsm_umts_index = gsm_umts_index;
+    status->ims_index = ims_index;
+
+    if ((status->num_apps = num_apps) > 0) {
+        guint i;
+
+        status->apps = (BinderSimCardApp*)(status + 1);
+        for (i = 0; i < num_apps; i++) {
+            BinderSimCardApp* app = status->apps + i;
+
+            gsize app_parcel_size = binder_read_parcelable_size(reader);
+            GASSERT(app_parcel_size >= sizeof(guint32) * 8);
+
+            gbinder_reader_read_int32(reader, (gint32*)&app->app_type);
+            gbinder_reader_read_int32(reader, (gint32*)&app->app_state);
+            gbinder_reader_read_int32(reader, (gint32*)&app->perso_substate);
+
+            app->aid = gbinder_reader_read_string16(reader);
+            app->label = gbinder_reader_read_string16(reader);
+
+            gbinder_reader_read_bool(reader, (gboolean*)&app->pin_replaced);
+            gbinder_reader_read_int32(reader, (gint32*)&app->pin1_state);
+            gbinder_reader_read_int32(reader, (gint32*)&app->pin2_state);
+
+            DBG("app[%d]: app_parcel_size=%d, type=%d, state=%d, perso_substate=%d, "
+                "aid_ptr=%s, label=%s, pin1_replaced=%d, pin1=%d, pin2=%d", i,
+                app_parcel_size, app->app_type, app->app_state, app->perso_substate,
+                app->aid, app->label, app->pin_replaced, app->pin1_state,
+                app->pin2_state);
+        }
+    }
+
+    /* Not used by the plugin, but useful to visually verify the parsing */
+    atr = gbinder_reader_read_string16(reader);
+    iccid = gbinder_reader_read_string16(reader);
+    eid = gbinder_reader_read_string16(reader);
+
+    DBG("atr=%s, iccid=%s, eid=%s", atr ? atr : "(null)",
+        iccid ? iccid : "(null)", eid ? eid : "(null)");
+
+    g_free(atr);
+    g_free(iccid);
+    g_free(eid);
+
+    return status;
+}
+
+static
 void
 binder_sim_card_status_cb(
     RadioRequest* req,
@@ -498,37 +595,41 @@ binder_sim_card_status_cb(
         GBinderReader reader;
 
         gbinder_reader_copy(&reader, args);
-        switch (resp) {
-        case RADIO_RESP_GET_ICC_CARD_STATUS:
-            status_1_0 = gbinder_reader_read_hidl_struct(&reader,
-                RadioCardStatus);
-            if (status_1_0) {
-                status = binder_sim_card_status_new(status_1_0);
+        if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+            switch (resp) {
+            case RADIO_RESP_GET_ICC_CARD_STATUS:
+                status_1_0 = gbinder_reader_read_hidl_struct(&reader,
+                    RadioCardStatus);
+                if (status_1_0) {
+                    status = binder_sim_card_status_new(status_1_0);
+                }
+                break;
+            case RADIO_RESP_GET_ICC_CARD_STATUS_1_2:
+                status_1_2 = gbinder_reader_read_hidl_struct(&reader,
+                    RadioCardStatus_1_2);
+                if (status_1_2) {
+                    status = binder_sim_card_status_new(&status_1_2->base);
+                }
+                break;
+            case RADIO_RESP_GET_ICC_CARD_STATUS_RESPONSE_1_4:
+                status_1_4 = gbinder_reader_read_hidl_struct(&reader,
+                    RadioCardStatus_1_4);
+                if (status_1_4) {
+                    status = binder_sim_card_status_new(&status_1_4->base);
+                }
+                break;
+            case RADIO_RESP_GET_ICC_CARD_STATUS_1_5:
+                status_1_5 = gbinder_reader_read_hidl_struct(&reader,
+                    RadioCardStatus_1_5);
+                if (status_1_5) {
+                    status = binder_sim_card_status_new(&status_1_5->base.base);
+                }
+                break;
+            default:
+                ofono_warn("Unexpected getIccCardStatus response %u", resp);
             }
-            break;
-        case RADIO_RESP_GET_ICC_CARD_STATUS_1_2:
-            status_1_2 = gbinder_reader_read_hidl_struct(&reader,
-                RadioCardStatus_1_2);
-            if (status_1_2) {
-                status = binder_sim_card_status_new(&status_1_2->base);
-            }
-            break;
-        case RADIO_RESP_GET_ICC_CARD_STATUS_RESPONSE_1_4:
-            status_1_4 = gbinder_reader_read_hidl_struct(&reader,
-                RadioCardStatus_1_4);
-            if (status_1_4) {
-                status = binder_sim_card_status_new(&status_1_4->base);
-            }
-            break;
-        case RADIO_RESP_GET_ICC_CARD_STATUS_1_5:
-            status_1_5 = gbinder_reader_read_hidl_struct(&reader,
-                RadioCardStatus_1_5);
-            if (status_1_5) {
-                status = binder_sim_card_status_new(&status_1_5->base.base);
-            }
-            break;
-        default:
-            ofono_warn("Unexpected getIccCardStatus response %u", resp);
+        } else {
+            status = binder_sim_card_status_new_from_aidl(&reader);
         }
 
         if (status) {
@@ -547,8 +648,11 @@ binder_sim_card_get_status(
         /* Retry right away, don't wait for retry timeout to expire */
         radio_request_retry(self->status_req);
     } else {
+        guint32 code = self->interface_aidl == RADIO_SIM_INTERFACE ?
+            RADIO_SIM_REQ_GET_ICC_CARD_STATUS : RADIO_REQ_GET_ICC_CARD_STATUS;
+
         self->status_req = radio_request_new2(self->g,
-            RADIO_REQ_GET_ICC_CARD_STATUS, NULL,
+            code, NULL,
             binder_sim_card_status_cb, NULL, self);
 
         /*
@@ -627,15 +731,27 @@ binder_sim_card_new(
     DBG("%u", slot);
     card->slot = slot;
     self->g = radio_request_group_new(client); /* Keeps ref to client */
+    self->interface_aidl = radio_client_aidl_interface(client);
 
-    self->event_id[EVENT_SIM_STATUS_CHANGED] =
-        radio_client_add_indication_handler(client,
-            RADIO_IND_SIM_STATUS_CHANGED,
-            binder_sim_card_status_changed, self);
-    self->event_id[EVENT_UICC_SUBSCRIPTION_STATUS_CHANGED] =
-        radio_client_add_indication_handler(client,
-            RADIO_IND_SUBSCRIPTION_STATUS_CHANGED,
-            binder_sim_card_status_changed, self);
+    if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+        self->event_id[EVENT_SIM_STATUS_CHANGED] =
+            radio_client_add_indication_handler(client,
+                RADIO_IND_SIM_STATUS_CHANGED,
+                binder_sim_card_status_changed, self);
+        self->event_id[EVENT_UICC_SUBSCRIPTION_STATUS_CHANGED] =
+            radio_client_add_indication_handler(client,
+                RADIO_IND_SUBSCRIPTION_STATUS_CHANGED,
+                binder_sim_card_status_changed, self);
+    } else {
+        self->event_id[EVENT_SIM_STATUS_CHANGED] =
+            radio_client_add_indication_handler(client,
+                RADIO_SIM_IND_SIM_STATUS_CHANGED,
+                binder_sim_card_status_changed, self);
+        self->event_id[EVENT_UICC_SUBSCRIPTION_STATUS_CHANGED] =
+            radio_client_add_indication_handler(client,
+                RADIO_SIM_IND_SUBSCRIPTION_STATUS_CHANGED,
+                binder_sim_card_status_changed, self);
+    }
     binder_sim_card_get_status(self);
     return card;
 }

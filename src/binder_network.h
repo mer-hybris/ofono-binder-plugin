@@ -62,6 +62,8 @@ BinderNetwork*
 binder_network_new(
     const char* path,
     RadioClient* client,
+    RadioClient* data_client,
+    RadioClient* modem_client,
     const char* log_prefix,
     BinderRadio* radio,
     BinderSimCard* sim_card,

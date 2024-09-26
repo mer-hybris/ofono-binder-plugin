@@ -24,6 +24,7 @@
 
 #include <radio_client.h>
 #include <radio_request.h>
+#include <radio_network_types.h>
 
 #include <gbinder_writer.h>
 
@@ -108,7 +109,13 @@ binder_devmon_if_io_indication_filter_sent(
     self->req = NULL;
 
     if (status == RADIO_TX_STATUS_OK) {
-        if (resp == RADIO_RESP_SET_INDICATION_FILTER) {
+        const RADIO_AIDL_INTERFACE iface_aidl =
+            radio_client_aidl_interface(self->client);
+        guint32 code = iface_aidl == RADIO_NETWORK_INTERFACE ?
+            RADIO_NETWORK_RESP_SET_INDICATION_FILTER :
+            RADIO_RESP_SET_INDICATION_FILTER;
+
+        if (resp == code) {
             if (error == RADIO_ERROR_REQUEST_NOT_SUPPORTED) {
                 /* This is a permanent failure */
                 DBG_(self, "Indication response filter is not supported");
@@ -129,32 +136,48 @@ binder_devmon_if_io_set_indication_filter(
         GBinderWriter args;
         RADIO_REQ code;
         gint32 value;
+        const RADIO_AIDL_INTERFACE iface_aidl =
+            radio_client_aidl_interface(self->client);
 
-        /*
-         * Both requests take the same args:
-         *
-         * setIndicationFilter(serial, bitfield<IndicationFilter>)
-         * setIndicationFilter_1_2(serial, bitfield<IndicationFilter>)
-         *
-         * and both produce IRadioResponse.setIndicationFilterResponse()
-         *
-         * However setIndicationFilter_1_2 comments says "If unset, defaults
-         * to @1.2::IndicationFilter:ALL" and it's unclear what "unset" means
-         * wrt a bitmask. How is "unset" different from NONE which is zero.
-         * To be on the safe side, let's always set the most innocently
-         * looking bit which I think is DATA_CALL_DORMANCY.
-         */
-        if (radio_client_interface(self->client) < RADIO_INTERFACE_1_2) {
-            code = RADIO_REQ_SET_INDICATION_FILTER;
-            value = self->display_on ? RADIO_IND_FILTER_ALL :
-                RADIO_IND_FILTER_DATA_CALL_DORMANCY;
-        } else if (radio_client_interface(self->client) < RADIO_INTERFACE_1_5) {
-            code = RADIO_REQ_SET_INDICATION_FILTER_1_2;
-            value = self->display_on ? RADIO_IND_FILTER_ALL_1_2 :
-                RADIO_IND_FILTER_DATA_CALL_DORMANCY;
+        if (iface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+            /*
+             * Both requests take the same args:
+             *
+             * setIndicationFilter(serial, bitfield<IndicationFilter>)
+             * setIndicationFilter_1_2(serial, bitfield<IndicationFilter>)
+             *
+             * and both produce IRadioResponse.setIndicationFilterResponse()
+             *
+             * However setIndicationFilter_1_2 comments says "If unset, defaults
+             * to @1.2::IndicationFilter:ALL" and it's unclear what "unset" means
+             * wrt a bitmask. How is "unset" different from NONE which is zero.
+             * To be on the safe side, let's always set the most innocently
+             * looking bit which I think is DATA_CALL_DORMANCY.
+             */
+            if (radio_client_interface(self->client) < RADIO_INTERFACE_1_2) {
+                code = RADIO_REQ_SET_INDICATION_FILTER;
+                value = self->display_on ? RADIO_IND_FILTER_ALL :
+                    RADIO_IND_FILTER_DATA_CALL_DORMANCY;
+            } else if (radio_client_interface(self->client) < RADIO_INTERFACE_1_5) {
+                code = RADIO_REQ_SET_INDICATION_FILTER_1_2;
+                value = self->display_on ? RADIO_IND_FILTER_ALL_1_2 :
+                    RADIO_IND_FILTER_DATA_CALL_DORMANCY;
+            } else {
+                code = RADIO_REQ_SET_INDICATION_FILTER_1_5;
+                value = self->display_on ? RADIO_IND_FILTER_ALL_1_5 :
+                    RADIO_IND_FILTER_DATA_CALL_DORMANCY;
+            }
         } else {
-            code = RADIO_REQ_SET_INDICATION_FILTER_1_5;
-            value = self->display_on ? RADIO_IND_FILTER_ALL_1_5 :
+            code = RADIO_NETWORK_REQ_SET_INDICATION_FILTER;
+            /* Some devices don't like setting all filters */
+            value = self->display_on ?
+                RADIO_IND_FILTER_SIGNAL_STRENGTH |
+                    RADIO_IND_FILTER_FULL_NETWORK_STATE |
+                    RADIO_IND_FILTER_DATA_CALL_DORMANCY |
+                    RADIO_IND_FILTER_LINK_CAPACITY_ESTIMATE |
+                    RADIO_IND_FILTER_PHYSICAL_CHANNEL_CONFIG |
+                    RADIO_IND_FILTER_REGISTRATION_FAILURE |
+                    RADIO_IND_FILTER_BARRING_INFO :
                 RADIO_IND_FILTER_DATA_CALL_DORMANCY;
         }
 
@@ -240,7 +263,8 @@ static
 BinderDevmonIo*
 binder_devmon_if_start_io(
     BinderDevmon* devmon,
-    RadioClient* client,
+    RadioClient* ds_client,
+    RadioClient* if_client,
     struct ofono_slot* slot)
 {
     DevMon* impl = binder_devmon_if_cast(devmon);
@@ -248,7 +272,7 @@ binder_devmon_if_start_io(
 
     self->pub.free = binder_devmon_if_io_free;
     self->ind_filter_supported = TRUE;
-    self->client = radio_client_ref(client);
+    self->client = radio_client_ref(if_client);
     self->slot = ofono_slot_ref(slot);
 
     self->battery = mce_battery_ref(impl->battery);

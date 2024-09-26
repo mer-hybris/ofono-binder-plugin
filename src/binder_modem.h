@@ -22,7 +22,13 @@
 #include <ofono/modem.h>
 
 struct binder_modem {
+    RadioInstance* instance;
     RadioClient* client;
+    RadioClient* data_client;
+    RadioClient* messaging_client;
+    RadioClient* network_client;
+    RadioClient* sim_client;
+    RadioClient* voice_client;
     const char* path;
     const char* log_prefix;
     const char* imei;
@@ -53,7 +59,13 @@ binder_modem_cleanup(void)
 
 BinderModem*
 binder_modem_create(
+    RadioInstance* instance,
     RadioClient* client,
+    RadioClient* data_client,
+    RadioClient* messaging_client,
+    RadioClient* network_client,
+    RadioClient* sim_client,
+    RadioClient* voice_client,
     const char* name,
     const char* path,
     const char* imei,

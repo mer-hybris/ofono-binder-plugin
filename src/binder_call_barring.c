@@ -22,8 +22,11 @@
 #include <ofono/call-barring.h>
 #include <ofono/log.h>
 
+#include <radio_client.h>
 #include <radio_request.h>
 #include <radio_request_group.h>
+#include <radio_network_types.h>
+#include <radio_sim_types.h>
 
 #include <gbinder_reader.h>
 #include <gbinder_writer.h>
@@ -31,7 +34,9 @@
 typedef struct binder_call_barring {
     struct ofono_call_barring* b;
     BinderSimCard* card;
+    RadioClient* network_client;
     RadioRequestGroup* g;
+    RADIO_AIDL_INTERFACE interface_aidl;
     char* log_prefix;
     guint register_id;
 } BinderCallBarring;
@@ -116,7 +121,10 @@ binder_call_barring_query_cb(
     const BinderCallBarringCbData* cbd = user_data;
 
     if (status == RADIO_TX_STATUS_OK) {
-        if (resp == RADIO_RESP_GET_FACILITY_LOCK_FOR_APP) {
+        guint32 code = cbd->self->interface_aidl == RADIO_SIM_INTERFACE ?
+            RADIO_SIM_RESP_GET_FACILITY_LOCK_FOR_APP :
+            RADIO_RESP_GET_FACILITY_LOCK_FOR_APP;
+        if (resp == code) {
             if (error == RADIO_ERROR_NONE) {
                 if (binder_call_barring_query_ok(cbd, args)) {
                     return;
@@ -147,18 +155,29 @@ binder_call_barring_query(
      *      string password, int32_t serviceClass, string appId);
      */
     GBinderWriter writer;
+    guint32 code = self->interface_aidl == RADIO_SIM_INTERFACE ?
+        RADIO_SIM_REQ_GET_FACILITY_LOCK_FOR_APP :
+        RADIO_REQ_GET_FACILITY_LOCK_FOR_APP;
     RadioRequest* req = radio_request_new2(self->g,
-        RADIO_REQ_GET_FACILITY_LOCK_FOR_APP, &writer,
+        code, &writer,
         binder_call_barring_query_cb,
         binder_call_barring_callback_data_free,
         binder_call_barring_callback_data_new(self, BINDER_CB(cb), data));
 
     DBG_(self, "lock: %s, services to query: 0x%02x", lock, cls);
-    binder_append_hidl_string(&writer, lock);   /* facility */
-    binder_append_hidl_string(&writer, "");     /* password */
-    gbinder_writer_append_int32(&writer, cls);  /* serviceClass */
-    binder_append_hidl_string(&writer, binder_sim_card_app_aid(self->card));
-                                                /* appId */
+    if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+        binder_append_hidl_string(&writer, lock);   /* facility */
+        binder_append_hidl_string(&writer, "");     /* password */
+        gbinder_writer_append_int32(&writer, cls);  /* serviceClass */
+        binder_append_hidl_string(&writer, binder_sim_card_app_aid(self->card));
+                                                    /* appId */
+    } else {
+        gbinder_writer_append_string16(&writer, lock);  /* facility */
+        gbinder_writer_append_string16(&writer, "");    /* password */
+        gbinder_writer_append_int32(&writer, cls);      /* serviceClass */
+        gbinder_writer_append_string16(&writer,
+            binder_sim_card_app_aid(self->card));       /* appId */
+    }
     radio_request_submit(req);
     radio_request_unref(req);
 }
@@ -178,7 +197,10 @@ binder_call_barring_set_cb(
     ofono_call_barring_set_cb_t cb = cbd->cb.set;
 
     if (status == RADIO_TX_STATUS_OK) {
-        if (resp == RADIO_RESP_SET_FACILITY_LOCK_FOR_APP) {
+        guint32 code = cbd->self->interface_aidl == RADIO_SIM_INTERFACE ?
+            RADIO_SIM_RESP_SET_FACILITY_LOCK_FOR_APP :
+            RADIO_RESP_SET_FACILITY_LOCK_FOR_APP;
+        if (resp == code) {
             /*
              * setFacilityLockForAppResponse(RadioResponseInfo, int32_t retry);
              *
@@ -215,20 +237,32 @@ binder_call_barring_set(
      *            string password, int32_t serviceClass, string appId);
      */
     GBinderWriter writer;
+    guint32 code = self->interface_aidl == RADIO_SIM_INTERFACE ?
+        RADIO_SIM_REQ_SET_FACILITY_LOCK_FOR_APP :
+        RADIO_REQ_SET_FACILITY_LOCK_FOR_APP;
     RadioRequest* req = radio_request_new2(self->g,
-        RADIO_REQ_SET_FACILITY_LOCK_FOR_APP, &writer,
+        code, &writer,
         binder_call_barring_set_cb,
         binder_call_barring_callback_data_free,
         binder_call_barring_callback_data_new(self, BINDER_CB(cb), data));
 
     DBG_(self, "lock: %s, enable: %i, bearer class: %i", lock, enable, cls);
 
-    binder_append_hidl_string(&writer, lock);     /* facility */
-    gbinder_writer_append_bool(&writer, enable);  /* lockState */
-    binder_append_hidl_string(&writer, passwd);   /* password */
-    gbinder_writer_append_int32(&writer, cls);    /* serviceClass */
-    binder_append_hidl_string(&writer, binder_sim_card_app_aid(self->card));
-                                                  /* appId */
+    if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+        binder_append_hidl_string(&writer, lock);     /* facility */
+        gbinder_writer_append_bool(&writer, enable);  /* lockState */
+        binder_append_hidl_string(&writer, passwd);   /* password */
+        gbinder_writer_append_int32(&writer, cls);    /* serviceClass */
+        binder_append_hidl_string(&writer, binder_sim_card_app_aid(self->card));
+                                                      /* appId */
+    } else {
+        gbinder_writer_append_string16(&writer, lock);   /* facility */
+        gbinder_writer_append_bool(&writer, enable);     /* lockState */
+        gbinder_writer_append_string16(&writer, passwd); /* password */
+        gbinder_writer_append_int32(&writer, cls);       /* serviceClass */
+        gbinder_writer_append_string16(&writer,
+            binder_sim_card_app_aid(self->card));        /* appId */
+    }
     radio_request_submit(req);
     radio_request_unref(req);
 }
@@ -248,7 +282,12 @@ binder_call_barring_set_passwd_cb(
     ofono_call_barring_set_cb_t cb = cbd->cb.set;
 
     if (status == RADIO_TX_STATUS_OK) {
-        if (resp == RADIO_RESP_SET_BARRING_PASSWORD) {
+        const RADIO_AIDL_INTERFACE iface_aidl =
+            radio_client_aidl_interface(cbd->self->network_client);
+        guint32 code = iface_aidl == RADIO_NETWORK_INTERFACE ?
+            RADIO_NETWORK_RESP_SET_BARRING_PASSWORD :
+            RADIO_RESP_SET_BARRING_PASSWORD;
+        if (resp == code) {
             if (error == RADIO_ERROR_NONE) {
                 cb(binder_error_ok(&err), cbd->data);
                 return;
@@ -273,22 +312,34 @@ binder_call_barring_set_passwd(
     void* data)
 {
     BinderCallBarring* self = ofono_call_barring_get_data(b);
+    const RADIO_AIDL_INTERFACE iface_aidl =
+        radio_client_aidl_interface(self->network_client);
 
     /*
      * setBarringPassword(int32_t serial, string facility,
      *     string oldPassword, string newPassword);
      */
     GBinderWriter writer;
-    RadioRequest* req = radio_request_new2(self->g,
-        RADIO_REQ_SET_BARRING_PASSWORD, &writer,
+    guint32 code = iface_aidl == RADIO_NETWORK_INTERFACE ?
+        RADIO_NETWORK_REQ_SET_BARRING_PASSWORD :
+        RADIO_REQ_SET_BARRING_PASSWORD;
+
+    RadioRequest* req = radio_request_new(self->network_client,
+        code, &writer,
         binder_call_barring_set_passwd_cb,
         binder_call_barring_callback_data_free,
         binder_call_barring_callback_data_new(self, BINDER_CB(cb), data));
 
     DBG_(self, "");
-    binder_append_hidl_string(&writer, lock);         /* facility */
-    binder_append_hidl_string(&writer, old_passwd);   /* oldPassword */
-    binder_append_hidl_string(&writer, new_passwd);   /* newPassword */
+    if (iface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+        binder_append_hidl_string(&writer, lock);         /* facility */
+        binder_append_hidl_string(&writer, old_passwd);   /* oldPassword */
+        binder_append_hidl_string(&writer, new_passwd);   /* newPassword */
+    } else {
+        gbinder_writer_append_string16(&writer, lock);         /* facility */
+        gbinder_writer_append_string16(&writer, old_passwd);   /* oldPassword */
+        gbinder_writer_append_string16(&writer, new_passwd);   /* newPassword */
+    }
 
     radio_request_submit(req);
     radio_request_unref(req);
@@ -319,8 +370,10 @@ binder_call_barring_probe(
 
     self->b = b;
     self->card = binder_sim_card_ref(modem->sim_card);
-    self->g = radio_request_group_new(modem->client);
+    self->g = radio_request_group_new(modem->sim_client);
+    self->interface_aidl = radio_client_aidl_interface(modem->sim_client);
     self->log_prefix = binder_dup_prefix(modem->log_prefix);
+    self->network_client = radio_client_ref(modem->network_client);
     self->register_id = g_idle_add(binder_call_barring_register, self);
 
     DBG_(self, "");
@@ -342,6 +395,7 @@ binder_call_barring_remove(
     binder_sim_card_unref(self->card);
     radio_request_group_cancel(self->g);
     radio_request_group_unref(self->g);
+    radio_client_unref(self->network_client);
     g_free(self->log_prefix);
     g_free(self);
 

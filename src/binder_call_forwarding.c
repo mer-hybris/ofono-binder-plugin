@@ -21,8 +21,10 @@
 #include <ofono/call-forwarding.h>
 #include <ofono/log.h>
 
+#include <radio_client.h>
 #include <radio_request.h>
 #include <radio_request_group.h>
+#include <radio_voice_types.h>
 
 #include <gbinder_reader.h>
 #include <gbinder_writer.h>
@@ -30,11 +32,13 @@
 typedef struct binder_call_forwarding {
     struct ofono_call_forwarding* f;
     RadioRequestGroup* g;
+    RADIO_AIDL_INTERFACE interface_aidl;
     char* log_prefix;
     guint register_id;
 } BinderCallForwarding;
 
 typedef struct binder_call_forwarding_cbd {
+    BinderCallForwarding* self;
     union call_forwarding_cb {
         ofono_call_forwarding_query_cb_t query;
         ofono_call_forwarding_set_cb_t set;
@@ -54,11 +58,13 @@ binder_call_forwarding_get_data(struct ofono_call_forwarding* f)
 static
 BinderCallForwardingCbData*
 binder_call_forwarding_callback_data_new(
+    BinderCallForwarding* self,
     BinderCallback cb,
     void* data)
 {
     BinderCallForwardingCbData* cbd = g_slice_new0(BinderCallForwardingCbData);
 
+    cbd->self = self;
     cbd->cb.ptr = cb;
     cbd->data = data;
     return cbd;
@@ -93,24 +99,50 @@ binder_call_forwarding_call(
     GBinderWriter writer;
     RadioRequest* req = radio_request_new2(self->g, code, &writer, complete,
         binder_call_forwarding_callback_data_free,
-        binder_call_forwarding_callback_data_new(cb, data));
-    RadioCallForwardInfo* info = gbinder_writer_new0(&writer,
-        RadioCallForwardInfo);
-    guint parent;
+        binder_call_forwarding_callback_data_new(self, cb, data));
 
-    info->status = action;
-    info->reason = reason;
-    info->serviceClass = cls;
-    info->timeSeconds = time;
-    if (number) {
-        info->toa = number->type;
-        binder_copy_hidl_string(&writer, &info->number, number->number);
+    if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+        RadioCallForwardInfo* info = gbinder_writer_new0(&writer,
+            RadioCallForwardInfo);
+        guint parent;
+
+        info->status = action;
+        info->reason = reason;
+        info->serviceClass = cls;
+        info->timeSeconds = time;
+        if (number) {
+            info->toa = number->type;
+            binder_copy_hidl_string(&writer, &info->number, number->number);
+        } else {
+            info->toa = OFONO_NUMBER_TYPE_UNKNOWN;
+            binder_copy_hidl_string(&writer, &info->number, NULL);
+        }
+        parent = gbinder_writer_append_buffer_object(&writer, info, sizeof(*info));
+        binder_append_hidl_string_data(&writer, info, number, parent);
     } else {
-        info->toa = OFONO_NUMBER_TYPE_UNKNOWN;
-        binder_copy_hidl_string(&writer, &info->number, NULL);
+        gint32 initial_size;
+        /* Non-null parcelable */
+        gbinder_writer_append_int32(&writer, 1);
+        initial_size = gbinder_writer_bytes_written(&writer);
+        /* Dummy parcelable size, replaced at the end */
+        gbinder_writer_append_int32(&writer, -1);
+
+        gbinder_writer_append_int32(&writer, action);
+        gbinder_writer_append_int32(&writer, reason);
+        gbinder_writer_append_int32(&writer, cls);
+        if (number) {
+            gbinder_writer_append_int32(&writer, number->type);
+            gbinder_writer_append_string16(&writer, number->number);
+        } else {
+            gbinder_writer_append_int32(&writer, OFONO_NUMBER_TYPE_UNKNOWN);
+            gbinder_writer_append_string16(&writer, NULL);
+        }
+        gbinder_writer_append_int32(&writer, time);
+
+        /* Overwrite parcelable size */
+        gbinder_writer_overwrite_int32(&writer, initial_size,
+            gbinder_writer_bytes_written(&writer) - initial_size);
     }
-    parent = gbinder_writer_append_buffer_object(&writer, info, sizeof(*info));
-    binder_append_hidl_string_data(&writer, info, number, parent);
 
     radio_request_submit(req);
     radio_request_unref(req);
@@ -131,7 +163,10 @@ binder_call_forwarding_set_cb(
     ofono_call_forwarding_set_cb_t cb = cbd->cb.set;
 
     if (status == RADIO_TX_STATUS_OK) {
-        if (resp == RADIO_RESP_SET_CALL_FORWARD) {
+        guint32 code = cbd->self->interface_aidl == RADIO_VOICE_INTERFACE ?
+            RADIO_VOICE_RESP_SET_CALL_FORWARD :
+            RADIO_RESP_SET_CALL_FORWARD;
+        if (resp == code) {
             if (error == RADIO_ERROR_NONE) {
                 cb(binder_error_ok(&err), cbd->data);
                 return;
@@ -157,7 +192,10 @@ binder_call_forwarding_set(
     ofono_call_forwarding_set_cb_t cb,
     void* data)
 {
-    binder_call_forwarding_call(self, RADIO_REQ_SET_CALL_FORWARD,
+    guint32 code = self->interface_aidl == RADIO_VOICE_INTERFACE ?
+        RADIO_VOICE_REQ_SET_CALL_FORWARD :
+        RADIO_REQ_SET_CALL_FORWARD;
+    binder_call_forwarding_call(self, code,
         action, reason, cls, number, time, binder_call_forwarding_set_cb,
         BINDER_CB(cb), data);
 }
@@ -278,7 +316,10 @@ binder_call_forwarding_query_cb(
     const BinderCallForwardingCbData* cbd = user_data;
 
     if (status == RADIO_TX_STATUS_OK) {
-        if (resp == RADIO_RESP_GET_CALL_FORWARD_STATUS) {
+        guint32 code = cbd->self->interface_aidl == RADIO_VOICE_INTERFACE ?
+            RADIO_VOICE_RESP_GET_CALL_FORWARD_STATUS :
+            RADIO_RESP_GET_CALL_FORWARD_STATUS;
+        if (resp == code) {
             if (error == RADIO_ERROR_NONE) {
                 binder_call_forwarding_query_ok(cbd, args);
                 return;
@@ -302,6 +343,9 @@ binder_call_forwarding_query(
     void* data)
 {
     BinderCallForwarding* self = binder_call_forwarding_get_data(f);
+    guint32 code = self->interface_aidl == RADIO_VOICE_INTERFACE ?
+        RADIO_VOICE_REQ_GET_CALL_FORWARD_STATUS :
+        RADIO_REQ_GET_CALL_FORWARD_STATUS;
 
     DBG_(self, "%d", type);
 
@@ -311,7 +355,7 @@ binder_call_forwarding_query(
         DBG_(self, "cls %d => %d", cls, RADIO_SERVICE_CLASS_NONE);
         cls = RADIO_SERVICE_CLASS_NONE;
     }
-    binder_call_forwarding_call(self, RADIO_REQ_GET_CALL_FORWARD_STATUS,
+    binder_call_forwarding_call(self, code,
         RADIO_CALL_FORWARD_INTERROGATE, type, cls, NULL, CF_TIME_DEFAULT,
         binder_call_forwarding_query_cb, BINDER_CB(cb), data);
 }
@@ -340,7 +384,8 @@ binder_call_forwarding_probe(
     BinderCallForwarding* self = g_new0(BinderCallForwarding, 1);
 
     self->f = f;
-    self->g = radio_request_group_new(modem->client);
+    self->g = radio_request_group_new(modem->voice_client);
+    self->interface_aidl = radio_client_aidl_interface(modem->voice_client);
     self->log_prefix = binder_dup_prefix(modem->log_prefix);
     self->register_id = g_idle_add(binder_call_forwarding_register, self);
 

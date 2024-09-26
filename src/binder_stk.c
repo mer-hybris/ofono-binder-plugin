@@ -24,6 +24,8 @@
 #include <radio_client.h>
 #include <radio_request.h>
 #include <radio_request_group.h>
+#include <radio_sim_types.h>
+#include <radio_voice_types.h>
 
 #include <gbinder_reader.h>
 #include <gbinder_writer.h>
@@ -39,6 +41,8 @@ typedef struct binder_stk {
     struct ofono_stk* stk;
     char* log_prefix;
     RadioRequestGroup* g;
+    RADIO_AIDL_INTERFACE interface_aidl;
+    RadioClient* voice_client;
     gulong event_id[STK_EVENT_COUNT];
     guint register_id;
 } BinderStk;
@@ -95,7 +99,10 @@ static void binder_stk_envelope_cb(
 
     DBG_(cbd->self, "");
     if (status == RADIO_TX_STATUS_OK) {
-        if (resp == RADIO_RESP_SEND_ENVELOPE) {
+        guint32 code = cbd->self->interface_aidl == RADIO_SIM_INTERFACE ?
+            RADIO_SIM_RESP_SEND_ENVELOPE :
+            RADIO_RESP_SEND_ENVELOPE;
+        if (resp == code) {
             if (error == RADIO_ERROR_NONE) {
                 cb(binder_error_ok(&err), NULL, 0, cbd->data);
                 return;
@@ -122,16 +129,25 @@ binder_stk_envelope(
     BinderStk* self = binder_stk_get_data(stk);
     char* hex = binder_encode_hex(cmd, length);
     GBinderWriter writer;
+    guint32 code = self->interface_aidl == RADIO_SIM_INTERFACE ?
+        RADIO_SIM_REQ_SEND_ENVELOPE :
+        RADIO_REQ_SEND_ENVELOPE;
 
     /* sendEnvelope(int32 serial, string command); */
     RadioRequest* req = radio_request_new2(self->g,
-        RADIO_REQ_SEND_ENVELOPE, &writer,
+        code, &writer,
         binder_stk_envelope_cb, binder_stk_cbd_free,
         binder_stk_cbd_new(self, BINDER_CB(cb), data));
 
     DBG("envelope %s", hex);
     gbinder_writer_add_cleanup(&writer, g_free, hex);
-    gbinder_writer_append_hidl_string(&writer, hex);
+
+    if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+        gbinder_writer_append_hidl_string(&writer, hex);
+    } else {
+        gbinder_writer_append_string16(&writer, hex);
+    }
+
     radio_request_submit(req);
     radio_request_unref(req);
 }
@@ -152,7 +168,10 @@ binder_stk_terminal_response_cb(
 
     DBG_(cbd->self, "");
     if (status == RADIO_TX_STATUS_OK) {
-        if (resp == RADIO_RESP_SEND_TERMINAL_RESPONSE_TO_SIM) {
+        guint32 code = cbd->self->interface_aidl == RADIO_SIM_INTERFACE ?
+            RADIO_SIM_RESP_SEND_TERMINAL_RESPONSE_TO_SIM :
+            RADIO_RESP_SEND_TERMINAL_RESPONSE_TO_SIM;
+        if (resp == code) {
             if (error == RADIO_ERROR_NONE) {
                 cb(binder_error_ok(&err), cbd->data);
                 return;
@@ -180,16 +199,23 @@ binder_stk_terminal_response(
     BinderStk* self = binder_stk_get_data(stk);
     char* hex = binder_encode_hex(resp, length);
     GBinderWriter writer;
+    guint32 code = self->interface_aidl == RADIO_SIM_INTERFACE ?
+        RADIO_SIM_REQ_SEND_TERMINAL_RESPONSE_TO_SIM :
+        RADIO_REQ_SEND_TERMINAL_RESPONSE_TO_SIM;
 
     /* sendTerminalResponseToSim(int32 serial, string commandResponse); */
     RadioRequest* req = radio_request_new2(self->g,
-        RADIO_REQ_SEND_TERMINAL_RESPONSE_TO_SIM, &writer,
+        code, &writer,
         binder_stk_terminal_response_cb, binder_stk_cbd_free,
         binder_stk_cbd_new(self, BINDER_CB(cb), data));
 
     DBG_(self, "terminal response: %s", hex);
     gbinder_writer_add_cleanup(&writer, g_free, hex);
-    gbinder_writer_append_hidl_string(&writer, hex);
+    if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+        gbinder_writer_append_hidl_string(&writer, hex);
+    } else {
+        gbinder_writer_append_string16(&writer, hex);
+    }
     radio_request_submit(req);
     radio_request_unref(req);
 }
@@ -202,10 +228,14 @@ binder_stk_user_confirmation(
 {
     BinderStk* self = binder_stk_get_data(stk);
     GBinderWriter writer;
+    guint32 code =
+        radio_client_aidl_interface(self->voice_client) == RADIO_VOICE_INTERFACE ?
+            RADIO_VOICE_REQ_HANDLE_STK_CALL_SETUP_REQUEST_FROM_SIM :
+            RADIO_REQ_HANDLE_STK_CALL_SETUP_REQUEST_FROM_SIM;
 
     /* handleStkCallSetupRequestFromSim(int32 serial, bool accept); */
-    RadioRequest* req = radio_request_new2(self->g,
-        RADIO_REQ_HANDLE_STK_CALL_SETUP_REQUEST_FROM_SIM, &writer,
+    RadioRequest* req = radio_request_new(self->voice_client,
+        code, &writer,
         NULL, NULL, NULL);
 
     DBG_(self, "%d", confirm);
@@ -224,7 +254,7 @@ binder_stk_proactive_command(
 {
     BinderStk* self = user_data;
     GBinderReader reader;
-    const char* pcmd;
+    char* pcmd;
     void* pdu;
     guint len;
 
@@ -237,7 +267,11 @@ binder_stk_proactive_command(
      * Refer to ETSI TS 102.223 section 9.4 for command types.
      */
     gbinder_reader_copy(&reader, args);
-    pcmd = gbinder_reader_read_hidl_string_c(&reader);
+    if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+        pcmd = gbinder_reader_read_hidl_string(&reader);
+    } else {
+        pcmd = gbinder_reader_read_string16(&reader);
+    }
     pdu = binder_decode_hex(pcmd, -1, &len);
     if (pdu) {
         DBG_(self, "pcmd: %s", pcmd);
@@ -246,6 +280,8 @@ binder_stk_proactive_command(
     } else {
         ofono_warn("Failed to parse STK command %s", pcmd);
     }
+
+    g_free(pcmd);
 }
 
 static
@@ -258,7 +294,7 @@ binder_stk_event_notify(
 {
     BinderStk* self = user_data;
     GBinderReader reader;
-    const char* pcmd;
+    char* pcmd;
     void* pdu;
     guint len;
 
@@ -272,7 +308,11 @@ binder_stk_event_notify(
      * Refer to ETSI TS 102.223 section 9.4 for command types.
      */
     gbinder_reader_copy(&reader, args);
-    pcmd = gbinder_reader_read_hidl_string_c(&reader);
+    if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+        pcmd = gbinder_reader_read_hidl_string(&reader);
+    } else {
+        pcmd = gbinder_reader_read_string16(&reader);
+    }
     pdu = binder_decode_hex(pcmd, -1, &len);
     if (pdu) {
         DBG_(self, "pcmd: %s", pcmd);
@@ -281,6 +321,7 @@ binder_stk_event_notify(
     } else {
         ofono_warn("Failed to parse STK event %s", pcmd);
     }
+    g_free(pcmd);
 }
 
 static
@@ -308,27 +349,52 @@ binder_stk_agent_ready(
 
     DBG_(self, "");
 
-    if (!self->event_id[STK_EVENT_PROACTIVE_COMMAND]) {
-        DBG_(self, "Subscribing for notifications");
-        self->event_id[STK_EVENT_PROACTIVE_COMMAND] =
-            radio_client_add_indication_handler(client,
-                RADIO_IND_STK_PROACTIVE_COMMAND,
-                binder_stk_proactive_command, self);
+    if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+        if (!self->event_id[STK_EVENT_PROACTIVE_COMMAND]) {
+            DBG_(self, "Subscribing for notifications");
+            self->event_id[STK_EVENT_PROACTIVE_COMMAND] =
+                radio_client_add_indication_handler(client,
+                    RADIO_IND_STK_PROACTIVE_COMMAND,
+                    binder_stk_proactive_command, self);
 
-        GASSERT(!self->event_id[STK_EVENT_SESSION_END]);
-        self->event_id[STK_EVENT_SESSION_END] =
-            radio_client_add_indication_handler(client,
-                RADIO_IND_STK_SESSION_END,
-                binder_stk_session_end_notify, self);
+            GASSERT(!self->event_id[STK_EVENT_SESSION_END]);
+            self->event_id[STK_EVENT_SESSION_END] =
+                radio_client_add_indication_handler(client,
+                    RADIO_IND_STK_SESSION_END,
+                    binder_stk_session_end_notify, self);
 
-        GASSERT(!self->event_id[STK_EVENT_NOTIFY]);
-        self->event_id[STK_EVENT_NOTIFY] =
-            radio_client_add_indication_handler(client,
-                RADIO_IND_STK_EVENT_NOTIFY,
-                binder_stk_event_notify, self);
+            GASSERT(!self->event_id[STK_EVENT_NOTIFY]);
+            self->event_id[STK_EVENT_NOTIFY] =
+                radio_client_add_indication_handler(client,
+                    RADIO_IND_STK_EVENT_NOTIFY,
+                    binder_stk_event_notify, self);
 
-        /* reportStkServiceIsRunning(int32 serial); */
-        binder_submit_request(self->g, RADIO_REQ_REPORT_STK_SERVICE_IS_RUNNING);
+            /* reportStkServiceIsRunning(int32 serial); */
+            binder_submit_request(self->g, RADIO_REQ_REPORT_STK_SERVICE_IS_RUNNING);
+        }
+    } else {
+        if (!self->event_id[STK_EVENT_PROACTIVE_COMMAND]) {
+            DBG_(self, "Subscribing for notifications");
+            self->event_id[STK_EVENT_PROACTIVE_COMMAND] =
+                radio_client_add_indication_handler(client,
+                    RADIO_SIM_IND_STK_PROACTIVE_COMMAND,
+                    binder_stk_proactive_command, self);
+
+            GASSERT(!self->event_id[STK_EVENT_SESSION_END]);
+            self->event_id[STK_EVENT_SESSION_END] =
+                radio_client_add_indication_handler(client,
+                    RADIO_SIM_IND_STK_SESSION_END,
+                    binder_stk_session_end_notify, self);
+
+            GASSERT(!self->event_id[STK_EVENT_NOTIFY]);
+            self->event_id[STK_EVENT_NOTIFY] =
+                radio_client_add_indication_handler(client,
+                    RADIO_SIM_IND_STK_EVENT_NOTIFY,
+                    binder_stk_event_notify, self);
+
+            /* reportStkServiceIsRunning(int32 serial); */
+            binder_submit_request(self->g, RADIO_SIM_REQ_REPORT_STK_SERVICE_IS_RUNNING);
+        }
     }
 }
 
@@ -358,7 +424,9 @@ binder_stk_probe(
     BinderStk* self = g_new0(BinderStk, 1);
 
     self->stk = stk;
-    self->g = radio_request_group_new(modem->client); /* Keeps ref to client */
+    self->g = radio_request_group_new(modem->sim_client); /* Keeps ref to client */
+    self->interface_aidl = radio_client_aidl_interface(modem->sim_client);
+    self->voice_client = radio_client_ref(modem->voice_client);
     self->log_prefix = binder_dup_prefix(modem->log_prefix);
     self->register_id = g_idle_add(binder_stk_register, self);
 
@@ -383,6 +451,7 @@ binder_stk_remove(
     radio_client_remove_all_handlers(self->g->client, self->event_id);
     radio_request_group_cancel(self->g);
     radio_request_group_unref(self->g);
+    radio_client_unref(self->voice_client);
 
     g_free(self->log_prefix);
     g_free(self);

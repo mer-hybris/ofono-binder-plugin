@@ -55,7 +55,8 @@ static
 BinderDevmonIo*
 binder_devmon_combine_start_io(
     BinderDevmon* devmon,
-    RadioClient* client,
+    RadioClient* ds_client,
+    RadioClient* if_client,
     struct ofono_slot* slot)
 {
     guint i;
@@ -67,7 +68,8 @@ binder_devmon_combine_start_io(
     io->impl = (BinderDevmonIo**)(io + 1);
     io->count = self->count;
     for (i = 0; i < io->count; i++) {
-        io->impl[i] = binder_devmon_start_io(self->impl[i], client, slot);
+        io->impl[i] = binder_devmon_start_io(self->impl[i], ds_client,
+            if_client, slot);
     }
     return &io->pub;
 }

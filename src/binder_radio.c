@@ -21,6 +21,7 @@
 #include <radio_client.h>
 #include <radio_request.h>
 #include <radio_request_group.h>
+#include <radio_modem_types.h>
 
 #include <gbinder_reader.h>
 #include <gbinder_writer.h>
@@ -182,9 +183,16 @@ binder_radio_power_request_cb(
 {
     BinderRadioObject* self = THIS(user_data);
     const RADIO_INTERFACE iface = radio_client_interface(self->client);
-    const RADIO_RESP code = (iface >= RADIO_INTERFACE_1_5) ?
-                            RADIO_RESP_SET_RADIO_POWER_1_5 :
-                            RADIO_RESP_SET_RADIO_POWER;
+    const RADIO_AIDL_INTERFACE iface_aidl = radio_client_aidl_interface(self->client);
+    guint32 code = RADIO_RESP_NONE;
+
+    if (iface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+        code = (iface >= RADIO_INTERFACE_1_5) ?
+               RADIO_RESP_SET_RADIO_POWER_1_5 :
+               RADIO_RESP_SET_RADIO_POWER;
+    } else if (iface_aidl == RADIO_MODEM_INTERFACE) {
+        code = RADIO_MODEM_RESP_SET_RADIO_POWER;
+    }
 
     GASSERT(self->pending_req == req);
     radio_request_unref(self->pending_req);
@@ -213,18 +221,30 @@ binder_radio_submit_power_request(
     /* setRadioPower(int32 serial, bool on)
      * setRadioPower_1_5(int32 serial, bool on, bool forEmergencyCall,
      *     bool preferredForEmergencyCall)
+     * AIDL:
+     * setRadioPower(int32 serial, bool on, bool forEmergencyCall,
+     *     bool preferredForEmergencyCall)
      */
     GBinderWriter writer;
     const RADIO_INTERFACE iface = radio_client_interface(self->client);
-    const RADIO_REQ code = (iface >= RADIO_INTERFACE_1_5) ?
-                           RADIO_REQ_SET_RADIO_POWER_1_5 :
-                           RADIO_REQ_SET_RADIO_POWER;
+    const RADIO_AIDL_INTERFACE iface_aidl = radio_client_aidl_interface(self->client);
+    guint32 code = RADIO_REQ_NONE;
+
+    if (iface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+        code = (iface >= RADIO_INTERFACE_1_5) ?
+               RADIO_REQ_SET_RADIO_POWER_1_5 :
+               RADIO_REQ_SET_RADIO_POWER;
+    } else if (iface_aidl == RADIO_MODEM_INTERFACE) {
+        code = RADIO_MODEM_REQ_SET_RADIO_POWER;
+    }
+
     RadioRequest* req = radio_request_new(self->client,
         code, &writer,
         binder_radio_power_request_cb, NULL, self);
 
     gbinder_writer_append_bool(&writer, on);
-    if (iface >= RADIO_INTERFACE_1_5) {
+    if ((iface_aidl == RADIO_AIDL_INTERFACE_NONE && iface >= RADIO_INTERFACE_1_5) ||
+            iface_aidl == RADIO_MODEM_INTERFACE) {
         gbinder_writer_append_bool(&writer, FALSE);
         gbinder_writer_append_bool(&writer, FALSE);
     }
@@ -339,14 +359,20 @@ binder_radio_new(
 {
     BinderRadioObject* self = g_object_new(THIS_TYPE, NULL);
     BinderRadio* radio = &self->pub;
+    const RADIO_AIDL_INTERFACE iface_aidl = radio_client_aidl_interface(client);
 
     self->client = radio_client_ref(client);
     self->g = radio_request_group_new(client);
     self->log_prefix = binder_dup_prefix(log_prefix);
     DBG_(self, "");
 
-    self->state_event_id = radio_client_add_indication_handler(client,
-        RADIO_IND_RADIO_STATE_CHANGED, binder_radio_state_changed, self);
+    if (iface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+        self->state_event_id = radio_client_add_indication_handler(client,
+            RADIO_IND_RADIO_STATE_CHANGED, binder_radio_state_changed, self);
+    } else if (iface_aidl == RADIO_MODEM_INTERFACE) {
+        self->state_event_id = radio_client_add_indication_handler(client,
+            RADIO_MODEM_IND_RADIO_STATE_CHANGED, binder_radio_state_changed, self);
+    }
 
     /*
      * Some modem adaptations like to receive power off request at startup

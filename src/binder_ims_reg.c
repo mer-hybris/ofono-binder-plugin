@@ -25,6 +25,8 @@
 #include <radio_request.h>
 #include <radio_request_group.h>
 
+#include <radio_network_types.h>
+
 #include <gbinder_reader.h>
 #include <gutil_macros.h>
 #include <gutil_misc.h>
@@ -82,10 +84,14 @@ binder_ims_reg_query_done(
     BinderBase* base = &self->base;
     BinderImsReg* ims = &self->pub;
     gboolean registered = FALSE;
+    guint32 code =
+        radio_client_aidl_interface(self->g->client) == RADIO_NETWORK_INTERFACE ?
+            RADIO_NETWORK_RESP_GET_IMS_REGISTRATION_STATE :
+            RADIO_RESP_GET_IMS_REGISTRATION_STATE;
 
     if (status != RADIO_TX_STATUS_OK) {
         ofono_error("getImsRegistrationState failed");
-    } else if (resp != RADIO_RESP_GET_IMS_REGISTRATION_STATE) {
+    } else if (resp != code) {
         ofono_error("Unexpected getImsRegistrationState response %d", resp);
     } else if (error != RADIO_ERROR_NONE) {
         DBG_(self, "%s", binder_radio_error_string(error));
@@ -120,8 +126,12 @@ void
 binder_ims_reg_query(
     BinderImsRegObject* self)
 {
+    guint32 code =
+        radio_client_aidl_interface(self->g->client) == RADIO_NETWORK_INTERFACE ?
+            RADIO_NETWORK_REQ_GET_IMS_REGISTRATION_STATE :
+            RADIO_REQ_GET_IMS_REGISTRATION_STATE;
     RadioRequest* req = radio_request_new2(self->g,
-        RADIO_REQ_GET_IMS_REGISTRATION_STATE, NULL,
+        code, NULL,
         binder_ims_reg_query_done, NULL, self);
 
     radio_request_submit(req);
@@ -200,13 +210,16 @@ binder_ims_reg_new(
                 binder_ext_ims_add_state_handler(self->ext,
                     binder_ims_ext_state_changed, self);
         } else {
+            guint32 code =
+                radio_client_aidl_interface(client) == RADIO_NETWORK_INTERFACE ?
+                    RADIO_NETWORK_IND_IMS_NETWORK_STATE_CHANGED :
+                    RADIO_IND_IMS_NETWORK_STATE_CHANGED;
             DBG_(self, "using ims radio api");
             self->g = radio_request_group_new(client); /* Keeps ref to client */
-
             /* Register event handler */
             self->event_id[EVENT_IMS_NETWORK_STATE_CHANGED] =
                 radio_client_add_indication_handler(client,
-                    RADIO_IND_IMS_NETWORK_STATE_CHANGED,
+                    code,
                     binder_ims_reg_state_changed, self);
 
             /* Query the initial state */

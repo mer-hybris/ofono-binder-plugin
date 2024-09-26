@@ -770,6 +770,17 @@ binder_read_hidl_string(
     return gbinder_reader_read_hidl_string_c(&reader);
 }
 
+char*
+binder_read_string16(
+    const GBinderReader* args)
+{
+    GBinderReader reader;
+
+    /* Read a single string arg */
+    gbinder_reader_copy(&reader, args);
+    return gbinder_reader_read_string16(&reader);
+}
+
 gboolean
 binder_read_int32(
     const GBinderReader* args,
@@ -794,6 +805,33 @@ binder_read_hidl_struct1(
     return gbinder_reader_read_hidl_struct1(&reader, size);
 }
 
+const void*
+binder_read_parcelable(
+    const GBinderReader* args,
+    gsize* out_size)
+{
+    GBinderReader reader;
+
+    /* Read a single AIDL parcelable */
+    gbinder_reader_copy(&reader, args);
+    return gbinder_reader_read_parcelable(&reader, out_size);
+}
+
+gsize
+binder_read_parcelable_size(
+    GBinderReader* reader)
+{
+    /* Read a single AIDL parcelable header and return inner data size */
+    guint32 non_null = 0, payload_size = 0;
+    if (gbinder_reader_read_uint32(reader, &non_null) && non_null &&
+        gbinder_reader_read_uint32(reader, &payload_size) &&
+        payload_size >= sizeof(payload_size)) {
+
+        return payload_size - sizeof(payload_size);
+    }
+    return 0;
+}
+
 char**
 binder_strv_from_hidl_string_vec(
     const GBinderHidlVec* vec)
@@ -808,6 +846,46 @@ binder_strv_from_hidl_string_vec(
             const char* str = strings[i].data.str;
 
             *ptr = str ? gutil_memdup(str, strings[i].len + 1) : g_strdup("");
+        }
+        *ptr = NULL;
+        return out;
+    }
+    return NULL;
+}
+
+gboolean
+binder_read_string16_parse_int(
+    GBinderReader* reader,
+    gint32* value)
+{
+    /* Read a string and parse integer value from it */
+    gboolean ret = FALSE;
+    char* str = gbinder_reader_read_string16(reader);
+
+    ret = gutil_parse_int(str, 10, value);
+    g_free(str);
+
+    return ret;
+}
+
+char**
+binder_strv_from_string16_array(
+    GBinderReader* reader)
+{
+    if (reader) {
+        gint32 count;
+        gbinder_reader_read_int32(reader, &count);
+        if (count < 0) {
+            count = 0;
+        }
+        char** out = g_new(char*, count + 1);
+        char** ptr = out;
+        guint i;
+
+        for (i = 0; i < count; i++, ptr++) {
+            char* str = gbinder_reader_read_string16(reader);
+
+            *ptr = str ? str : g_strdup("");
         }
         *ptr = NULL;
         return out;

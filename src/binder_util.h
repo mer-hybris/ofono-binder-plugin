@@ -202,6 +202,11 @@ binder_read_hidl_string(
     const GBinderReader* args)
     BINDER_INTERNAL;
 
+char*
+binder_read_string16(
+    const GBinderReader* args)
+    BINDER_INTERNAL;
+
 gboolean
 binder_read_int32(
     const GBinderReader* args,
@@ -216,9 +221,29 @@ binder_read_hidl_struct1(
 #define binder_read_hidl_struct(reader,type) \
     ((const type*)binder_read_hidl_struct1(reader, sizeof(type)))
 
+const void*
+binder_read_parcelable(
+    const GBinderReader* reader,
+    gsize* out_size);
+
+gsize
+binder_read_parcelable_size(
+    GBinderReader* reader);
+
 char**
 binder_strv_from_hidl_string_vec(
     const GBinderHidlVec* vec)
+    BINDER_INTERNAL;
+
+char**
+binder_strv_from_string16_array(
+    GBinderReader* reader)
+    BINDER_INTERNAL;
+
+gboolean
+binder_read_string16_parse_int(
+    GBinderReader* reader,
+    gint32* value)
     BINDER_INTERNAL;
 
 guint

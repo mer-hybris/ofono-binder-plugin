@@ -18,10 +18,11 @@
 BinderDevmonIo*
 binder_devmon_start_io(
     BinderDevmon* devmon,
-    RadioClient* client,
+    RadioClient* ds_client,
+    RadioClient* if_client,
     struct ofono_slot* slot)
 {
-    return devmon ? devmon->start_io(devmon, client, slot) : NULL;
+    return devmon ? devmon->start_io(devmon, ds_client, if_client, slot) : NULL;
 }
 
 void

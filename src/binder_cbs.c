@@ -24,6 +24,7 @@
 #include <radio_client.h>
 #include <radio_request.h>
 #include <radio_request_group.h>
+#include <radio_messaging_types.h>
 
 #include <gbinder_reader.h>
 #include <gbinder_writer.h>
@@ -34,6 +35,7 @@
 typedef struct binder_cbs {
     struct ofono_cbs* cbs;
     RadioRequestGroup* g;
+    RADIO_AIDL_INTERFACE interface_aidl;
     char* log_prefix;
     guint register_id;
     gulong event_id;
@@ -101,9 +103,12 @@ binder_cbs_activate_cb(
 {
     struct ofono_error err;
     BinderCbsCbData* cbd = user_data;
+    guint32 code = cbd->self->interface_aidl == RADIO_MESSAGING_INTERFACE ?
+        RADIO_MESSAGING_RESP_SET_GSM_BROADCAST_ACTIVATION :
+        RADIO_RESP_SET_GSM_BROADCAST_ACTIVATION;
 
     if (status == RADIO_TX_STATUS_OK) {
-        if (resp == RADIO_RESP_SET_GSM_BROADCAST_ACTIVATION) {
+        if (resp == code) {
             if (error == RADIO_ERROR_NONE) {
                 cbd->cb(binder_error_ok(&err), cbd->data);
                 return;
@@ -129,8 +134,11 @@ binder_cbs_activate(
 {
     /* setGsmBroadcastActivation(int32_t serial, bool activate); */
     GBinderWriter writer;
+    guint32 code = self->interface_aidl == RADIO_MESSAGING_INTERFACE ?
+        RADIO_MESSAGING_REQ_SET_GSM_BROADCAST_ACTIVATION :
+        RADIO_REQ_SET_GSM_BROADCAST_ACTIVATION;
     RadioRequest* req = radio_request_new2(self->g,
-        RADIO_REQ_SET_GSM_BROADCAST_ACTIVATION, &writer,
+        code, &writer,
         binder_cbs_activate_cb,
         binder_cbs_callback_data_free,
         binder_cbs_callback_data_new(self, cb, data));
@@ -157,7 +165,10 @@ binder_cbs_set_config_cb(
     struct ofono_error err;
 
     if (status == RADIO_TX_STATUS_OK) {
-        if (resp == RADIO_RESP_SET_GSM_BROADCAST_CONFIG) {
+        guint32 code = cbd->self->interface_aidl == RADIO_MESSAGING_INTERFACE ?
+            RADIO_MESSAGING_RESP_SET_GSM_BROADCAST_CONFIG :
+            RADIO_RESP_SET_GSM_BROADCAST_CONFIG;
+        if (resp == code) {
             if (error == RADIO_ERROR_NONE) {
                 binder_cbs_activate(cbd->self, TRUE, cbd->cb, cbd->data);
                 return;
@@ -180,50 +191,85 @@ binder_cbs_set_config(
     ofono_cbs_set_cb_t cb,
     void* data)
 {
-    /* setGsmBroadcastConfig(int32_t serial, vec<GsmBroadcastSmsConfigInfo>); */
     GBinderWriter writer;
+    guint32 code = self->interface_aidl == RADIO_MESSAGING_INTERFACE ?
+        RADIO_MESSAGING_REQ_SET_GSM_BROADCAST_CONFIG :
+        RADIO_REQ_SET_GSM_BROADCAST_CONFIG;
     RadioRequest* req = radio_request_new2(self->g,
-        RADIO_REQ_SET_GSM_BROADCAST_CONFIG, &writer,
+        code, &writer,
         binder_cbs_set_config_cb,
         binder_cbs_callback_data_free,
         binder_cbs_callback_data_new(self, cb, data));
 
-    GBinderParent parent;
-    GBinderHidlVec* vec = gbinder_writer_new0(&writer, GBinderHidlVec);
-    RadioGsmBroadcastSmsConfig* configs = NULL;
     char** list = topics ? g_strsplit(topics, ",", 0) : NULL;
     const guint count = gutil_strv_length(list);
-    guint i;
 
-    vec->count = count;
-    vec->owns_buffer = TRUE;
-    vec->data.ptr = configs = gbinder_writer_malloc0(&writer,
-        sizeof(RadioGsmBroadcastSmsConfig) * count);
+    if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+        /* setGsmBroadcastConfig(int32_t serial, vec<GsmBroadcastSmsConfigInfo>); */
+        GBinderParent parent;
+        GBinderHidlVec* vec = gbinder_writer_new0(&writer, GBinderHidlVec);
+        RadioGsmBroadcastSmsConfig* configs = NULL;
+        guint i;
 
-    for (i = 0; i < count; i++) {
-        RadioGsmBroadcastSmsConfig* config = configs + i;
-        const char* entry = list[i];
-        const char* delim = strchr(entry, '-');
+        vec->count = count;
+        vec->owns_buffer = TRUE;
+        vec->data.ptr = configs = gbinder_writer_malloc0(&writer,
+            sizeof(RadioGsmBroadcastSmsConfig) * count);
 
-        config->selected = TRUE;
-        config->toCodeScheme = 0xff;
-        if (delim) {
-            char** range = g_strsplit(entry, "-", 0);
+        for (i = 0; i < count; i++) {
+            RadioGsmBroadcastSmsConfig* config = configs + i;
+            const char* entry = list[i];
+            const char* delim = strchr(entry, '-');
 
-            config->fromServiceId = atoi(range[0]);
-            config->toServiceId = atoi(range[1]);
-            g_strfreev(range);
-        } else {
-            config->fromServiceId = config->toServiceId = atoi(entry);
+            config->selected = TRUE;
+            config->toCodeScheme = 0xff;
+            if (delim) {
+                char** range = g_strsplit(entry, "-", 0);
+
+                config->fromServiceId = atoi(range[0]);
+                config->toServiceId = atoi(range[1]);
+                g_strfreev(range);
+            } else {
+                config->fromServiceId = config->toServiceId = atoi(entry);
+            }
+        }
+
+        /* Every vector, even the one without data, requires two buffer objects */
+        parent.offset = GBINDER_HIDL_VEC_BUFFER_OFFSET;
+        parent.index = gbinder_writer_append_buffer_object(&writer, vec,
+            sizeof(*vec));
+        gbinder_writer_append_buffer_object_with_parent(&writer, configs,
+            sizeof(configs[0]) * count, &parent);
+    } else {
+        /* setGsmBroadcastConfig(int32_t serial, GsmBroadcastSmsConfigInfo[]); */
+        guint i;
+
+        gbinder_writer_append_int32(&writer, count);
+
+        for (i = 0; i < count; i++) {
+            const char* entry = list[i];
+            const char* delim = strchr(entry, '-');
+
+            /* Non-null parcelable */
+            gbinder_writer_append_int32(&writer, 1);
+            /* Parcelable size */
+            gbinder_writer_append_int32(&writer, 6 * sizeof(gint32));
+
+            if (delim) {
+                char** range = g_strsplit(entry, "-", 0);
+
+                gbinder_writer_append_int32(&writer, atoi(range[0]));
+                gbinder_writer_append_int32(&writer, atoi(range[1]));
+                g_strfreev(range);
+            } else {
+                gbinder_writer_append_int32(&writer, atoi(entry));
+                gbinder_writer_append_int32(&writer, atoi(entry));
+            }
+            gbinder_writer_append_int32(&writer, 0);
+            gbinder_writer_append_int32(&writer, 0xff);
+            gbinder_writer_append_bool(&writer, TRUE);
         }
     }
-
-    /* Every vector, even the one without data, requires two buffer objects */
-    parent.offset = GBINDER_HIDL_VEC_BUFFER_OFFSET;
-    parent.index = gbinder_writer_append_buffer_object(&writer, vec,
-        sizeof(*vec));
-    gbinder_writer_append_buffer_object_with_parent(&writer, configs,
-        sizeof(configs[0]) * count, &parent);
 
     DBG_(self, "configuring CB");
     radio_request_set_retry_func(req, binder_cbs_retry);
@@ -272,11 +318,18 @@ binder_cbs_notify(
     GBinderReader reader;
     const guchar* ptr;
     gsize len;
+    guint32 ind_code = self->interface_aidl == RADIO_MESSAGING_INTERFACE ?
+        RADIO_MESSAGING_IND_NEW_BROADCAST_SMS :
+        RADIO_IND_NEW_BROADCAST_SMS;
 
     /* newBroadcastSms(RadioIndicationType type, vec<uint8_t> data); */
-    GASSERT(code == RADIO_IND_NEW_BROADCAST_SMS);
+    GASSERT(code == ind_code);
     gbinder_reader_copy(&reader, args);
-    ptr = gbinder_reader_read_hidl_byte_vec(&reader, &len);
+    if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+        ptr = gbinder_reader_read_hidl_byte_vec(&reader, &len);
+    } else {
+        ptr = gbinder_reader_read_byte_array(&reader, &len);
+    }
 
     /* By default assume that it's a length followed by the binary PDU data. */
     if (ptr) {
@@ -305,12 +358,15 @@ binder_cbs_register(
 {
     BinderCbs* self = user_data;
     RadioClient* client = self->g->client;
+    guint32 code = self->interface_aidl == RADIO_MESSAGING_INTERFACE ?
+        RADIO_MESSAGING_IND_NEW_BROADCAST_SMS :
+        RADIO_IND_NEW_BROADCAST_SMS;
 
     GASSERT(self->register_id);
     self->register_id = 0;
     DBG_(self, "registering for CB");
     self->event_id = radio_client_add_indication_handler(client,
-        RADIO_IND_NEW_BROADCAST_SMS, binder_cbs_notify, self);
+        code, binder_cbs_notify, self);
     ofono_cbs_register(self->cbs);
     return G_SOURCE_REMOVE;
 }
@@ -326,7 +382,8 @@ binder_cbs_probe(
     BinderCbs* self = g_new0(BinderCbs, 1);
 
     self->cbs = cbs;
-    self->g = radio_request_group_new(modem->client); /* Keeps ref to client */
+    self->g = radio_request_group_new(modem->messaging_client); /* Keeps ref to client */
+    self->interface_aidl = radio_client_aidl_interface(modem->messaging_client);
     self->log_prefix = binder_dup_prefix(modem->log_prefix);
     self->register_id = g_idle_add(binder_cbs_register, self);
 

@@ -23,6 +23,7 @@
 
 #include <radio_client.h>
 #include <radio_request.h>
+#include <radio_voice_types.h>
 
 #include <gbinder_reader.h>
 #include <gbinder_writer.h>
@@ -37,6 +38,7 @@ typedef struct binder_ussd {
     struct ofono_ussd *ussd;
     char* log_prefix;
     RadioClient* client;
+    RADIO_AIDL_INTERFACE interface_aidl;
     RadioRequest* send_req;
     RadioRequest* cancel_req;
     gulong event_id;
@@ -96,7 +98,10 @@ binder_ussd_cancel_cb(
     self->cancel_req = NULL;
 
     if (status == RADIO_TX_STATUS_OK) {
-        if (resp == RADIO_RESP_CANCEL_PENDING_USSD) {
+        guint32 code = self->interface_aidl == RADIO_VOICE_INTERFACE ?
+            RADIO_VOICE_RESP_CANCEL_PENDING_USSD :
+            RADIO_RESP_CANCEL_PENDING_USSD;
+        if (resp == code) {
             if (error != RADIO_ERROR_NONE) {
                 ofono_warn("Error cancelling USSD: %s",
                     binder_radio_error_string(error));
@@ -134,7 +139,9 @@ binder_ussd_send_cb(
     self->send_req = NULL;
 
     if (status == RADIO_TX_STATUS_OK) {
-        if (resp == RADIO_RESP_SEND_USSD) {
+        guint32 code = self->interface_aidl == RADIO_VOICE_INTERFACE ?
+            RADIO_VOICE_RESP_SEND_USSD : RADIO_RESP_SEND_USSD;
+        if (resp == code) {
             if (error == RADIO_ERROR_NONE) {
                 cbd->cb(binder_error_ok(&err), cbd->data);
                 return;
@@ -173,13 +180,19 @@ binder_ussd_request(
     if (text) {
         /* sendUssd(int32 serial, string ussd); */
         GBinderWriter writer;
+        guint32 code = self->interface_aidl == RADIO_VOICE_INTERFACE ?
+            RADIO_VOICE_REQ_SEND_USSD : RADIO_REQ_SEND_USSD;
         RadioRequest* req = radio_request_new(self->client,
-            RADIO_REQ_SEND_USSD, &writer,
+            code, &writer,
             binder_ussd_send_cb, binder_ussd_cbd_free,
             binder_ussd_cbd_new(self, cb, data));
 
+        if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+            gbinder_writer_append_hidl_string(&writer, text);
+        } else {
+            gbinder_writer_append_string16(&writer, text);
+        }
         /* USSD text will be deallocated together with the request */
-        gbinder_writer_append_hidl_string(&writer, text);
         gbinder_writer_add_cleanup(&writer, (GDestroyNotify)
             ofono_ussd_decode_free, text);
 
@@ -211,8 +224,10 @@ binder_ussd_cancel(
     radio_request_drop(self->cancel_req);
 
     /* cancelPendingUssd(int32 serial); */
+    guint32 code = self->interface_aidl == RADIO_VOICE_INTERFACE ?
+        RADIO_VOICE_REQ_CANCEL_PENDING_USSD : RADIO_REQ_CANCEL_PENDING_USSD;
     self->cancel_req = radio_request_new(self->client,
-        RADIO_REQ_CANCEL_PENDING_USSD, NULL,
+        code, NULL,
         binder_ussd_cancel_cb, binder_ussd_cbd_free,
         binder_ussd_cbd_new(self, cb, data));
 
@@ -241,10 +256,16 @@ binder_ussd_notify(
     ofono_info("ussd received");
 
     /* onUssd(RadioIndicationType, UssdModeType modeType, string msg); */
-    GASSERT(code == RADIO_IND_ON_USSD);
+    GASSERT(code == (self->interface_aidl == RADIO_VOICE_INTERFACE ?
+        RADIO_VOICE_IND_ON_USSD : RADIO_IND_ON_USSD));
     gbinder_reader_copy(&reader, args);
     if (gbinder_reader_read_int32(&reader, &type)) {
-        const char* msg = gbinder_reader_read_hidl_string_c(&reader);
+        char* msg;
+        if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+            msg = gbinder_reader_read_hidl_string(&reader);
+        } else {
+            msg = gbinder_reader_read_string16(&reader);
+        }
 
         if (msg && msg[0]) {
             const int len = (int) strlen(msg);
@@ -274,6 +295,8 @@ binder_ussd_notify(
         } else {
             ofono_ussd_notify(self->ussd, type, 0, NULL, 0);
         }
+
+        g_free(msg);
     }
 }
 
@@ -291,8 +314,13 @@ binder_ussd_register(
     ofono_ussd_register(self->ussd);
 
     /* Register for USSD events */
-    self->event_id = radio_client_add_indication_handler(self->client,
-        RADIO_IND_ON_USSD, binder_ussd_notify, self);
+    if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+        self->event_id = radio_client_add_indication_handler(self->client,
+            RADIO_IND_ON_USSD, binder_ussd_notify, self);
+    } else {
+        self->event_id = radio_client_add_indication_handler(self->client,
+            RADIO_VOICE_IND_ON_USSD, binder_ussd_notify, self);
+    }
 
     return G_SOURCE_REMOVE;
 }
@@ -308,7 +336,8 @@ binder_ussd_probe(
     BinderUssd* self = g_new0(BinderUssd, 1);
 
     self->ussd = ussd;
-    self->client = radio_client_ref(modem->client);
+    self->client = radio_client_ref(modem->voice_client);
+    self->interface_aidl = radio_client_aidl_interface(modem->voice_client);
     self->log_prefix = binder_dup_prefix(modem->log_prefix);
     self->register_id = g_idle_add(binder_ussd_register, self);
 

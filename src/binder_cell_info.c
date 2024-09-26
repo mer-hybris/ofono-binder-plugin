@@ -20,8 +20,11 @@
 #include "binder_log.h"
 
 #include <radio_client.h>
+#include <radio_instance.h>
 #include <radio_request.h>
 #include <radio_util.h>
+
+#include <radio_network_types.h>
 
 #include <gbinder_reader.h>
 #include <gbinder_writer.h>
@@ -46,6 +49,7 @@ typedef struct binder_cell_info {
     GObject object;
     struct ofono_cell_info info;
     struct ofono_cell **cells;
+    RadioInstance* instance;
     RadioClient* client;
     BinderRadio* radio;
     BinderSimCard* sim_card;
@@ -373,6 +377,237 @@ binder_cell_info_new_cell_nr(
 }
 
 static
+struct ofono_cell*
+binder_cell_info_new_cell_gsm_aidl(
+    gboolean registered,
+    GBinderReader* reader)
+{
+    struct ofono_cell* cell = binder_cell_new();
+    struct ofono_cell_info_gsm* gsm = &cell->info.gsm;
+    gsize data_read;
+    gsize initial_size;
+    gsize parcel_size;
+
+    cell->type = OFONO_CELL_TYPE_GSM;
+    cell->registered = registered;
+
+    binder_cell_info_invalidate(gsm, sizeof(*gsm));
+    /* CellInfoGsm */
+    if (binder_read_parcelable_size(reader)) {
+        /* CellIdentityGsm */
+        parcel_size = binder_read_parcelable_size(reader);
+        initial_size = gbinder_reader_bytes_read(reader);
+        binder_read_string16_parse_int(reader, &gsm->mcc);
+        binder_read_string16_parse_int(reader, &gsm->mnc);
+        gbinder_reader_read_int32(reader, &gsm->lac);
+        gbinder_reader_read_int32(reader, &gsm->cid);
+        gbinder_reader_read_int32(reader, &gsm->arfcn);
+        gbinder_reader_read_int32(reader, &gsm->bsic);
+        data_read = gbinder_reader_bytes_read(reader) - initial_size;
+        while (data_read < parcel_size) {
+            gbinder_reader_read_uint32(reader, NULL);
+            data_read += sizeof(guint32);
+        }
+
+        /* SignalStrengthGsm */
+        binder_read_parcelable_size(reader);
+        gbinder_reader_read_int32(reader, &gsm->signalStrength);
+        gbinder_reader_read_int32(reader, &gsm->bitErrorRate);
+        gbinder_reader_read_int32(reader, &gsm->timingAdvance);
+    }
+
+    DBG("[gsm] reg=%d%s%s%s%s%s%s%s%s%s", registered,
+        binder_cell_info_int_format(gsm->mcc, ",mcc=%d"),
+        binder_cell_info_int_format(gsm->mnc, ",mnc=%d"),
+        binder_cell_info_int_format(gsm->lac, ",lac=%d"),
+        binder_cell_info_int_format(gsm->cid, ",cid=%d"),
+        binder_cell_info_int_format(gsm->arfcn, ",arfcn=%d"),
+        binder_cell_info_int_format(gsm->bsic, ",bsic=%d"),
+        binder_cell_info_int_format(gsm->signalStrength, ",strength=%d"),
+        binder_cell_info_int_format(gsm->bitErrorRate, ",err=%d"),
+        binder_cell_info_int_format(gsm->timingAdvance, ",t=%d"));
+    return cell;
+}
+
+static
+struct
+ofono_cell*
+binder_cell_info_new_cell_wcdma_aidl(
+    gboolean registered,
+    GBinderReader* reader)
+{
+    struct ofono_cell* cell = binder_cell_new();
+    struct ofono_cell_info_wcdma* wcdma = &cell->info.wcdma;
+    gsize data_read;
+    gsize initial_size;
+    gsize parcel_size;
+
+    cell->type = OFONO_CELL_TYPE_WCDMA;
+    cell->registered = registered;
+
+    binder_cell_info_invalidate(wcdma, sizeof(*wcdma));
+
+    /* CellInfoWcdma */
+    if (binder_read_parcelable_size(reader)) {
+        /* CellIdentityWcdma */
+        parcel_size = binder_read_parcelable_size(reader);
+        initial_size = gbinder_reader_bytes_read(reader);
+        binder_read_string16_parse_int(reader, &wcdma->mcc);
+        binder_read_string16_parse_int(reader, &wcdma->mnc);
+        gbinder_reader_read_int32(reader, &wcdma->lac);
+        gbinder_reader_read_int32(reader, &wcdma->cid);
+        gbinder_reader_read_int32(reader, &wcdma->psc);
+        gbinder_reader_read_int32(reader, &wcdma->uarfcn);
+        data_read = gbinder_reader_bytes_read(reader) - initial_size;
+        while (data_read < parcel_size) {
+            gbinder_reader_read_uint32(reader, NULL);
+            data_read += sizeof(guint32);
+        }
+
+        /* SignalStrengthWcdma */
+        binder_read_parcelable_size(reader);
+        gbinder_reader_read_int32(reader, &wcdma->signalStrength);
+        gbinder_reader_read_int32(reader, &wcdma->bitErrorRate);
+        gbinder_reader_read_int32(reader, NULL); /* rscp */
+        gbinder_reader_read_int32(reader, NULL); /* ecno */
+    }
+
+    DBG("[wcdma] reg=%d%s%s%s%s%s%s%s", registered,
+        binder_cell_info_int_format(wcdma->mcc, ",mcc=%d"),
+        binder_cell_info_int_format(wcdma->mnc, ",mnc=%d"),
+        binder_cell_info_int_format(wcdma->lac, ",lac=%d"),
+        binder_cell_info_int_format(wcdma->cid, ",cid=%d"),
+        binder_cell_info_int_format(wcdma->psc, ",psc=%d"),
+        binder_cell_info_int_format(wcdma->signalStrength, ",strength=%d"),
+        binder_cell_info_int_format(wcdma->bitErrorRate, ",err=%d"));
+    return cell;
+}
+
+static
+struct ofono_cell*
+binder_cell_info_new_cell_lte_aidl(
+    gboolean registered,
+    GBinderReader* reader)
+{
+    struct ofono_cell* cell = binder_cell_new();
+    struct ofono_cell_info_lte* lte = &cell->info.lte;
+    gsize data_read;
+    gsize initial_size;
+    gsize parcel_size;
+
+    cell->type = OFONO_CELL_TYPE_LTE;
+    cell->registered = registered;
+
+    binder_cell_info_invalidate(lte, sizeof(*lte));
+
+    /* CellInfoLte */
+    if (binder_read_parcelable_size(reader)) {
+        /* CellIdentityLte */
+        parcel_size = binder_read_parcelable_size(reader);
+        initial_size = gbinder_reader_bytes_read(reader);
+        binder_read_string16_parse_int(reader, &lte->mcc);
+        binder_read_string16_parse_int(reader, &lte->mnc);
+        gbinder_reader_read_int32(reader, &lte->ci);
+        gbinder_reader_read_int32(reader, &lte->pci);
+        gbinder_reader_read_int32(reader, &lte->tac);
+        gbinder_reader_read_int32(reader, &lte->earfcn);
+        data_read = gbinder_reader_bytes_read(reader) - initial_size;
+        while (data_read < parcel_size) {
+            gbinder_reader_read_uint32(reader, NULL);
+            data_read += sizeof(guint32);
+        }
+
+        /* SignalStrengthLte */
+        binder_read_parcelable_size(reader);
+        gbinder_reader_read_int32(reader, &lte->signalStrength);
+        gbinder_reader_read_int32(reader, &lte->rsrp);
+        gbinder_reader_read_int32(reader, &lte->rsrq);
+        gbinder_reader_read_int32(reader, &lte->rssnr);
+        gbinder_reader_read_int32(reader, &lte->cqi);
+        gbinder_reader_read_int32(reader, &lte->timingAdvance);
+        gbinder_reader_read_int32(reader, NULL);
+    }
+
+    DBG("[lte] reg=%d%s%s%s%s%s%s%s%s%s%s%s", registered,
+        binder_cell_info_int_format(lte->mcc, ",mcc=%d"),
+        binder_cell_info_int_format(lte->mnc, ",mnc=%d"),
+        binder_cell_info_int_format(lte->ci, ",ci=%d"),
+        binder_cell_info_int_format(lte->pci, ",pci=%d"),
+        binder_cell_info_int_format(lte->tac, ",tac=%d"),
+        binder_cell_info_int_format(lte->signalStrength, ",strength=%d"),
+        binder_cell_info_int_format(lte->rsrp, ",rsrp=%d"),
+        binder_cell_info_int_format(lte->rsrq, ",rsrq=%d"),
+        binder_cell_info_int_format(lte->rssnr, ",rssnr=%d"),
+        binder_cell_info_int_format(lte->cqi, ",cqi=%d"),
+        binder_cell_info_int_format(lte->timingAdvance, ",t=%d"));
+    return cell;
+}
+static
+struct ofono_cell*
+binder_cell_info_new_cell_nr_aidl(
+    gboolean registered,
+    GBinderReader* reader)
+{
+    struct ofono_cell* cell = binder_cell_new();
+    struct ofono_cell_info_nr* nr = &cell->info.nr;
+    gsize data_read;
+    gsize initial_size;
+    gsize parcel_size;
+
+    cell->type = OFONO_CELL_TYPE_NR;
+    cell->registered = registered;
+
+    binder_cell_info_invalidate_nr(nr);
+
+    /* CellInfoNr */
+    if (binder_read_parcelable_size(reader)) {
+        /* CellIdentityNr */
+        parcel_size = binder_read_parcelable_size(reader);
+        initial_size = gbinder_reader_bytes_read(reader);
+        binder_read_string16_parse_int(reader, &nr->mcc);
+        binder_read_string16_parse_int(reader, &nr->mnc);
+        gbinder_reader_read_int64(reader, &nr->nci);
+        gbinder_reader_read_int32(reader, &nr->pci);
+        gbinder_reader_read_int32(reader, &nr->tac);
+        gbinder_reader_read_int32(reader, &nr->nrarfcn);
+        data_read = gbinder_reader_bytes_read(reader) - initial_size;
+        while (data_read < parcel_size) {
+            gbinder_reader_read_uint32(reader, NULL);
+            data_read += sizeof(guint32);
+        }
+
+        /* SignalStrengthNr */
+        parcel_size = binder_read_parcelable_size(reader);
+        initial_size = gbinder_reader_bytes_read(reader);
+        gbinder_reader_read_int32(reader, &nr->ssRsrp);
+        gbinder_reader_read_int32(reader, &nr->ssRsrp);
+        gbinder_reader_read_int32(reader, &nr->ssSinr);
+        gbinder_reader_read_int32(reader, &nr->csiRsrp);
+        gbinder_reader_read_int32(reader, &nr->csiRsrq);
+        gbinder_reader_read_int32(reader, &nr->csiSinr);
+        data_read = gbinder_reader_bytes_read(reader) - initial_size;
+        while (data_read < parcel_size) {
+            gbinder_reader_read_uint32(reader, NULL);
+            data_read += sizeof(guint32);
+        }
+    }
+
+    DBG("[nr] reg=%d%s%s%s%s%s%s%s%s%s%s%s", registered,
+        binder_cell_info_int_format(nr->mcc, ",mcc=%d"),
+        binder_cell_info_int_format(nr->mnc, ",mnc=%d"),
+        binder_cell_info_int64_format(nr->nci, ",nci=%" G_GINT64_FORMAT),
+        binder_cell_info_int_format(nr->pci, ",pci=%d"),
+        binder_cell_info_int_format(nr->tac, ",tac=%d"),
+        binder_cell_info_int_format(nr->ssRsrp, ",ssRsrp=%d"),
+        binder_cell_info_int_format(nr->ssRsrq, ",ssRsrq=%d"),
+        binder_cell_info_int_format(nr->ssSinr, ",ssSinr=%d"),
+        binder_cell_info_int_format(nr->csiRsrp, ",csiRsrp=%d"),
+        binder_cell_info_int_format(nr->csiRsrq, ",csiRsrq=%d"),
+        binder_cell_info_int_format(nr->csiSinr, ",csiSinr=%d"));
+    return cell;
+}
+
+static
 GPtrArray*
 binder_cell_info_array_new_1_0(
     const RadioCellInfo* cells,
@@ -561,6 +796,58 @@ binder_cell_info_array_new_1_5(
 }
 
 static
+GPtrArray*
+binder_cell_info_array_new_aidl(
+    GBinderReader* reader)
+{
+    gsize i;
+    gint32 count = 0;
+    GPtrArray* l;
+    gbinder_reader_read_int32(reader, &count);
+    l = g_ptr_array_sized_new(count + 1);
+
+    for (i = 0; i < count; i++) {
+        gboolean registered;
+        gint32 type;
+        if (!binder_read_parcelable_size(reader)) {
+            continue;
+        }
+
+        gbinder_reader_read_bool(reader, &registered);
+        gbinder_reader_read_int32(reader, NULL); /* connectionStatus */
+        gbinder_reader_read_int32(reader, NULL); /* non-null rat specific info union */
+        gbinder_reader_read_int32(reader, &type);
+
+        switch (type) {
+        case RADIO_CELL_INFO_1_5_GSM:
+            g_ptr_array_add(l, binder_cell_info_new_cell_gsm_aidl(registered,
+                reader));
+            continue;
+        case RADIO_CELL_INFO_1_5_LTE:
+            g_ptr_array_add(l, binder_cell_info_new_cell_lte_aidl(registered,
+                reader));
+            continue;
+        case RADIO_CELL_INFO_1_5_WCDMA:
+            g_ptr_array_add(l, binder_cell_info_new_cell_wcdma_aidl(registered,
+                reader));
+            continue;
+        case RADIO_CELL_INFO_1_5_NR:
+            g_ptr_array_add(l, binder_cell_info_new_cell_nr_aidl(registered,
+                reader));
+            continue;
+        case RADIO_CELL_INFO_1_5_TD_SCDMA:
+        case RADIO_CELL_INFO_1_5_CDMA:
+            /* Skip not implemented cell info types */
+            gbinder_reader_read_parcelable(reader, NULL);
+            break;
+        }
+        DBG("unsupported cell type %d", type);
+        gbinder_reader_read_parcelable(reader, NULL);
+    }
+    return l;
+}
+
+static
 void
 binder_cell_info_list_1_0(
     BinderCellInfo* self,
@@ -630,6 +917,16 @@ binder_cell_info_list_1_5(
     } else {
         ofono_warn("Failed to parse cellInfoList_1_5 payload");
     }
+}
+
+static
+void
+binder_cell_info_list_aidl(
+    BinderCellInfo* self,
+    GBinderReader* reader)
+{
+    binder_cell_info_update_cells(self,
+        binder_cell_info_array_new_aidl(reader));
 }
 
 static
@@ -710,6 +1007,25 @@ binder_cell_info_list_changed_1_5(
 
 static
 void
+binder_cell_info_list_changed_aidl(
+    RadioClient* client,
+    RADIO_IND code,
+    const GBinderReader* args,
+    gpointer user_data)
+{
+    BinderCellInfo* self = THIS(user_data);
+
+    GASSERT((RADIO_NETWORK_IND)code == RADIO_NETWORK_IND_CELL_INFO_LIST);
+    if (self->enabled) {
+        GBinderReader reader;
+
+        gbinder_reader_copy(&reader, args);
+        binder_cell_info_list_aidl(self, &reader);
+    }
+}
+
+static
+void
 binder_cell_info_list_cb(
     RadioRequest* req,
     RADIO_TX_STATUS status,
@@ -730,26 +1046,31 @@ binder_cell_info_list_cb(
                 GBinderReader reader;
 
                 gbinder_reader_copy(&reader, args);
-                switch (resp) {
-                case RADIO_RESP_GET_CELL_INFO_LIST:
-                    binder_cell_info_list_1_0(self, &reader);
-                    break;
-                case RADIO_RESP_GET_CELL_INFO_LIST_1_2:
-                    binder_cell_info_list_1_2(self, &reader);
-                    break;
-                case RADIO_RESP_GET_CELL_INFO_LIST_1_4:
-                    binder_cell_info_list_1_4(self, &reader);
-                    break;
-                case RADIO_RESP_GET_CELL_INFO_LIST_1_5:
-                    binder_cell_info_list_1_5(self, &reader);
-                    break;
-                default:
-                    ofono_warn("Unexpected getCellInfoList response %d", resp);
-                    break;
+                const RADIO_AIDL_INTERFACE iface_aidl = radio_client_aidl_interface(self->client);
+                if (iface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+                    switch (resp) {
+                    case RADIO_RESP_GET_CELL_INFO_LIST:
+                        binder_cell_info_list_1_0(self, &reader);
+                        break;
+                    case RADIO_RESP_GET_CELL_INFO_LIST_1_2:
+                        binder_cell_info_list_1_2(self, &reader);
+                        break;
+                    case RADIO_RESP_GET_CELL_INFO_LIST_1_4:
+                        binder_cell_info_list_1_4(self, &reader);
+                        break;
+                    case RADIO_RESP_GET_CELL_INFO_LIST_1_5:
+                        binder_cell_info_list_1_5(self, &reader);
+                        break;
+                    default:
+                        ofono_warn("Unexpected getCellInfoList response %d", resp);
+                        break;
+                    }
+                } else {
+                    binder_cell_info_list_aidl(self, &reader);
                 }
             }
         } else {
-            DBG_(self, "%s error %d", radio_resp_name(resp), error);
+            DBG_(self, "%s error %d", radio_resp_name2(self->instance, resp), error);
         }
     }
 }
@@ -765,6 +1086,10 @@ binder_cell_info_set_rate_cb(
     gpointer user_data)
 {
     BinderCellInfo* self = THIS(user_data);
+    const RADIO_AIDL_INTERFACE iface_aidl = radio_client_aidl_interface(self->client);
+    guint32 code = iface_aidl == RADIO_NETWORK_INTERFACE ?
+        RADIO_NETWORK_RESP_SET_CELL_INFO_LIST_RATE :
+        RADIO_RESP_SET_CELL_INFO_LIST_RATE;
 
     DBG_(self, "");
     GASSERT(self->set_rate_req == req);
@@ -772,7 +1097,7 @@ binder_cell_info_set_rate_cb(
     self->set_rate_req = NULL;
 
     if (status == RADIO_TX_STATUS_OK) {
-        if (resp == RADIO_RESP_SET_CELL_INFO_LIST_RATE) {
+        if (resp == code) {
             if (error != RADIO_ERROR_NONE) {
                 DBG_(self, "Failed to set cell info rate, error %d", error);
             }
@@ -808,9 +1133,14 @@ void
 binder_cell_info_query(
     BinderCellInfo* self)
 {
+    const RADIO_AIDL_INTERFACE iface_aidl = radio_client_aidl_interface(self->client);
+    guint32 code = iface_aidl == RADIO_NETWORK_INTERFACE ?
+        RADIO_NETWORK_REQ_GET_CELL_INFO_LIST :
+        RADIO_REQ_GET_CELL_INFO_LIST;
+
     radio_request_drop(self->query_req);
     self->query_req = radio_request_new(self->client,
-        RADIO_REQ_GET_CELL_INFO_LIST, NULL,
+        code, NULL,
         binder_cell_info_list_cb, NULL, self);
     radio_request_set_retry(self->query_req, BINDER_RETRY_MS, MAX_RETRIES);
     radio_request_set_retry_func(self->query_req, binder_cell_info_retry);
@@ -823,10 +1153,14 @@ binder_cell_info_set_rate(
     BinderCellInfo* self)
 {
     GBinderWriter writer;
+    const RADIO_AIDL_INTERFACE iface_aidl = radio_client_aidl_interface(self->client);
+    guint32 code = iface_aidl == RADIO_NETWORK_INTERFACE ?
+        RADIO_NETWORK_REQ_SET_CELL_INFO_LIST_RATE :
+        RADIO_REQ_SET_CELL_INFO_LIST_RATE;
 
     radio_request_drop(self->set_rate_req);
     self->set_rate_req = radio_request_new(self->client,
-        RADIO_REQ_SET_CELL_INFO_LIST_RATE, &writer,
+        code, &writer,
         binder_cell_info_set_rate_cb, NULL, self);
 
     gbinder_writer_append_int32(&writer,
@@ -996,6 +1330,7 @@ binder_cell_info_set_enabled_proc(
 
 struct ofono_cell_info*
 binder_cell_info_new(
+    RadioInstance* instance,
     RadioClient* client,
     const char* log_prefix,
     BinderRadio* radio,
@@ -1003,28 +1338,38 @@ binder_cell_info_new(
 {
     BinderCellInfo* self = g_object_new(THIS_TYPE, 0);
 
+    self->instance = radio_instance_ref(instance);
     self->client = radio_client_ref(client);
     self->radio = binder_radio_ref(radio);
     self->sim_card = binder_sim_card_ref(sim);
     self->log_prefix = binder_dup_prefix(log_prefix);
+    const RADIO_AIDL_INTERFACE iface_aidl =
+        radio_client_aidl_interface(self->client);
 
     DBG_(self, "");
-    self->event_id[CELL_INFO_EVENT_1_0] =
-        radio_client_add_indication_handler(client,
-            RADIO_IND_CELL_INFO_LIST,
-            binder_cell_info_list_changed_1_0, self);
-    self->event_id[CELL_INFO_EVENT_1_2] =
-        radio_client_add_indication_handler(client,
-            RADIO_IND_CELL_INFO_LIST_1_2,
-            binder_cell_info_list_changed_1_2, self);
-    self->event_id[CELL_INFO_EVENT_1_4] =
-        radio_client_add_indication_handler(client,
-            RADIO_IND_CELL_INFO_LIST_1_4,
-            binder_cell_info_list_changed_1_4, self);
-    self->event_id[CELL_INFO_EVENT_1_5] =
-        radio_client_add_indication_handler(client,
-            RADIO_IND_CELL_INFO_LIST_1_5,
-            binder_cell_info_list_changed_1_5, self);
+    if (iface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+        self->event_id[CELL_INFO_EVENT_1_0] =
+            radio_client_add_indication_handler(client,
+                RADIO_IND_CELL_INFO_LIST,
+                binder_cell_info_list_changed_1_0, self);
+        self->event_id[CELL_INFO_EVENT_1_2] =
+            radio_client_add_indication_handler(client,
+                RADIO_IND_CELL_INFO_LIST_1_2,
+                binder_cell_info_list_changed_1_2, self);
+        self->event_id[CELL_INFO_EVENT_1_4] =
+            radio_client_add_indication_handler(client,
+                RADIO_IND_CELL_INFO_LIST_1_4,
+                binder_cell_info_list_changed_1_4, self);
+        self->event_id[CELL_INFO_EVENT_1_5] =
+            radio_client_add_indication_handler(client,
+                RADIO_IND_CELL_INFO_LIST_1_5,
+                binder_cell_info_list_changed_1_5, self);
+    } else {
+        self->event_id[CELL_INFO_EVENT_1_0] =
+            radio_client_add_indication_handler(client,
+                RADIO_NETWORK_IND_CELL_INFO_LIST,
+                binder_cell_info_list_changed_aidl, self);
+    }
     self->radio_state_event_id =
         binder_radio_add_property_handler(radio,
             BINDER_RADIO_PROPERTY_STATE,
@@ -1078,6 +1423,7 @@ binder_cell_info_finalize(
     radio_request_drop(self->set_rate_req);
     radio_client_remove_all_handlers(self->client, self->event_id);
     radio_client_unref(self->client);
+    radio_instance_unref(self->instance);
     binder_radio_remove_handler(self->radio, self->radio_state_event_id);
     binder_radio_unref(self->radio);
     binder_sim_card_remove_handler(self->sim_card, self->sim_status_event_id);
