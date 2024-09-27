@@ -289,6 +289,7 @@ binder_ims_probe(
             self->caps |= OFONO_IMS_VOICE_CAPABLE;
         }
     }
+    self->reg->caps = self->caps;
 
     self->start_id = g_idle_add(binder_ims_start, self);
     ofono_ims_set_data(ims, self);

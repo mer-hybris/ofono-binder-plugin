@@ -22,6 +22,7 @@
 #include "binder_ext_slot.h"
 #include "binder_ext_call.h"
 
+#include <ofono/ims.h>
 #include <ofono/log.h>
 #include <ofono/misc.h>
 #include <ofono/voicecall.h>
@@ -1030,7 +1031,8 @@ binder_voicecall_can_ext_dial(
 {
     return self->ext && (!(binder_ext_call_get_interface_flags
         (self->ext) & BINDER_EXT_CALL_INTERFACE_FLAG_IMS_REQUIRED) ||
-        (self->ims_reg && self->ims_reg->registered));
+        (self->ims_reg && self->ims_reg->registered &&
+            (self->ims_reg->caps & OFONO_IMS_VOICE_CAPABLE)));
 }
 
 static

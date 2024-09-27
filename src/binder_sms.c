@@ -22,6 +22,7 @@
 #include "binder_ext_slot.h"
 #include "binder_ext_sms.h"
 
+#include <ofono/ims.h>
 #include <ofono/log.h>
 #include <ofono/misc.h>
 #include <ofono/sim.h>
@@ -375,7 +376,8 @@ gboolean
 binder_sms_can_send_ims_message(
     BinderSms* self)
 {
-    return self->ims_reg && self->ims_reg->registered;
+    return self->ims_reg && self->ims_reg->registered &&
+        (self->ims_reg->caps & OFONO_IMS_SMS_CAPABLE);
 }
 
 static

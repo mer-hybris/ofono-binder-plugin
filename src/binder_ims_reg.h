@@ -29,6 +29,7 @@ typedef enum binder_ims_reg_property {
 
 struct binder_ims_reg {
     gboolean registered;
+    int caps;
 };
 
 typedef
