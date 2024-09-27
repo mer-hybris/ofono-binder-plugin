@@ -15,13 +15,14 @@
 
 #include "binder_log.h"
 #include "binder_modem.h"
-#include "binder_ims_reg.h"
+#include "binder_ims.h"
 #include "binder_sms.h"
 #include "binder_util.h"
 
 #include "binder_ext_slot.h"
 #include "binder_ext_sms.h"
 
+#include <ofono/ims.h>
 #include <ofono/log.h>
 #include <ofono/misc.h>
 #include <ofono/sim.h>
@@ -80,7 +81,7 @@ typedef struct binder_sms {
     gboolean use_standard_ims_sms_api;
     guint ext_send_id;
     BinderExtSms* sms_ext;
-    BinderImsReg* ims_reg;
+    BinderIms* ims;
     RadioRequestGroup* g;
     RADIO_AIDL_INTERFACE interface_aidl;
     gulong ext_event[SMS_EXT_EVENT_COUNT];
@@ -375,7 +376,8 @@ gboolean
 binder_sms_can_send_ims_message(
     BinderSms* self)
 {
-    return self->ims_reg && self->ims_reg->registered;
+    return self->ims && binder_ims_is_registered(self->ims) &&
+        (binder_ims_get_caps(self->ims) & OFONO_IMS_SMS_CAPABLE);
 }
 
 static
@@ -1198,7 +1200,7 @@ binder_sms_probe(
     self->sms = sms;
     self->watch = ofono_watch_new(binder_modem_get_path(modem));
     self->sim_context = ofono_sim_context_create(self->watch->sim);
-    self->ims_reg = binder_ims_reg_ref(modem->ims);
+    self->ims = binder_ims_ref(modem->ims);
     self->g = radio_request_group_new(modem->messaging_client); /* Keeps ref to client */
     self->interface_aidl = radio_client_aidl_interface(modem->messaging_client);
 
@@ -1241,7 +1243,7 @@ binder_sms_remove(
     radio_request_group_cancel(self->g);
     radio_request_group_unref(self->g);
 
-    binder_ims_reg_unref(self->ims_reg);
+    binder_ims_unref(self->ims);
     g_free(self->log_prefix);
     g_free(self);
 

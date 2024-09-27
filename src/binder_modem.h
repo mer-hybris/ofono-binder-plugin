@@ -38,7 +38,8 @@ struct binder_modem {
     struct ofono_watch* watch;
     BinderExtSlot* ext;
     BinderData* data;
-    BinderImsReg* ims;
+    BinderIms* ims;
+    BinderImsReg* ims_reg;
     BinderNetwork* network;
     BinderRadio* radio;
     BinderSimCard* sim_card;

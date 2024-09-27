@@ -13,6 +13,7 @@
  *  GNU General Public License for more details.
  */
 
+#include "binder_base.h"
 #include "binder_ims.h"
 #include "binder_ims_reg.h"
 #include "binder_log.h"
@@ -39,7 +40,7 @@ enum binder_ims_ext_events {
     IMS_EXT_EVENT_COUNT
 };
 
-typedef struct binder_ims {
+struct binder_ims {
     struct ofono_ims* ims;
     char* log_prefix;
     BinderImsReg* reg;
@@ -49,7 +50,12 @@ typedef struct binder_ims {
     guint ext_req_id;
     guint start_id;
     int caps;
-} BinderIms;
+};
+
+typedef struct binder_ims_object {
+    BinderBase base;
+    BinderIms pub;
+} BinderImsObject;
 
 typedef struct binder_ims_cbd {
     BinderIms* self;
@@ -57,7 +63,21 @@ typedef struct binder_ims_cbd {
     void* cb_data;
 } BinderImsCbData;
 
+typedef BinderBaseClass BinderImsObjectClass;
+GType binder_ims_object_get_type() BINDER_INTERNAL;
+G_DEFINE_TYPE(BinderImsObject, binder_ims_object, BINDER_TYPE_BASE)
+#define PARENT_CLASS binder_ims_object_parent_class
+#define THIS_TYPE binder_ims_object_get_type()
+#define THIS(obj) G_TYPE_CHECK_INSTANCE_CAST(obj,THIS_TYPE,BinderImsObject)
+
 #define DBG_(self,fmt,args...) DBG("%s" fmt, (self)->log_prefix, ##args)
+
+static inline BinderImsObject* binder_ims_cast(BinderIms* ims)
+    { return ims ? THIS(G_CAST(ims, BinderImsObject, pub)) : NULL; }
+static inline void binder_ims_object_ref(BinderImsObject* self)
+    { g_object_ref(self); }
+static inline void binder_ims_object_unref(BinderImsObject* self)
+    { g_object_unref(self); }
 
 static inline BinderIms* binder_ims_get_data(struct ofono_ims* ims)
     { return ofono_ims_get_data(ims); }
@@ -85,6 +105,31 @@ binder_ims_cbd_free(
     gutil_slice_free(cbd);
 }
 
+BinderIms*
+binder_ims_ref(
+    BinderIms* ims)
+{
+    BinderImsObject* self = binder_ims_cast(ims);
+
+    if (G_LIKELY(self)) {
+        binder_ims_object_ref(self);
+        return ims;
+    } else {
+        return NULL;
+    }
+}
+
+void
+binder_ims_unref(
+    BinderIms* ims)
+{
+    BinderImsObject* self = binder_ims_cast(ims);
+
+    if (G_LIKELY(self)) {
+        binder_ims_object_unref(self);
+    }
+}
+
 static
 void
 binder_ims_register_complete(
@@ -105,7 +150,6 @@ binder_ims_register_complete(
     cbd->cb(&err, cbd->cb_data);
 }
 
-static
 gboolean
 binder_ims_is_registered(
     BinderIms* self)
@@ -118,6 +162,13 @@ binder_ims_is_registered(
     } else {
         return FALSE;
     }
+}
+
+int
+binder_ims_get_caps(
+    BinderIms* self)
+{
+    return self->caps;
 }
 
 static
@@ -251,13 +302,15 @@ binder_ims_probe(
     void* data)
 {
     BinderModem* modem = binder_modem_get_data(data);
-    BinderIms* self = g_new0(BinderIms, 1);
+    BinderImsObject* object = g_object_new(THIS_TYPE, NULL);
+    BinderIms* self = binder_ims_ref(&object->pub);
 
     self->log_prefix = binder_dup_prefix(modem->log_prefix);
     DBG_(self, "");
 
-    self->reg = binder_ims_reg_ref(modem->ims);
+    self->reg = binder_ims_reg_ref(modem->ims_reg);
     self->ims = ims;
+    modem->ims = self;
 
     if (modem->ext && (self->ext =
         binder_ext_slot_get_interface(modem->ext,
@@ -304,6 +357,27 @@ binder_ims_remove(
 
     DBG_(self, "");
 
+    binder_ims_unref(self);
+}
+
+/*==========================================================================*
+ * Internals
+ *==========================================================================*/
+
+static
+void
+binder_ims_object_init(
+    BinderImsObject* self)
+{
+}
+
+static
+void
+binder_ims_object_finalize(
+    GObject* object)
+{
+    BinderIms* self = &THIS(object)->pub;
+
     if (self->start_id) {
         g_source_remove(self->start_id);
     }
@@ -318,9 +392,20 @@ binder_ims_remove(
     binder_ims_reg_unref(self->reg);
 
     g_free(self->log_prefix);
-    g_free(self);
 
-    ofono_ims_set_data(ims, NULL);
+    ofono_ims_set_data(self->ims, NULL);
+
+    G_OBJECT_CLASS(PARENT_CLASS)->finalize(object);
+}
+
+static
+void
+binder_ims_object_class_init(
+    BinderImsObjectClass* klass)
+{
+    G_OBJECT_CLASS(klass)->finalize = binder_ims_object_finalize;
+    BINDER_BASE_CLASS(klass)->public_offset =
+        G_STRUCT_OFFSET(BinderImsObject, pub);
 }
 
 /*==========================================================================*
