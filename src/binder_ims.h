@@ -26,6 +26,26 @@ void
 binder_ims_cleanup(void)
     BINDER_INTERNAL;
 
+BinderIms*
+binder_ims_ref(
+    BinderIms* ims)
+    BINDER_INTERNAL;
+
+void
+binder_ims_unref(
+    BinderIms* ims)
+    BINDER_INTERNAL;
+
+gboolean
+binder_ims_is_registered(
+    BinderIms* self)
+    BINDER_INTERNAL;
+
+gboolean
+binder_ims_get_caps(
+    BinderIms* self)
+    BINDER_INTERNAL;
+
 #endif /* BINDER_IMS_H */
 
 /*

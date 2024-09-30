@@ -15,13 +15,14 @@
 
 #include "binder_log.h"
 #include "binder_modem.h"
-#include "binder_ims_reg.h"
+#include "binder_ims.h"
 #include "binder_util.h"
 #include "binder_voicecall.h"
 
 #include "binder_ext_slot.h"
 #include "binder_ext_call.h"
 
+#include <ofono/ims.h>
 #include <ofono/log.h>
 #include <ofono/misc.h>
 #include <ofono/voicecall.h>
@@ -64,7 +65,7 @@ typedef struct binder_voicecall {
     char* log_prefix;
     GSList* calls;
     BinderExtCall* ext;
-    BinderImsReg* ims_reg;
+    BinderIms* ims;
     RadioInstance* instance;
     RadioRequestGroup* g;
     RadioClient* network_client;
@@ -967,9 +968,9 @@ binder_voicecall_ext_dial_cb(
         self->cb = NULL;
         self->data = NULL;
         if (result == BINDER_EXT_CALL_RESULT_OK) {
-            cb(binder_error_failure(&err), cbdata);
-        } else {
             cb(binder_error_ok(&err), cbdata);
+        } else {
+            cb(binder_error_failure(&err), cbdata);
         }
     }
 }
@@ -981,7 +982,8 @@ binder_voicecall_can_ext_dial(
 {
     return self->ext && (!(binder_ext_call_get_interface_flags
         (self->ext) & BINDER_EXT_CALL_INTERFACE_FLAG_IMS_REQUIRED) ||
-        (self->ims_reg && self->ims_reg->registered));
+        (self->ims && binder_ims_is_registered(self->ims) &&
+            (binder_ims_get_caps(self->ims) & OFONO_IMS_VOICE_CAPABLE)));
 }
 
 static
@@ -2188,7 +2190,7 @@ binder_voicecall_probe(
     self->remote_hangup_reasons = gutil_ints_ref(cfg->remote_hangup_reasons);
     self->local_release_ids = gutil_int_array_new();
     self->idleq = gutil_idle_queue_new();
-    self->ims_reg = binder_ims_reg_ref(modem->ims);
+    self->ims = binder_ims_ref(modem->ims);
 
     if (modem->ext && (self->ext =
         binder_ext_slot_get_interface(modem->ext,
@@ -2234,7 +2236,7 @@ binder_voicecall_remove(
         binder_ext_call_unref(self->ext);
     }
 
-    binder_ims_reg_unref(self->ims_reg);
+    binder_ims_unref(self->ims);
     g_free(self->log_prefix);
     g_free(self);
 
