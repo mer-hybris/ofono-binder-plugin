@@ -1016,9 +1016,9 @@ binder_voicecall_ext_dial_cb(
         self->cb = NULL;
         self->data = NULL;
         if (result == BINDER_EXT_CALL_RESULT_OK) {
-            cb(binder_error_failure(&err), cbdata);
-        } else {
             cb(binder_error_ok(&err), cbdata);
+        } else {
+            cb(binder_error_failure(&err), cbdata);
         }
     }
 }
