@@ -369,6 +369,54 @@ binder_voicecall_info_ext_new(
 }
 
 static
+const BinderVoiceCallInfo*
+binder_voicecall_list_find_call_with_id(
+    GSList* list,
+    guint call_id)
+{
+    for (GSList* l = list; l; l = l->next) {
+        const BinderVoiceCallInfo* call = l->data;
+
+        if (call->oc.id == call_id) {
+            return call;
+        }
+    }
+    return NULL;
+}
+
+static
+GSList*
+binder_voicecall_merge_call_lists(
+    BinderVoiceCall* self,
+    GSList* new_list,
+    gboolean add_ext)
+{
+    /*
+     * Since IRadio and ext may have different lists of calls,
+     * attempt to merge the ongoing calls initiated by the other
+     * component before current calls list is going to
+     * be replaced by the new list.
+     */
+    if (!self->ext)
+        return new_list;
+
+    for (GSList* l = self->calls; l; l = l->next) {
+        const BinderVoiceCallInfo* call = l->data;
+
+        if (!!call->ext == add_ext) {
+            if (binder_voicecall_list_find_call_with_id(new_list, call->oc.id))
+                continue;
+
+            new_list = g_slist_insert_sorted(new_list,
+                g_slice_dup(BinderVoiceCallInfo, call),
+                binder_voicecall_info_compare);
+        }
+    }
+
+    return new_list;
+}
+
+static
 gboolean
 binder_voicecall_have_ext_call(
     BinderVoiceCall* self)
@@ -750,7 +798,8 @@ binder_voicecall_clcc_poll_cb(
         }
     }
 
-#pragma message("TODO: Merge call lists?")
+    /* Merge the ongoing ext calls since IRadio may not report them */
+    list = binder_voicecall_merge_call_lists(self, list, TRUE /*add_ext*/);
 
     binder_voicecall_set_calls(self, list);
 }
@@ -1481,10 +1530,9 @@ binder_voicecall_answer(
     if (call && call->ext) {
         DBG_(self, "answering ext call");
         if (!binder_voicecall_ext_answer(self, cbd)) {
-            struct ofono_error err;
-
-            DBG_(self, "failed to answer ext call");
-            cb(binder_error_failure(&err), data);
+            /* If it's not handled by the extension, revert to IRadio */
+            DBG_(self, "answering ext call (fallback)");
+            binder_voicecall_request_submit(self, RADIO_REQ_ACCEPT_CALL, cbd);
         }
     } else {
         /* Default action */
@@ -2049,7 +2097,8 @@ binder_voicecall_ext_calls_changed(
         }
     }
 
-#pragma message("TODO: Merge call lists?")
+    /* Merge the IRadio calls back into the list */
+    list = binder_voicecall_merge_call_lists(self, list, FALSE /*add_ext*/);
 
     binder_voicecall_set_calls(self, list);
 }
