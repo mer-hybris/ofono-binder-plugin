@@ -468,7 +468,9 @@ void
 binder_logger_dump_update_slot(
     BinderSlot* slot)
 {
-    for (RADIO_AIDL_INTERFACE i = 0; i < RADIO_AIDL_INTERFACE_COUNT; i++) {
+    RADIO_AIDL_INTERFACE i;
+
+    for (i = 0; i < RADIO_AIDL_INTERFACE_COUNT; i++) {
         if (binder_logger_dump.flags & OFONO_DEBUG_FLAG_PRINT) {
             if (!slot->log_dump[i] && slot->instance[i]) {
                 slot->log_dump[i] = binder_logger_new_radio_dump(slot->instance[i],
@@ -486,7 +488,9 @@ void
 binder_logger_trace_update_slot(
     BinderSlot* slot)
 {
-    for (RADIO_AIDL_INTERFACE i = 0; i < RADIO_AIDL_INTERFACE_COUNT; i++) {
+    RADIO_AIDL_INTERFACE i;
+
+    for (i = 0; i < RADIO_AIDL_INTERFACE_COUNT; i++) {
         if (binder_logger_trace.flags & OFONO_DEBUG_FLAG_PRINT) {
             if (!slot->log_trace[i] && slot->instance[i]) {
                 slot->log_trace[i] = binder_logger_new_radio_trace(slot->instance[i],
@@ -530,7 +534,9 @@ gboolean
 binder_plugin_is_slot_client_connected(
     BinderSlot* slot)
 {
-    for (RADIO_AIDL_INTERFACE i = 0; i < RADIO_AIDL_INTERFACE_COUNT; i++) {
+    RADIO_AIDL_INTERFACE i;
+
+    for (i = 0; i < RADIO_AIDL_INTERFACE_COUNT; i++) {
         if (slot->client[i]) return TRUE;
     }
     return FALSE;
@@ -600,12 +606,14 @@ binder_plugin_slot_shutdown(
         }
 
         if (binder_plugin_is_slot_client_connected(slot)) {
+            RADIO_AIDL_INTERFACE i;
+
             radio_request_drop(slot->caps_check_req);
             radio_request_drop(slot->imei_req);
             slot->caps_check_req = NULL;
             slot->imei_req = NULL;
 
-            for (RADIO_AIDL_INTERFACE i = 0; i < RADIO_AIDL_INTERFACE_COUNT; i++) {
+            for (i = 0; i < RADIO_AIDL_INTERFACE_COUNT; i++) {
                 if (!slot->client[i])
                     continue;
 
@@ -783,8 +791,9 @@ binder_plugin_slot_enabled_changed(
     void* user_data)
 {
     BinderSlot* slot = user_data;
+    RADIO_AIDL_INTERFACE i;
 
-    for (RADIO_AIDL_INTERFACE i = 0; i < RADIO_AIDL_INTERFACE_COUNT; i++) {
+    for (i = 0; i < RADIO_AIDL_INTERFACE_COUNT; i++) {
         if (!slot->instance[i]) continue;
 
         if (ofono_slot->enabled) {
