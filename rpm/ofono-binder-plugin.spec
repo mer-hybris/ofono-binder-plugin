@@ -26,6 +26,9 @@ BuildRequires: pkgconfig(glib-2.0)
 BuildRequires: pkgconfig(rpm)
 %define license_support %(pkg-config --exists 'rpm >= 4.11'; echo $?)
 
+# make_build macro appeared in rpm 4.12
+%{!?make_build:%define make_build make %{_smp_mflags}}
+
 Requires: ofono >= %{ofono_version}
 Requires: libofonobinderpluginext >= %{libofonobinderpluginext_version}
 Requires: libgbinder >= %{libgbinder_version}
@@ -48,8 +51,8 @@ Binder plugin for Sailfish OS fork of ofono
 %setup -q -n %{name}-%{version}
 
 %build
-make %{_smp_mflags} PLUGINDIR=%{plugin_dir} KEEP_SYMBOLS=1 release
-make %{_smp_mflags} -C lib LIBDIR=%{_libdir} KEEP_SYMBOLS=1 release pkgconfig
+%make_build PLUGINDIR=%{plugin_dir} KEEP_SYMBOLS=1 release
+%make_build -C lib LIBDIR=%{_libdir} KEEP_SYMBOLS=1 release pkgconfig
 
 %check
 make test
