@@ -1,6 +1,7 @@
 /*
  *  oFono - Open Source Telephony - binder based adaptation
  *
+ *  Copyright (C) 2024 Slava Monich <slava@monich.com>
  *  Copyright (C) 2022 Jolla Ltd.
  *
  *  This program is free software; you can redistribute it and/or modify
@@ -29,6 +30,7 @@ typedef enum binder_ims_reg_property {
 
 struct binder_ims_reg {
     gboolean registered;
+    int caps; /* OFONO_IMS_xxx bits */
 };
 
 typedef
