@@ -1,6 +1,7 @@
 /*
  *  oFono - Open Source Telephony - binder based adaptation
  *
+ *  Copyright (C) 2024 Slava Monich <slava@monich.com>
  *  Copyright (C) 2022 Jolla Ltd.
  *
  *  This program is free software; you can redistribute it and/or modify
@@ -18,14 +19,18 @@
 #include "binder_log.h"
 #include "binder_util.h"
 
+#include "binder_ext_call.h"
 #include "binder_ext_ims.h"
 #include "binder_ext_slot.h"
+#include "binder_ext_sms.h"
 
 #include <radio_client.h>
 #include <radio_request.h>
 #include <radio_request_group.h>
 
 #include <radio_network_types.h>
+
+#include <ofono/ims.h>
 
 #include <gbinder_reader.h>
 #include <gutil_macros.h>
@@ -84,14 +89,11 @@ binder_ims_reg_query_done(
     BinderBase* base = &self->base;
     BinderImsReg* ims = &self->pub;
     gboolean registered = FALSE;
-    guint32 code =
-        radio_client_aidl_interface(self->g->client) == RADIO_NETWORK_INTERFACE ?
-            RADIO_NETWORK_RESP_GET_IMS_REGISTRATION_STATE :
-            RADIO_RESP_GET_IMS_REGISTRATION_STATE;
 
     if (status != RADIO_TX_STATUS_OK) {
         ofono_error("getImsRegistrationState failed");
-    } else if (resp != code) {
+    } else if (resp != RADIO_RESP_GET_IMS_REGISTRATION_STATE &&
+        resp != RADIO_NETWORK_RESP_GET_IMS_REGISTRATION_STATE) {
         ofono_error("Unexpected getImsRegistrationState response %d", resp);
     } else if (error != RADIO_ERROR_NONE) {
         DBG_(self, "%s", binder_radio_error_string(error));
@@ -126,13 +128,12 @@ void
 binder_ims_reg_query(
     BinderImsRegObject* self)
 {
-    guint32 code =
-        radio_client_aidl_interface(self->g->client) == RADIO_NETWORK_INTERFACE ?
+    RadioRequestGroup* g = self->g;
+    RadioRequest* req = radio_request_new2(g,
+        radio_client_aidl_interface(g->client) == RADIO_NETWORK_INTERFACE ?
             RADIO_NETWORK_REQ_GET_IMS_REGISTRATION_STATE :
-            RADIO_REQ_GET_IMS_REGISTRATION_STATE;
-    RadioRequest* req = radio_request_new2(self->g,
-        code, NULL,
-        binder_ims_reg_query_done, NULL, self);
+            RADIO_REQ_GET_IMS_REGISTRATION_STATE,
+            NULL, binder_ims_reg_query_done, NULL, self);
 
     radio_request_submit(req);
     radio_request_unref(req);
@@ -154,7 +155,7 @@ binder_ims_reg_state_changed(
 
 static
 void
-binder_ims_ext_update_state(
+binder_ims_reg_update_state(
     BinderImsRegObject* self)
 {
     const BINDER_EXT_IMS_STATE state = binder_ext_ims_get_state(self->ext);
@@ -177,7 +178,7 @@ binder_ims_ext_state_changed(
 {
     BinderImsRegObject* self = THIS(user_data);
 
-    binder_ims_ext_update_state(self);
+    binder_ims_reg_update_state(self);
     binder_base_emit_queued_signals(&self->base);
 }
 
@@ -198,28 +199,59 @@ binder_ims_reg_new(
 
         ims = &self->pub;
         self->log_prefix = binder_dup_prefix(log_prefix);
-        self->ext = binder_ext_ims_ref(binder_ext_slot_get_interface(ext_slot,
-            BINDER_EXT_TYPE_IMS));
+        self->ext = binder_ext_slot_get_interface(ext_slot,
+            BINDER_EXT_TYPE_IMS);
 
         if (self->ext) {
+            BINDER_EXT_IMS_INTERFACE_FLAGS flags =
+                binder_ext_ims_get_interface_flags(self->ext);
+
             DBG_(self, "using ims ext");
-            binder_ims_ext_update_state(self);
+            binder_ext_ims_ref(self->ext);
+
+            /* Query flags from the extension */
+            if (flags & BINDER_EXT_IMS_INTERFACE_FLAG_SMS_SUPPORT) {
+                DBG_(self, "ims sms support is detected");
+                ims->caps |= OFONO_IMS_SMS_CAPABLE;
+            }
+            if (flags & BINDER_EXT_IMS_INTERFACE_FLAG_VOICE_SUPPORT) {
+                DBG_(self, "ims call support is detected");
+                ims->caps |= OFONO_IMS_VOICE_CAPABLE;
+            }
+
+            binder_ims_reg_update_state(self);
 
             /* Register event handler */
             self->ext_event_id[EVENT_EXT_IMS_STATE_CHANGED] =
                 binder_ext_ims_add_state_handler(self->ext,
                     binder_ims_ext_state_changed, self);
         } else {
-            guint32 code =
-                radio_client_aidl_interface(client) == RADIO_NETWORK_INTERFACE ?
-                    RADIO_NETWORK_IND_IMS_NETWORK_STATE_CHANGED :
-                    RADIO_IND_IMS_NETWORK_STATE_CHANGED;
             DBG_(self, "using ims radio api");
             self->g = radio_request_group_new(client); /* Keeps ref to client */
+
+            /* Initialize the flags based on which interfaces are supported */
+            if (binder_ext_sms_get_interface_flags
+               (binder_ext_slot_get_interface(ext_slot,
+                BINDER_EXT_TYPE_SMS)) &
+                BINDER_EXT_SMS_INTERFACE_FLAG_IMS_SUPPORT) {
+                DBG_(self, "ims sms support is detected");
+                ims->caps |= OFONO_IMS_SMS_CAPABLE;
+            }
+            if (binder_ext_call_get_interface_flags
+               (binder_ext_slot_get_interface(ext_slot,
+                BINDER_EXT_TYPE_CALL)) &
+                BINDER_EXT_CALL_INTERFACE_FLAG_IMS_SUPPORT) {
+                DBG_(self, "ims call support is detected");
+                ims->caps |= OFONO_IMS_VOICE_CAPABLE;
+            }
+
             /* Register event handler */
             self->event_id[EVENT_IMS_NETWORK_STATE_CHANGED] =
                 radio_client_add_indication_handler(client,
-                    code,
+                    radio_client_aidl_interface(client) ==
+                        RADIO_NETWORK_INTERFACE ?
+                    RADIO_NETWORK_IND_IMS_NETWORK_STATE_CHANGED :
+                    RADIO_IND_IMS_NETWORK_STATE_CHANGED,
                     binder_ims_reg_state_changed, self);
 
             /* Query the initial state */

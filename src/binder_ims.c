@@ -1,6 +1,7 @@
 /*
  *  oFono - Open Source Telephony - binder based adaptation
  *
+ *  Copyright (C) 2024 Slava Monich <slava@monich.com>
  *  Copyright (C) 2022 Jolla Ltd.
  *
  *  This program is free software; you can redistribute it and/or modify
@@ -19,36 +20,20 @@
 #include "binder_modem.h"
 #include "binder_util.h"
 
-#include "binder_ext_call.h"
 #include "binder_ext_ims.h"
-#include "binder_ext_slot.h"
-#include "binder_ext_sms.h"
 
 #include <ofono/ims.h>
-#include <ofono/log.h>
 
 #include <gutil_macros.h>
 
-enum binder_ims_events {
-    EVENT_IMS_REGISTRATION_CHANGED,
-    EVENT_COUNT
-};
-
-enum binder_ims_ext_events {
-    IMS_EXT_STATE_CHANGED,
-    IMS_EXT_EVENT_COUNT
-};
-
 typedef struct binder_ims {
-    struct ofono_ims* ims;
+    struct ofono_ims* handle;
     char* log_prefix;
-    BinderImsReg* reg;
+    BinderImsReg* ims;
     BinderExtIms* ext;
-    gulong radio_event[EVENT_COUNT];
-    gulong ext_event[IMS_EXT_EVENT_COUNT];
+    gulong event_id;
     guint ext_req_id;
     guint start_id;
-    int caps;
 } BinderIms;
 
 typedef struct binder_ims_cbd {
@@ -59,8 +44,8 @@ typedef struct binder_ims_cbd {
 
 #define DBG_(self,fmt,args...) DBG("%s" fmt, (self)->log_prefix, ##args)
 
-static inline BinderIms* binder_ims_get_data(struct ofono_ims* ims)
-    { return ofono_ims_get_data(ims); }
+static inline BinderIms* binder_ims_get_data(struct ofono_ims* handle)
+    { return ofono_ims_get_data(handle); }
 
 static
 BinderImsCbData*
@@ -106,28 +91,14 @@ binder_ims_register_complete(
 }
 
 static
-gboolean
-binder_ims_is_registered(
-    BinderIms* self)
-{
-    if (self->ext) {
-        return binder_ext_ims_get_state(self->ext) ==
-            BINDER_EXT_IMS_STATE_REGISTERED;
-    } else if (self->reg) {
-        return self->reg->registered;
-    } else {
-        return FALSE;
-    }
-}
-
-static
 void
 binder_ims_notify(
     BinderIms* self)
 {
-    const gboolean registered = binder_ims_is_registered(self);
+    BinderImsReg* ims = self->ims;
 
-    ofono_ims_status_notify(self->ims, registered, registered ? self->caps : 0);
+    ofono_ims_status_notify(self->handle, ims->registered,
+        ims->registered ? ims->caps : 0);
 }
 
 static
@@ -140,30 +111,19 @@ binder_ims_registration_changed(
     BinderIms* self = user_data;
 
     DBG_(self, "");
-    binder_ims_notify(self);
-}
-
-static
-void
-binder_ims_ext_state_changed(
-    BinderExtIms* ext,
-    void* user_data)
-{
-    BinderIms* self = user_data;
-
-    DBG_(self, "");
+    GASSERT(property == BINDER_IMS_REG_PROPERTY_REGISTERED);
     binder_ims_notify(self);
 }
 
 static
 void
 binder_ims_control(
-    struct ofono_ims* ims,
+    struct ofono_ims* handle,
     BINDER_EXT_IMS_REGISTRATION registration,
     ofono_ims_register_cb_t cb,
     void* data)
 {
-    BinderIms* self = binder_ims_get_data(ims);
+    BinderIms* self = binder_ims_get_data(handle);
     struct ofono_error err;
 
     if (self->ext) {
@@ -185,35 +145,36 @@ binder_ims_control(
 static
 void
 binder_ims_register(
-    struct ofono_ims* ims,
+    struct ofono_ims* handle,
     ofono_ims_register_cb_t cb,
     void* data)
 {
-    binder_ims_control(ims, BINDER_EXT_IMS_REGISTRATION_ON, cb, data);
+    binder_ims_control(handle, BINDER_EXT_IMS_REGISTRATION_ON, cb, data);
 }
 
 static
 void
 binder_ims_unregister(
-    struct ofono_ims* ims,
+    struct ofono_ims* handle,
     ofono_ims_register_cb_t cb,
     void* data)
 {
-    binder_ims_control(ims, BINDER_EXT_IMS_REGISTRATION_OFF, cb, data);
+    binder_ims_control(handle, BINDER_EXT_IMS_REGISTRATION_OFF, cb, data);
 }
 
 static
 void
 binder_ims_registration_status(
-    struct ofono_ims* ims,
+    struct ofono_ims* handle,
     ofono_ims_status_cb_t cb,
     void* data)
 {
-    BinderIms* self = binder_ims_get_data(ims);
-    const gboolean registered = binder_ims_is_registered(self);
+    BinderIms* self = binder_ims_get_data(handle);
+    BinderImsReg* ims = self->ims;
     struct ofono_error err;
 
-    cb(binder_error_ok(&err), registered, registered ? self->caps : 0, data);
+    cb(binder_error_ok(&err), ims->registered,
+        ims->registered ? ims->caps : 0, data);
 }
 
 static
@@ -227,27 +188,19 @@ binder_ims_start(
     GASSERT(self->start_id);
     self->start_id = 0;
 
-    if (self->ext) {
-        self->ext_event[IMS_EXT_STATE_CHANGED] =
-            binder_ext_ims_add_state_handler(self->ext,
-                binder_ims_ext_state_changed, self);
-    }
+    GASSERT(!self->event_id);
+    self->event_id = binder_ims_reg_add_property_handler(self->ims,
+        BINDER_IMS_REG_PROPERTY_REGISTERED, binder_ims_registration_changed,
+        self);
 
-    if (!self->ext_event[IMS_EXT_STATE_CHANGED]) {
-        self->radio_event[EVENT_IMS_REGISTRATION_CHANGED] =
-            binder_ims_reg_add_property_handler(self->reg,
-                BINDER_IMS_REG_PROPERTY_REGISTERED,
-                binder_ims_registration_changed, self);
-    }
-
-    ofono_ims_register(self->ims);
+    ofono_ims_register(self->handle);
     return G_SOURCE_REMOVE;
 }
 
 static
 int
 binder_ims_probe(
-    struct ofono_ims* ims,
+    struct ofono_ims* handle,
     void* data)
 {
     BinderModem* modem = binder_modem_get_data(data);
@@ -256,51 +209,19 @@ binder_ims_probe(
     self->log_prefix = binder_dup_prefix(modem->log_prefix);
     DBG_(self, "");
 
-    self->reg = binder_ims_reg_ref(modem->ims);
-    self->ims = ims;
-
-    if (modem->ext && (self->ext =
-        binder_ext_slot_get_interface(modem->ext,
-        BINDER_EXT_TYPE_IMS)) != NULL) {
-        BINDER_EXT_IMS_INTERFACE_FLAGS flags =
-            binder_ext_ims_get_interface_flags(self->ext);
-
-        DBG_(self, "using ims extension");
-        binder_ext_ims_ref(self->ext);
-        if (flags & BINDER_EXT_IMS_INTERFACE_FLAG_SMS_SUPPORT) {
-            DBG_(self, "ims sms support is detected");
-            self->caps |= OFONO_IMS_SMS_CAPABLE;
-        }
-        if (flags & BINDER_EXT_IMS_INTERFACE_FLAG_VOICE_SUPPORT) {
-            DBG_(self, "ims call support is detected");
-            self->caps |= OFONO_IMS_VOICE_CAPABLE;
-        }
-    } else {
-        if (binder_ext_sms_get_interface_flags
-           (binder_ext_slot_get_interface(modem->ext, BINDER_EXT_TYPE_SMS)) &
-            BINDER_EXT_SMS_INTERFACE_FLAG_IMS_SUPPORT) {
-            DBG_(self, "ims sms support is detected");
-            self->caps |= OFONO_IMS_SMS_CAPABLE;
-        }
-        if (binder_ext_call_get_interface_flags
-           (binder_ext_slot_get_interface(modem->ext, BINDER_EXT_TYPE_CALL)) &
-            BINDER_EXT_CALL_INTERFACE_FLAG_IMS_SUPPORT) {
-            DBG_(self, "ims call support is detected");
-            self->caps |= OFONO_IMS_VOICE_CAPABLE;
-        }
-    }
-
+    self->handle = handle;
+    self->ims = binder_ims_reg_ref(modem->ims);
     self->start_id = g_idle_add(binder_ims_start, self);
-    ofono_ims_set_data(ims, self);
+    ofono_ims_set_data(handle, self);
     return 0;
 }
 
 static
 void
 binder_ims_remove(
-    struct ofono_ims* ims)
+    struct ofono_ims* handle)
 {
-    BinderIms* self = binder_ims_get_data(ims);
+    BinderIms* self = binder_ims_get_data(handle);
 
     DBG_(self, "");
 
@@ -309,18 +230,17 @@ binder_ims_remove(
     }
 
     if (self->ext) {
-        binder_ext_ims_remove_all_handlers(self->ext, self->ext_event);
         binder_ext_ims_cancel(self->ext, self->ext_req_id);
         binder_ext_ims_unref(self->ext);
     }
 
-    binder_ims_reg_remove_all_handlers(self->reg, self->radio_event);
-    binder_ims_reg_unref(self->reg);
+    binder_ims_reg_remove_handler(self->ims, self->event_id);
+    binder_ims_reg_unref(self->ims);
 
     g_free(self->log_prefix);
     g_free(self);
 
-    ofono_ims_set_data(ims, NULL);
+    ofono_ims_set_data(handle, NULL);
 }
 
 /*==========================================================================*
