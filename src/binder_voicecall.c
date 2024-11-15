@@ -1,6 +1,7 @@
 /*
  *  oFono - Open Source Telephony - binder based adaptation
  *
+ *  Copyright (C) 2024 Slava Monich <slava@monich.com>
  *  Copyright (C) 2021-2022 Jolla Ltd.
  *
  *  This program is free software; you can redistribute it and/or modify
@@ -369,16 +370,22 @@ binder_voicecall_info_ext_new(
 }
 
 static
-const BinderVoiceCallInfo*
-binder_voicecall_list_find_call_with_id(
+GSList*
+binder_voicecall_list_find_call_link_with_id(
     GSList* list,
     guint call_id)
 {
-    for (GSList* l = list; l; l = l->next) {
+    GSList* l;
+
+    /*
+     * Normally, the list is either empty or very short, there's
+     * nothing to optimize.
+     */
+    for (l = list; l; l = l->next) {
         const BinderVoiceCallInfo* call = l->data;
 
         if (call->oc.id == call_id) {
-            return call;
+            return l;
         }
     }
     return NULL;
@@ -386,34 +393,30 @@ binder_voicecall_list_find_call_with_id(
 
 static
 GSList*
-binder_voicecall_merge_call_lists(
+binder_voicecall_merge_ext_calls(
     BinderVoiceCall* self,
-    GSList* new_list,
-    gboolean add_ext)
+    GSList* list,
+    gboolean keep_ext)
 {
+    GSList* l;
+
     /*
      * Since IRadio and ext may have different lists of calls,
-     * attempt to merge the ongoing calls initiated by the other
-     * component before current calls list is going to
-     * be replaced by the new list.
+     * merge the ongoing calls initiated by the other component
+     * before the current list of calls is going to be replaced
+     * with the new list.
      */
-    if (!self->ext)
-        return new_list;
-
-    for (GSList* l = self->calls; l; l = l->next) {
+    for (l = self->calls; l; l = l->next) {
         const BinderVoiceCallInfo* call = l->data;
 
-        if (!!call->ext == add_ext) {
-            if (binder_voicecall_list_find_call_with_id(new_list, call->oc.id))
-                continue;
-
-            new_list = g_slist_insert_sorted(new_list,
+        if (!!call->ext == keep_ext &&
+            !binder_voicecall_list_find_call_link_with_id(list, call->oc.id)) {
+            list = g_slist_insert_sorted(list,
                 g_slice_dup(BinderVoiceCallInfo, call),
                 binder_voicecall_info_compare);
         }
     }
-
-    return new_list;
+    return list;
 }
 
 static
@@ -463,20 +466,7 @@ binder_voicecall_find_call_link_with_id(
     BinderVoiceCall* self,
     guint call_id)
 {
-    GSList* l;
-
-    /*
-     * Normally, the list is either empty or very short, there's
-     * nothing to optimize.
-     */
-    for (l = self->calls; l; l = l->next) {
-        const BinderVoiceCallInfo* call = l->data;
-
-        if (call->oc.id == call_id) {
-            return l;
-        }
-    }
-    return NULL;
+    return binder_voicecall_list_find_call_link_with_id(self->calls, call_id);
 }
 
 static
@@ -799,9 +789,8 @@ binder_voicecall_clcc_poll_cb(
     }
 
     /* Merge the ongoing ext calls since IRadio may not report them */
-    list = binder_voicecall_merge_call_lists(self, list, TRUE /*add_ext*/);
-
-    binder_voicecall_set_calls(self, list);
+    binder_voicecall_set_calls(self,
+        binder_voicecall_merge_ext_calls(self, list, TRUE));
 }
 
 static
@@ -1380,16 +1369,10 @@ binder_voicecall_call_state_changed_event(
     RadioClient* client,
     RADIO_IND code,
     const GBinderReader* args,
-    gpointer user_data)
+    gpointer self)
 {
-    BinderVoiceCall* self = user_data;
-    guint32 ind_code = self->interface_aidl == RADIO_VOICE_INTERFACE ?
-        RADIO_VOICE_IND_CALL_STATE_CHANGED : RADIO_IND_CALL_STATE_CHANGED;
-
-    GASSERT(code == ind_code);
-
     /* Just need to request the call list again */
-    binder_voicecall_clcc_poll(self);
+    binder_voicecall_clcc_poll((BinderVoiceCall*) self);
 }
 
 static
@@ -2099,9 +2082,8 @@ binder_voicecall_ext_calls_changed(
     }
 
     /* Merge the IRadio calls back into the list */
-    list = binder_voicecall_merge_call_lists(self, list, FALSE /*add_ext*/);
-
-    binder_voicecall_set_calls(self, list);
+    binder_voicecall_set_calls(self,
+        binder_voicecall_merge_ext_calls(self, list, FALSE));
 }
 
 static
