@@ -1,6 +1,7 @@
 /*
  *  oFono - Open Source Telephony - binder based adaptation
  *
+ *  Copyright (C) 2024 Slava Monich <slava@monich.com>
  *  Copyright (C) 2021-2022 Jolla Ltd.
  *
  *  This program is free software; you can redistribute it and/or modify
@@ -1117,11 +1118,10 @@ binder_sms_on_sim(
     gint32 rec;
 
     ofono_info("new sms on sim");
-    guint32 ind_code = self->interface_aidl == RADIO_MESSAGING_INTERFACE ?
-        RADIO_MESSAGING_IND_NEW_SMS_ON_SIM : RADIO_IND_NEW_SMS_ON_SIM;
 
     /* newSmsOnSim(RadioIndicationType type, int32 recordNumber); */
-    GASSERT(code == ind_code);
+    GASSERT(code == RADIO_IND_NEW_SMS_ON_SIM ||
+            code == RADIO_MESSAGING_IND_NEW_SMS_ON_SIM);
     gbinder_reader_copy(&reader, args);
     if (gbinder_reader_read_int32(&reader, &rec)) {
         DBG("rec %d", rec);
