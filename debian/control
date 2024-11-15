@@ -1,7 +1,7 @@
 Source: libofonobinderpluginext
 Section: libs
 Priority: optional
-Maintainer: Slava Monich <slava.monich@jolla.com>
+Maintainer: Slava Monich <slava@monich.com>
 Build-Depends: debhelper (>= 8.1.3), libglib2.0-dev (>= 2.0)
 Standards-Version: 3.8.4
 
