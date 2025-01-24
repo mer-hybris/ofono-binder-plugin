@@ -642,11 +642,11 @@ binder_sms_gsm_message_aidl(
      * interface expects an empty string for default SMSC.
      */
     char* tpdu;
-    tpdu = g_malloc0(sizeof(char) * (tpdu_len * 2));
     int smsc_len = pdu_len - tpdu_len;
     gint32 initial_size;
 
     /* PDU is sent as an ASCII hex string */
+    tpdu = g_malloc0(sizeof(char) * (tpdu_len * 2 + 1));
     ofono_encode_hex(pdu + smsc_len, tpdu_len, tpdu);
     DBG_(self, "%s", tpdu);
 
@@ -657,7 +657,7 @@ binder_sms_gsm_message_aidl(
     gbinder_writer_append_int32(writer, -1);
 
     gbinder_writer_append_string16_len(writer, (const char*) pdu, smsc_len);
-    gbinder_writer_append_string16_len(writer, tpdu, tpdu_len * 2);
+    gbinder_writer_append_string16_len(writer, tpdu, tpdu_len * 2 + 1);
 
     /* Overwrite parcelable size */
     gbinder_writer_overwrite_int32(writer, initial_size,

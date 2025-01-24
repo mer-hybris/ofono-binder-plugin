@@ -1642,9 +1642,9 @@ binder_network_set_initial_attach_apn(
     RadioRequest* req;
     GBinderWriter writer;
 
-    if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
-        binder_network_data_profile_init(&profile, ctx, RADIO_DATA_PROFILE_DEFAULT);
+    binder_network_data_profile_init(&profile, ctx, RADIO_DATA_PROFILE_DEFAULT);
 
+    if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
         if (iface >= RADIO_INTERFACE_1_5) {
             /* setInitialAttachApn_1_4(int32 serial, DataProfileInfo profile); */
             req = radio_request_new2(self->g, RADIO_REQ_SET_INITIAL_ATTACH_APN_1_5,
