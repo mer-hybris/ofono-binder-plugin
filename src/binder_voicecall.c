@@ -596,8 +596,11 @@ binder_voicecall_lastcause_cb(
 
             if (resp == code) {
                 GBinderReader reader;
-                const RadioLastCallFailCauseInfo* info;
-                gint32 cause_code;
+                /*
+                 * Cause code 0 is invalid and can be used to check if code was
+                 * obtained.
+                 */
+                gint32 cause_code = 0;
 
                 /*
                  * getLastCallFailCauseResponse(RadioResponseInfo,
@@ -605,14 +608,17 @@ binder_voicecall_lastcause_cb(
                  */
                 gbinder_reader_copy(&reader, args);
                 if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
-                    info = gbinder_reader_read_hidl_struct(&reader,
-                        RadioLastCallFailCauseInfo);
-                    cause_code = info->causeCode;
+                    const RadioLastCallFailCauseInfo* info =
+                        gbinder_reader_read_hidl_struct(&reader,
+                            RadioLastCallFailCauseInfo);
+                    if (info) {
+                        cause_code = info->causeCode;
+                    }
                 } else {
                     gbinder_reader_read_int32(&reader, &cause_code);
                     gbinder_reader_skip_string16(&reader);
                 }
-                if (info) {
+                if (cause_code) {
                     enum ofono_disconnect_reason reason =
                         binder_voicecall_map_cause(self, cid, cause_code);
 
