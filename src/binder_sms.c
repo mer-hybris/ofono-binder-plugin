@@ -468,18 +468,19 @@ binder_sms_submit_cb(
                 (RADIO_MESSAGING_RESP)resp == RADIO_MESSAGING_RESP_SEND_IMS_SMS) {
                 if (error == RADIO_ERROR_NONE) {
                     GBinderReader reader;
-                    gint32 message_ref;
-                    char* ack_pdu = NULL;
-                    gint32 error_code;
 
                     gbinder_reader_copy(&reader, args);
 
                     if (binder_read_parcelable_size(&reader)) {
+                        gint32 message_ref;
+                        char* ack_pdu = NULL;
+                        gint32 error_code;
+
                         gbinder_reader_read_int32(&reader, &message_ref);
                         ack_pdu = gbinder_reader_read_string16(&reader);
                         gbinder_reader_read_int32(&reader, &error_code);
                         DBG("%ssms msg ref: %d, ack: %s err: %d", ims ? "ims " : "",
-                        message_ref, ack_pdu, error_code);
+                            message_ref, ack_pdu, error_code);
                         g_free(ack_pdu);
 
                         /*
@@ -495,7 +496,6 @@ binder_sms_submit_cb(
                             return;
                         }
                     }
-                    g_free(ack_pdu);
                 } else {
                     ofono_error("%ssms send error %s", ims ? "ims " : "",
                         binder_radio_error_string(error));
