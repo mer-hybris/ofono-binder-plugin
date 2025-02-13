@@ -143,8 +143,8 @@ binder_base_emit_queued_signals(
     /* Signal handlers may release references to this object */
     g_object_ref(self);
 
-    /* Emit the signals */
-    for (p = 0; self->queued_signals && p < BINDER_BASE_MAX_PROPERTIES; p++) {
+    /* Emit the signals, ignore the ANY property */
+    for (p = 1; self->queued_signals && p < BINDER_BASE_MAX_PROPERTIES; p++) {
         if (self->queued_signals & BINDER_BASE_PROPERTY_BIT(p)) {
             self->queued_signals &= ~BINDER_BASE_PROPERTY_BIT(p);
             g_signal_emit(self, binder_base_signals[SIGNAL_PROPERTY_CHANGED],

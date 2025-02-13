@@ -21,6 +21,7 @@
 #include "binder_util.h"
 
 #include "binder_ext_ims.h"
+#include "binder_ext_slot.h"
 
 #include <ofono/ims.h>
 
@@ -211,6 +212,8 @@ binder_ims_probe(
 
     self->handle = handle;
     self->ims = binder_ims_reg_ref(modem->ims);
+    self->ext = binder_ext_ims_ref(binder_ext_slot_get_interface(modem->ext,
+        BINDER_EXT_TYPE_IMS));
     self->start_id = g_idle_add(binder_ims_start, self);
     ofono_ims_set_data(handle, self);
     return 0;
