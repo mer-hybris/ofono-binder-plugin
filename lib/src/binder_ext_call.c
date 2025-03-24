@@ -319,6 +319,22 @@ binder_ext_call_remove_handler(
     }
 }
 
+gulong
+binder_ext_call_add_ringback_tone_handler(
+    BinderExtCall* self,
+    BinderExtCallRingbackToneFunc handler,
+    void* user_data)
+{
+    if (G_LIKELY(self)) {
+        BinderExtCallInterface* iface = GET_IFACE(self);
+
+        if (iface->add_ringback_tone_handler) {
+            iface->add_ringback_tone_handler(self, handler, user_data);
+        }
+    }
+    return 0;
+}
+
 void
 binder_ext_call_remove_handlers(
     BinderExtCall* self,
