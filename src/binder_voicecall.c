@@ -57,6 +57,7 @@ enum binder_voicecall_ext_events {
     VOICECALL_EXT_CALL_STATE_CHANGED,
     VOICECALL_EXT_CALL_DISCONNECTED,
     VOICECALL_EXT_CALL_SUPP_SVC_NOTIFICATION,
+    VOICECALL_EXT_CALL_RINGBACK_TONE,
     VOICECALL_EXT_EVENT_COUNT
 };
 
@@ -2120,6 +2121,19 @@ binder_voicecall_ext_call_disconnected(
 
 static
 void
+binder_voicecall_ext_call_ringback_tone(
+    BinderExtCall* ext,
+    gboolean start,
+    void* user_data)
+{
+    BinderVoiceCall* self = user_data;
+
+    DBG_(self, "play ringback tone: %d", start);
+    ofono_voicecall_ringback_tone_notify(self->vc, start);
+}
+
+static
+void
 binder_voicecall_register(
     gpointer user_data)
 {
@@ -2199,6 +2213,9 @@ binder_voicecall_register(
         self->ext_event[VOICECALL_EXT_CALL_SUPP_SVC_NOTIFICATION] =
             binder_ext_call_add_ssn_handler(self->ext,
                 binder_voicecall_ext_supp_svc_notification, self);
+        self->ext_event[VOICECALL_EXT_CALL_RINGBACK_TONE] =
+            binder_ext_call_add_ringback_tone_handler(self->ext,
+                binder_voicecall_ext_call_ringback_tone, self);
     }
 }
 
