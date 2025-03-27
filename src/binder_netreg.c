@@ -2,6 +2,7 @@
  *  oFono - Open Source Telephony - binder based adaptation
  *
  *  Copyright (C) 2021-2022 Jolla Ltd.
+ *  Copyright (C) 2025 Slava Monich <slava@monich.com>
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License version 2 as
@@ -35,6 +36,8 @@
 #include <gbinder_writer.h>
 
 #include <gutil_macros.h>
+
+#include <stdlib.h>
 
 #define REGISTRATION_MAX_RETRIES (2)
 #define NETWORK_SCAN_TIMEOUT_SEC (60) /* 1 min */
