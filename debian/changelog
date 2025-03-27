@@ -1,3 +1,9 @@
+libofonobinderpluginext (1.1.22) unstable; urgency=low
+
+  * Add support for external ringback tone
+
+ -- Slava Monich <slava@monich.com>  Thu, 27 Mar 2025 05:56:56 +0200
+
 libofonobinderpluginext (1.1.0) unstable; urgency=low
 
   * Stable release of the extension API

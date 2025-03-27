@@ -93,6 +93,8 @@ STRIP ?= strip
 WARNINGS = -Wall
 BASE_FLAGS = -fPIC -fvisibility=hidden
 FULL_CFLAGS = $(BASE_FLAGS) $(CFLAGS) $(DEFINES) $(WARNINGS) -MMD -MP \
+  -DGLIB_VERSION_MAX_ALLOWED=GLIB_VERSION_2_32 \
+  -DGLIB_VERSION_MIN_REQUIRED=GLIB_VERSION_MAX_ALLOWED \
   $(shell pkg-config --cflags $(PKGS)) -I$(EXTLIB_DIR)/include
 FULL_LDFLAGS = $(BASE_FLAGS) $(LDFLAGS) -shared \
   $(shell pkg-config --libs $(LDPKGS))

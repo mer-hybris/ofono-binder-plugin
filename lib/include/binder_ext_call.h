@@ -2,6 +2,7 @@
  *  oFono - Open Source Telephony - binder based adaptation
  *
  *  Copyright (C) 2022 Jolla Ltd.
+ *  Copyright (C) 2025 Slava Monich <slava@monich.com>
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License version 2 as
@@ -298,7 +299,7 @@ gulong
 binder_ext_call_add_ringback_tone_handler(
     BinderExtCall* ext,
     BinderExtCallRingbackToneFunc handler,
-    void* user_data);
+    void* user_data); /* Since 1.1.22 */
 
 void
 binder_ext_call_remove_handlers(

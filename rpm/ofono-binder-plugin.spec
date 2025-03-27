@@ -1,6 +1,6 @@
 Name: ofono-binder-plugin
 
-Version: 1.1.21
+Version: 1.1.22
 Release: 1
 Summary: Binder based ofono plugin
 License: GPLv2
@@ -11,7 +11,8 @@ Source: %{name}-%{version}.tar.bz2
 %define libgbinder_version 1.1.29
 %define libgbinder_radio_version 1.6.0
 %define libmce_version 1.0.6
-%define libofonobinderpluginext_version 1.1.0
+%define libofonobinderpluginext_version 1.1.22
+%define glib_version 2.32
 %define ofono_version 1.29+git8
 
 BuildRequires: pkgconfig
@@ -20,7 +21,7 @@ BuildRequires: pkgconfig(libgbinder) >= %{libgbinder_version}
 BuildRequires: pkgconfig(libgbinder-radio) >= %{libgbinder_radio_version}
 BuildRequires: pkgconfig(libglibutil) >= %{libglibutil_version}
 BuildRequires: pkgconfig(libmce-glib) >= %{libmce_version}
-BuildRequires: pkgconfig(glib-2.0)
+BuildRequires: pkgconfig(glib-2.0) >= %{glib_version}
 
 # license macro requires rpm >= 4.11
 BuildRequires: pkgconfig(rpm)
@@ -35,6 +36,7 @@ Requires: libgbinder >= %{libgbinder_version}
 Requires: libgbinder-radio >= %{libgbinder_radio_version}
 Requires: libglibutil >= %{libglibutil_version}
 Requires: libmce-glib >= %{libmce_version}
+Requires: glib2 >= %{glib_version}
 
 Conflicts: ofono-ril-plugin
 Obsoletes: ofono-ril-plugin
@@ -88,6 +90,7 @@ Requires: pkgconfig(glib-2.0)
 Requires: pkgconfig(libgbinder-radio) >= %{libgbinder_radio_version}
 Requires: pkgconfig(libglibutil) >= %{libglibutil_version}
 Requires: libofonobinderpluginext = %{version}
+Requires: glib2 >= %{glib_version}
 
 %post -n libofonobinderpluginext -p /sbin/ldconfig
 
