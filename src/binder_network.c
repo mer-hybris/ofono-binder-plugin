@@ -75,6 +75,7 @@ enum binder_network_ind_events {
     IND_NETWORK_STATE,
     IND_MODEM_RESET,
     IND_CURRENT_PHYSICAL_CHANNEL_CONFIGS_1_4,
+    IND_CURRENT_PHYSICAL_CHANNEL_CONFIGS_1_6,
     IND_COUNT
 };
 
@@ -660,6 +661,19 @@ binder_network_poll_voice_state_1_5(
 
 static
 void
+binder_network_poll_voice_state_1_6(
+    BinderRegistrationState* state,
+    const RadioRegStateResult_1_6* result)
+{
+    BinderNetworkLocation l;
+
+    binder_network_location_1_5(&result->cellIdentity, &l);
+    binder_network_set_registration_state(state, result->regState,
+        result->rat, l.lac, l.ci);
+}
+
+static
+void
 binder_network_poll_voice_state_aidl(
     BinderRegistrationState* state,
     GBinderReader* reader,
@@ -735,6 +749,16 @@ binder_network_poll_voice_state_cb(
                         reg = &state;
                         reason = result->reasonDataDenied;
                         binder_network_poll_voice_state_1_5(reg, result);
+                    }
+                } else if (resp == RADIO_RESP_GET_VOICE_REGISTRATION_STATE_1_6) {
+                    const RadioRegStateResult_1_6* result =
+                        gbinder_reader_read_hidl_struct(&reader,
+                            RadioRegStateResult_1_6);
+
+                    if (result) {
+                        reg = &state;
+                        reason = result->reasonDataDenied;
+                        binder_network_poll_voice_state_1_6(reg, result);
                     }
                 } else {
                     ofono_error("Unexpected getVoiceRegistrationState response %d",
@@ -828,6 +852,34 @@ binder_network_poll_data_state_1_5(
     BinderRegistrationState* state,
     BinderNetworkObject* self,
     const RadioRegStateResult_1_5* result)
+{
+    BinderNetworkLocation l;
+    RADIO_TECH rat = result->rat;
+
+    binder_network_location_1_5(&result->cellIdentity, &l);
+
+    if (result->accessTechnologySpecificInfoType == RADIO_REG_ACCESS_TECHNOLOGY_SPECIFIC_INFO_EUTRAN) {
+        RadioRegEutranRegistrationInfo *eutranInfo = (RadioRegEutranRegistrationInfo *)&result->accessTechnologySpecificInfo;
+        RadioDataRegNrIndicators *nrIndicators = &eutranInfo->nrIndicators;
+
+        if ((rat == RADIO_TECH_LTE || rat == RADIO_TECH_LTE_CA) &&
+            self->nr_connected && nrIndicators->isEndcAvailable &&
+            !nrIndicators->isDcNrRestricted &&
+            nrIndicators->isNrAvailable) {
+            DBG_(self, "Setting radio technology for NSA 5G");
+            rat = RADIO_TECH_NR;
+        }
+    }
+    binder_network_set_registration_state(state, result->regState,
+        rat, l.lac, l.ci);
+}
+
+static
+void
+binder_network_poll_data_state_1_6(
+    BinderRegistrationState* state,
+    BinderNetworkObject* self,
+    const RadioRegStateResult_1_6* result)
 {
     BinderNetworkLocation l;
     RADIO_TECH rat = result->rat;
@@ -974,6 +1026,17 @@ binder_network_poll_data_state_cb(
                         max_data_calls = MAX_DATA_CALLS;
                         binder_network_poll_data_state_1_5(reg, self, result);
                     }
+                } else if (resp == RADIO_RESP_GET_DATA_REGISTRATION_STATE_1_6) {
+                    const RadioRegStateResult_1_6* result =
+                        gbinder_reader_read_hidl_struct(&reader,
+                            RadioRegStateResult_1_6);
+
+                    if (result) {
+                        reg = &state;
+                        reason = result->reasonDataDenied;
+                        max_data_calls = MAX_DATA_CALLS;
+                        binder_network_poll_data_state_1_6(reg, self, result);
+                    }
                 } else {
                     ofono_error("Unexpected getDataRegistrationState response %d",
                         resp);
@@ -1067,11 +1130,21 @@ binder_network_poll_registration_state(
     const RADIO_AIDL_INTERFACE iface_aidl = radio_client_aidl_interface(client);
 
     if (iface_aidl == RADIO_AIDL_INTERFACE_NONE) {
-        self->voice_poll_req = binder_network_poll_and_retry(self,
-            self->voice_poll_req, RADIO_REQ_GET_VOICE_REGISTRATION_STATE,
-            binder_network_poll_voice_state_cb);
+        if (iface >= RADIO_INTERFACE_1_6) {
+            self->voice_poll_req = binder_network_poll_and_retry(self,
+                self->voice_poll_req, RADIO_REQ_GET_VOICE_REGISTRATION_STATE_1_5,
+                binder_network_poll_voice_state_cb);
+        } else {
+            self->voice_poll_req = binder_network_poll_and_retry(self,
+                self->voice_poll_req, RADIO_REQ_GET_VOICE_REGISTRATION_STATE,
+                binder_network_poll_voice_state_cb);
+        }
 
-        if (iface >= RADIO_INTERFACE_1_5) {
+        if (iface >= RADIO_INTERFACE_1_6) {
+            self->data_poll_req = binder_network_poll_and_retry(self,
+                self->data_poll_req, RADIO_REQ_GET_DATA_REGISTRATION_STATE_1_6,
+                binder_network_poll_data_state_cb);
+        } else if (iface >= RADIO_INTERFACE_1_5) {
             self->data_poll_req = binder_network_poll_and_retry(self,
                 self->data_poll_req, RADIO_REQ_GET_DATA_REGISTRATION_STATE_1_5,
                 binder_network_poll_data_state_cb);
@@ -1822,7 +1895,9 @@ binder_network_set_pref(
 
             guint32 code = self->interface_aidl == RADIO_NETWORK_INTERFACE ?
                 RADIO_NETWORK_REQ_SET_ALLOWED_NETWORK_TYPES_BITMAP :
-                RADIO_REQ_SET_PREFERRED_NETWORK_TYPE_BITMAP;
+                iface >= RADIO_INTERFACE_1_6 ?
+                    RADIO_REQ_SET_ALLOWED_NETWORK_TYPES_BITMAP :
+                    RADIO_REQ_SET_PREFERRED_NETWORK_TYPE_BITMAP;
 
             /*
              * setPreferredNetworkTypeBitmap(int32 serial,
@@ -1994,7 +2069,9 @@ binder_network_query_raf_done(
     if (status == RADIO_TX_STATUS_OK) {
         guint32 code = self->interface_aidl == RADIO_NETWORK_INTERFACE ?
             RADIO_NETWORK_RESP_GET_ALLOWED_NETWORK_TYPES_BITMAP :
-            RADIO_RESP_GET_PREFERRED_NETWORK_TYPE_BITMAP;
+            radio_client_interface(self->g->client) >= RADIO_INTERFACE_1_6 ?
+                RADIO_RESP_GET_ALLOWED_NETWORK_TYPES_BITMAP :
+                RADIO_RESP_GET_PREFERRED_NETWORK_TYPE_BITMAP;
 
         if (resp == code) {
             /*
@@ -2105,7 +2182,9 @@ binder_network_initial_rat_query(
                 self->interface_aidl == RADIO_NETWORK_INTERFACE) {
         guint32 code = self->interface_aidl == RADIO_NETWORK_INTERFACE ?
             RADIO_NETWORK_REQ_GET_ALLOWED_NETWORK_TYPES_BITMAP :
-            RADIO_REQ_GET_PREFERRED_NETWORK_TYPE_BITMAP;
+            iface >= RADIO_INTERFACE_1_6 ?
+                RADIO_REQ_GET_ALLOWED_NETWORK_TYPES_BITMAP :
+                RADIO_REQ_GET_PREFERRED_NETWORK_TYPE_BITMAP;
         /* getPreferredNetworkTypeBitmap(int32 serial) */
         req = radio_request_new2(self->g,
             code, NULL,
@@ -2190,7 +2269,9 @@ binder_network_query_pref_mode(
                 self->interface_aidl == RADIO_NETWORK_INTERFACE) {
         guint32 code = self->interface_aidl == RADIO_NETWORK_INTERFACE ?
             RADIO_NETWORK_REQ_GET_ALLOWED_NETWORK_TYPES_BITMAP :
-            RADIO_REQ_GET_PREFERRED_NETWORK_TYPE_BITMAP;
+            iface >= RADIO_INTERFACE_1_6 ?
+                RADIO_REQ_GET_ALLOWED_NETWORK_TYPES_BITMAP :
+                RADIO_REQ_GET_PREFERRED_NETWORK_TYPE_BITMAP;
         /* getPreferredNetworkTypeBitmap(int32 serial) */
         req = radio_request_new(client,
             code, NULL,
@@ -2366,7 +2447,9 @@ binder_network_current_physical_channel_configs_cb(
     gboolean nr_connected = FALSE;
     guint32 ind_code = self->interface_aidl == RADIO_NETWORK_INTERFACE ?
         RADIO_NETWORK_IND_CURRENT_PHYSICAL_CHANNEL_CONFIGS :
-        RADIO_IND_CURRENT_PHYSICAL_CHANNEL_CONFIGS_1_4;
+        radio_client_interface(client) >= RADIO_INTERFACE_1_6 ?
+            RADIO_IND_CURRENT_PHYSICAL_CHANNEL_CONFIGS_1_6 :
+            RADIO_IND_CURRENT_PHYSICAL_CHANNEL_CONFIGS_1_4;
 
     gbinder_reader_copy(&reader, args);
 
@@ -2374,14 +2457,27 @@ binder_network_current_physical_channel_configs_cb(
         guint i;
         if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
             gsize count;
-            const RadioPhysicalChannelConfig_1_4* configs = gbinder_reader_read_hidl_type_vec(&reader,
-                RadioPhysicalChannelConfig_1_4, &count);
+            if (radio_client_interface(client) >= RADIO_INTERFACE_1_6) {
+                const RadioPhysicalChannelConfig_1_6* configs = gbinder_reader_read_hidl_type_vec(&reader,
+                    RadioPhysicalChannelConfig_1_6, &count);
 
-            for (i = 0; i < count; i++) {
-                if (configs[i].rat == RADIO_TECH_NR &&
-                    configs[i].base.connectionStatus == RADIO_CELL_CONNECTION_SECONDARY_SERVING) {
-                    DBG_(self, "NSA 5G connected");
-                    nr_connected = TRUE;
+                for (i = 0; i < count; i++) {
+                    if (configs[i].rat == RADIO_TECH_NR &&
+                        configs[i].connectionStatus == RADIO_CELL_CONNECTION_SECONDARY_SERVING) {
+                        DBG_(self, "NSA 5G connected");
+                        nr_connected = TRUE;
+                    }
+                }
+            } else {
+                const RadioPhysicalChannelConfig_1_4* configs = gbinder_reader_read_hidl_type_vec(&reader,
+                    RadioPhysicalChannelConfig_1_4, &count);
+
+                for (i = 0; i < count; i++) {
+                    if (configs[i].rat == RADIO_TECH_NR &&
+                        configs[i].base.connectionStatus == RADIO_CELL_CONNECTION_SECONDARY_SERVING) {
+                        DBG_(self, "NSA 5G connected");
+                        nr_connected = TRUE;
+                    }
                 }
             }
         } else {
@@ -2589,6 +2685,10 @@ binder_network_new(
         self->ind_id[IND_CURRENT_PHYSICAL_CHANNEL_CONFIGS_1_4] =
             radio_client_add_indication_handler(client,
                 RADIO_IND_CURRENT_PHYSICAL_CHANNEL_CONFIGS_1_4,
+                binder_network_current_physical_channel_configs_cb, self);
+        self->ind_id[IND_CURRENT_PHYSICAL_CHANNEL_CONFIGS_1_6] =
+            radio_client_add_indication_handler(client,
+                RADIO_IND_CURRENT_PHYSICAL_CHANNEL_CONFIGS_1_6,
                 binder_network_current_physical_channel_configs_cb, self);
     } else {
         self->ind_id[IND_NETWORK_STATE] =

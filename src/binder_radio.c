@@ -231,9 +231,11 @@ binder_radio_submit_power_request(
     guint32 code = RADIO_REQ_NONE;
 
     if (iface_aidl == RADIO_AIDL_INTERFACE_NONE) {
-        code = (iface >= RADIO_INTERFACE_1_5) ?
-               RADIO_REQ_SET_RADIO_POWER_1_5 :
-               RADIO_REQ_SET_RADIO_POWER;
+        code = (iface >= RADIO_INTERFACE_1_6) ?
+               RADIO_REQ_SET_RADIO_POWER_1_6 :
+               (iface >= RADIO_INTERFACE_1_5) ?
+                   RADIO_REQ_SET_RADIO_POWER_1_5 :
+                   RADIO_REQ_SET_RADIO_POWER;
     } else if (iface_aidl == RADIO_MODEM_INTERFACE) {
         code = RADIO_MODEM_REQ_SET_RADIO_POWER;
     }
