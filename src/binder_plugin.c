@@ -128,10 +128,11 @@
 #define BINDER_SLOT_RADIO_INTERFACE_1_3 "1.3"
 #define BINDER_SLOT_RADIO_INTERFACE_1_4 "1.4"
 #define BINDER_SLOT_RADIO_INTERFACE_1_5 "1.5"
+#define BINDER_SLOT_RADIO_INTERFACE_1_6 "1.6"
 
 /* v(version) */
 #define BINDER_FOREACH_HIDL_INTERFACE(v) \
-    v(1_0) v(1_1) v(1_2) v(1_3) v(1_4) v(1_5)
+    v(1_0) v(1_1) v(1_2) v(1_3) v(1_4) v(1_5) v(1_6)
 
 /*
  * The convention is that the keys which can only appear in the [Settings]

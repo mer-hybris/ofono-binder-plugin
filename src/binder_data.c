@@ -87,7 +87,8 @@ enum binder_data_io_event_id {
     IO_EVENT_RESTRICTED_STATE_CHANGED,
     IO_EVENT_DATA_CALL_LIST_CHANGED,
     IO_EVENT_DATA_CALL_LIST_CHANGED_1,
-    IO_EVENT_DATA_CALL_LIST_CHANGED_2, /* See data_call_list_changed_ind */
+    IO_EVENT_DATA_CALL_LIST_CHANGED_2,
+    IO_EVENT_DATA_CALL_LIST_CHANGED_3, /* See data_call_list_changed_ind */
     IO_EVENT_DEATH,
     IO_EVENT_COUNT
 };
@@ -217,7 +218,7 @@ struct binder_data_api {
         int cid);
     RADIO_IND network_restricted_state_changed_ind;
     RADIO_IND restricted_state_changed_ind;
-    RADIO_IND data_call_list_changed_ind[3];
+    RADIO_IND data_call_list_changed_ind[4];
     GSList* (*read_data_call_list_changed_ind)(
         GBinderReader* args,
         RADIO_IND ind);
@@ -1781,7 +1782,8 @@ static const BinderDataApi binder_data_api_hidl = {
     {
         RADIO_IND_DATA_CALL_LIST_CHANGED,
         RADIO_IND_DATA_CALL_LIST_CHANGED_1_4,
-        RADIO_IND_DATA_CALL_LIST_CHANGED_1_5
+        RADIO_IND_DATA_CALL_LIST_CHANGED_1_5,
+        RADIO_IND_DATA_CALL_LIST_CHANGED_1_6
     },
     binder_data_api_read_data_call_list_changed_ind_hidl
 };
@@ -1851,7 +1853,8 @@ static const BinderDataApi binder_data_api_hidl_1_2 = {
     {
         RADIO_IND_DATA_CALL_LIST_CHANGED,
         RADIO_IND_DATA_CALL_LIST_CHANGED_1_4,
-        RADIO_IND_DATA_CALL_LIST_CHANGED_1_5
+        RADIO_IND_DATA_CALL_LIST_CHANGED_1_5,
+        RADIO_IND_DATA_CALL_LIST_CHANGED_1_6
     },
     binder_data_api_read_data_call_list_changed_ind_hidl
 };
@@ -2027,7 +2030,8 @@ static const BinderDataApi binder_data_api_hidl_1_4 = {
     {
         RADIO_IND_DATA_CALL_LIST_CHANGED,
         RADIO_IND_DATA_CALL_LIST_CHANGED_1_4,
-        RADIO_IND_DATA_CALL_LIST_CHANGED_1_5
+        RADIO_IND_DATA_CALL_LIST_CHANGED_1_5,
+        RADIO_IND_DATA_CALL_LIST_CHANGED_1_6
     },
     binder_data_api_read_data_call_list_changed_ind_hidl_1_4
 };
@@ -2202,9 +2206,172 @@ static const BinderDataApi binder_data_api_hidl_1_5 = {
     {
         RADIO_IND_DATA_CALL_LIST_CHANGED,
         RADIO_IND_DATA_CALL_LIST_CHANGED_1_4,
-        RADIO_IND_DATA_CALL_LIST_CHANGED_1_5
+        RADIO_IND_DATA_CALL_LIST_CHANGED_1_5,
+        RADIO_IND_DATA_CALL_LIST_CHANGED_1_6
     },
     binder_data_api_read_data_call_list_changed_ind_hidl_1_5
+};
+
+/*==========================================================================*
+ * HIDL 1.6 API flavor
+ *==========================================================================*/
+
+static
+BinderDataCall*
+binder_data_call_new_1_6(
+    const RadioDataCall_1_6* dc)
+{
+    BinderDataCall* call = binder_data_call_new();
+
+    call->cid = dc->cid;
+    call->status = dc->cause;
+    call->active = dc->active;
+    call->prot = dc->type;
+    call->retry_time = dc->suggestedRetryTime;
+    call->mtu = dc->mtuV4;
+    call->ifname = g_strdup(dc->ifname.data.str);
+    call->dnses = binder_strv_from_hidl_string_vec(&dc->dnses);
+    call->gateways = binder_strv_from_hidl_string_vec(&dc->gateways);
+    call->addresses = binder_strv_from_hidl_string_vec(&dc->addresses);
+    call->pcscf = binder_strv_from_hidl_string_vec(&dc->pcscf);
+
+    DBG("[status=%d,retry=%d,cid=%d,active=%d,type=%d,ifname=%s,"
+        "mtu=%d,address=%s,dns=%s,gateways=%s,pcscf=%s]",
+        call->status, call->retry_time, call->cid, call->active,
+        dc->type, call->ifname, call->mtu,
+        binder_print_strv(call->addresses, " "),
+        binder_print_strv(call->dnses, " "),
+        binder_print_strv(call->gateways, " "),
+        binder_print_strv(call->pcscf, " "));
+    return call;
+}
+
+static
+GSList*
+binder_data_call_list_1_6(
+    const RadioDataCall_1_6* calls,
+    gsize n)
+{
+    if (n) {
+        gsize i;
+        GSList* l = NULL;
+
+        DBG("num=%u", (guint) n);
+        for (i = 0; i < n; i++) {
+            l = g_slist_insert_sorted(l, binder_data_call_new_1_6(calls + i),
+                binder_data_call_compare);
+        }
+        return l;
+    } else {
+        DBG("no data calls");
+        return NULL;
+    }
+}
+
+static
+GSList*
+binder_data_api_read_get_data_call_list_resp_hidl_1_6(
+   GBinderReader* reader,
+   RADIO_RESP resp)
+{
+    if (resp == RADIO_RESP_GET_DATA_CALL_LIST_1_6) {
+        gsize count = 0;
+        const RadioDataCall_1_6* calls =
+            gbinder_reader_read_hidl_type_vec(reader,
+                RadioDataCall_1_6, &count);
+
+        return binder_data_call_list_1_6(calls, count);
+    } else {
+        return binder_data_api_read_get_data_call_list_resp_hidl_1_5(reader,
+            resp);
+    }
+}
+
+static
+void
+binder_data_api_write_setup_data_call_args_hidl_1_6(
+    GBinderWriter* args,
+    const BinderDataRequestSetup* setup,
+    const BinderDataProfileConfig* config,
+    RADIO_TECH tech)
+{
+    /*
+     * 1.6/IRadio.hal:
+     * oneway setupDataCall_1_6(int32_t serial, AccessNetwork accessNetwork,
+     *     DataProfileInfo dataProfileInfo, bool roamingAllowed,
+     *     DataRequestReason reason, vec<LinkAddress> addresses,
+     *     vec<string> dnses, int32_t pduSessionId, OptionalSliceInfo sliceInfo,
+     *     OptionalTrafficDescriptor trafficDescriptor,
+     *     bool matchAllRuleAllowed);
+     *
+     * Extends setupDataCall_1_5.
+     */
+    binder_data_api_write_setup_data_call_args_hidl_1_5(args, setup, config,
+        tech);
+    gbinder_writer_append_int32(args, 0);    /* pduSessionId */
+    gbinder_writer_append_int8(args, 0);     /* sliceInfoAvailable */
+    gbinder_writer_append_int8(args, 0);     /* trafficDescriptorAvailable */
+    gbinder_writer_append_bool(args, TRUE);  /* matchAllRuleAllowed */
+}
+
+static
+BinderDataCall*
+binder_data_api_read_setup_data_call_resp_hidl_1_6(
+    GBinderReader* reader,
+    RADIO_RESP resp)
+{
+    if (resp == RADIO_RESP_SETUP_DATA_CALL_1_6) {
+        const RadioDataCall_1_6* dc =
+            gbinder_reader_read_hidl_struct(reader, RadioDataCall_1_6);
+
+        if (dc) {
+            return  binder_data_call_new_1_6(dc);
+        }
+    } else {
+        return binder_data_api_read_setup_data_call_resp_hidl_1_5(reader,
+            resp);
+    }
+    return NULL;
+}
+
+static
+GSList*
+binder_data_api_read_data_call_list_changed_ind_hidl_1_6(
+    GBinderReader* reader,
+    RADIO_IND ind)
+{
+    if (ind == RADIO_IND_DATA_CALL_LIST_CHANGED_1_6) {
+        gsize count = 0;
+        const RadioDataCall_1_6* calls =
+            gbinder_reader_read_hidl_type_vec(reader,
+                RadioDataCall_1_6, &count);
+
+        return binder_data_call_list_1_6(calls, count);
+    } else {
+        return binder_data_api_read_data_call_list_changed_ind_hidl_1_5(reader,
+            ind);
+    }
+}
+
+static const BinderDataApi binder_data_api_hidl_1_6 = {
+    "hidl_1_6",
+    RADIO_REQ_SET_DATA_ALLOWED,
+    RADIO_REQ_GET_DATA_CALL_LIST_1_6,
+    binder_data_api_read_get_data_call_list_resp_hidl_1_6,
+    RADIO_REQ_SETUP_DATA_CALL_1_6,
+    binder_data_api_write_setup_data_call_args_hidl_1_6,
+    binder_data_api_read_setup_data_call_resp_hidl_1_6,
+    RADIO_REQ_DEACTIVATE_DATA_CALL_1_2,
+    binder_data_api_write_deactivate_data_call_args_hidl_1_2,
+    RADIO_IND_NONE,
+    RADIO_IND_RESTRICTED_STATE_CHANGED,
+    {
+        RADIO_IND_DATA_CALL_LIST_CHANGED,
+        RADIO_IND_DATA_CALL_LIST_CHANGED_1_4,
+        RADIO_IND_DATA_CALL_LIST_CHANGED_1_5,
+        RADIO_IND_DATA_CALL_LIST_CHANGED_1_6
+    },
+    binder_data_api_read_data_call_list_changed_ind_hidl_1_6
 };
 
 /*==========================================================================*
@@ -2618,6 +2785,7 @@ binder_data_new(
         const BinderDataApi* api =
             (radio_client_aidl_interface(clients->data_client) ==
              RADIO_DATA_INTERFACE) ? &binder_data_api_aidl :
+            (hidl >= RADIO_INTERFACE_1_6) ? &binder_data_api_hidl_1_6 :
             (hidl >= RADIO_INTERFACE_1_5) ? &binder_data_api_hidl_1_5 :
             (hidl >= RADIO_INTERFACE_1_4) ? &binder_data_api_hidl_1_4 :
             (hidl >= RADIO_INTERFACE_1_2) ? &binder_data_api_hidl_1_2 :

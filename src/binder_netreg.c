@@ -201,6 +201,7 @@ static const BinderNetRegApi binder_netreg_api_hidl;
 static const BinderNetRegApi binder_netreg_api_hidl_1_2;
 static const BinderNetRegApi binder_netreg_api_hidl_1_4;
 static const BinderNetRegApi binder_netreg_api_hidl_1_5;
+static const BinderNetRegApi binder_netreg_api_hidl_1_6;
 static const BinderNetRegApi binder_netreg_api_aidl;
 
 static const BinderNetRegRadioType binder_netreg_radio_types[] = {
@@ -1583,6 +1584,7 @@ binder_netreg_probe(
     RADIO_AIDL_INTERFACE aidl = radio_client_aidl_interface(network_client);
     const BinderNetRegApi* api =
         (aidl == RADIO_NETWORK_INTERFACE) ? &binder_netreg_api_aidl :
+        (hidl >= RADIO_INTERFACE_1_6) ? &binder_netreg_api_hidl_1_6 :
         (hidl >= RADIO_INTERFACE_1_5) ? &binder_netreg_api_hidl_1_5 :
         (hidl >= RADIO_INTERFACE_1_4) ? &binder_netreg_api_hidl_1_4 :
         (hidl >= RADIO_INTERFACE_1_2) ? &binder_netreg_api_hidl_1_2 :
@@ -1744,6 +1746,26 @@ binder_netreg_read_signal_strength_hidl_1_4(
 }
 
 static
+gboolean
+binder_netreg_read_signal_strength_hidl_1_6(
+    GBinderReader* reader,
+    BinderRadioSignalStrength* out)
+{
+    const RadioSignalStrength_1_6* ss =
+        gbinder_reader_read_hidl_struct(reader, RadioSignalStrength_1_6);
+
+    if (ss) {
+        out->gsm = &ss->gsm;
+        out->lte = &ss->lte.base;
+        out->wcdma = &ss->wcdma;
+        out->tdscdma = &ss->tdscdma;
+        out->nr = &ss->nr.base;
+        return TRUE;
+    }
+    return FALSE;
+}
+
+static
 void
 binder_netreg_api_read_signal_strength_hidl(
     BinderNetReg* self,
@@ -1859,6 +1881,8 @@ binder_netreg_api_read_signal_strength_resp_hidl(
         read_signal_strength = binder_netreg_read_signal_strength_hidl_1_2;
     } else if (resp == RADIO_RESP_GET_SIGNAL_STRENGTH_1_4) {
         read_signal_strength = binder_netreg_read_signal_strength_hidl_1_4;
+    } else if (resp == RADIO_RESP_GET_SIGNAL_STRENGTH_1_6) {
+        read_signal_strength = binder_netreg_read_signal_strength_hidl_1_6;
     } else {
         ofono_error("Unexpected getSignalStrength response %d", resp);
         return FALSE;
@@ -1893,6 +1917,8 @@ binder_netreg_api_read_signal_strength_ind_hidl(
         read_signal_strength = binder_netreg_read_signal_strength_hidl_1_2;
     } else if (ind == RADIO_IND_CURRENT_SIGNAL_STRENGTH_1_4) {
         read_signal_strength = binder_netreg_read_signal_strength_hidl_1_4;
+    } else if (ind == RADIO_IND_CURRENT_SIGNAL_STRENGTH_1_6) {
+        read_signal_strength = binder_netreg_read_signal_strength_hidl_1_6;
     } else {
         ofono_error("Unexpected currentSignalStrength indication %d", ind);
         return FALSE;
@@ -2128,6 +2154,38 @@ binder_netreg_api_read_network_scan_hidl(
 
             for (i = 0; i < result->networkInfos.count; i++) {
                 const RadioCellInfo_1_5* cell = cells + i;
+
+                switch ((RADIO_CELL_INFO_TYPE_1_5)cell->cellInfoType) {
+                case RADIO_CELL_INFO_1_5_GSM:
+                    binder_netreg_scan_op_convert_gsm(cell->registered,
+                        &cell->info.gsm.cellIdentityGsm.base,
+                        binder_oplist_append_op(oplist));
+                    break;
+                case RADIO_CELL_INFO_1_5_WCDMA:
+                    binder_netreg_scan_op_convert_wcdma(cell->registered,
+                        &cell->info.wcdma.cellIdentityWcdma.base,
+                        binder_oplist_append_op(oplist));
+                    break;
+                case RADIO_CELL_INFO_1_5_LTE:
+                    binder_netreg_scan_op_convert_lte(cell->registered,
+                        &cell->info.lte.cellIdentityLte.base,
+                        binder_oplist_append_op(oplist));
+                    break;
+                case RADIO_CELL_INFO_1_5_NR:
+                    binder_netreg_scan_op_convert_nr(cell->registered,
+                        &cell->info.nr.cellIdentityNr.base,
+                        binder_oplist_append_op(oplist));
+                    break;
+                case RADIO_CELL_INFO_1_5_CDMA:
+                case RADIO_CELL_INFO_1_5_TD_SCDMA:
+                    break;
+                }
+            }
+        } else if (code == RADIO_IND_NETWORK_SCAN_RESULT_1_6) {
+            const RadioCellInfo_1_6* cells = result->networkInfos.data.ptr;
+
+            for (i = 0; i < result->networkInfos.count; i++) {
+                const RadioCellInfo_1_6* cell = cells + i;
 
                 switch ((RADIO_CELL_INFO_TYPE_1_5)cell->cellInfoType) {
                 case RADIO_CELL_INFO_1_5_GSM:
@@ -2416,6 +2474,33 @@ static const BinderNetRegApi binder_netreg_api_hidl_1_5 = {
     RADIO_IND_NITZ_TIME_RECEIVED,
     RADIO_IND_CURRENT_SIGNAL_STRENGTH_1_4,
     RADIO_IND_NETWORK_SCAN_RESULT_1_5,
+    RADIO_IND_MODEM_RESET,
+    RADIO_IND_NONE,
+};
+
+/*==========================================================================*
+ * HIDL 1.5 API flavor
+ *==========================================================================*/
+
+static const BinderNetRegApi binder_netreg_api_hidl_1_6 = {
+    "hidl_1_6",
+    binder_read_string_arg_hidl,
+    binder_netreg_api_read_oplist_hidl,
+    binder_netreg_api_read_signal_strength_resp_hidl,
+    binder_netreg_api_read_signal_strength_ind_hidl,
+    binder_netreg_api_read_network_scan_hidl,
+    binder_netreg_api_write_start_network_scan_args_hidl_1_5,
+    binder_netreg_api_write_set_network_selection_mode_manual_args_hidl_1_5,
+    RADIO_REQ_START_NETWORK_SCAN_1_4,
+    RADIO_REQ_STOP_NETWORK_SCAN,
+    RADIO_REQ_GET_AVAILABLE_NETWORKS,
+    RADIO_REQ_GET_SIGNAL_STRENGTH_1_6,
+    RADIO_REQ_GET_NETWORK_SELECTION_MODE,
+    RADIO_REQ_SET_NETWORK_SELECTION_MODE_AUTOMATIC,
+    RADIO_REQ_SET_NETWORK_SELECTION_MODE_MANUAL_1_5,
+    RADIO_IND_NITZ_TIME_RECEIVED,
+    RADIO_IND_CURRENT_SIGNAL_STRENGTH_1_6,
+    RADIO_IND_NETWORK_SCAN_RESULT_1_6,
     RADIO_IND_MODEM_RESET,
     RADIO_IND_NONE,
 };
