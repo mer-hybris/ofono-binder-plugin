@@ -1187,7 +1187,8 @@ binder_plugin_service_list_proc(
     plugin->list_call_id = 0;
 
     /* IRadioConfig 1.0 is of no use to us */
-    if (gutil_strv_contains(services, RADIO_CONFIG_1_2_FQNAME) ||
+    if (gutil_strv_contains(services, RADIO_CONFIG_1_3_FQNAME) ||
+            gutil_strv_contains(services, RADIO_CONFIG_1_2_FQNAME) ||
             gutil_strv_contains(services, RADIO_CONFIG_1_1_FQNAME) ||
             gutil_strv_contains(services, RADIO_CONFIG_AIDL_FQNAME)) {
         /* If it's there then we definitely need it */
