@@ -358,7 +358,8 @@ binder_plugin_slot_check_radio_client(
 static
 void
 binder_plugin_check_config_client(
-    BinderPlugin* plugin);
+    BinderPlugin* plugin,
+    RADIO_CONFIG_INTERFACE iface);
 
 static
 void
@@ -1183,16 +1184,27 @@ binder_plugin_service_list_proc(
     void* data)
 {
     BinderPlugin* plugin = data;
+    RADIO_CONFIG_INTERFACE iface = RADIO_CONFIG_INTERFACE_NONE;
 
     plugin->list_call_id = 0;
 
     /* IRadioConfig 1.0 is of no use to us */
-    if (gutil_strv_contains(services, RADIO_CONFIG_1_2_FQNAME) ||
+    if (gutil_strv_contains(services, RADIO_CONFIG_1_3_FQNAME) ||
+            gutil_strv_contains(services, RADIO_CONFIG_1_2_FQNAME) ||
             gutil_strv_contains(services, RADIO_CONFIG_1_1_FQNAME) ||
             gutil_strv_contains(services, RADIO_CONFIG_AIDL_FQNAME)) {
         /* If it's there then we definitely need it */
         plugin->flags |= (BINDER_PLUGIN_HAVE_CONFIG_SERVICE |
                           BINDER_PLUGIN_NEED_CONFIG_SERVICE);
+        if (gutil_strv_contains(services, RADIO_CONFIG_1_3_FQNAME)) {
+            iface = RADIO_CONFIG_INTERFACE_1_3;
+        } else if (gutil_strv_contains(services, RADIO_CONFIG_1_2_FQNAME)) {
+            iface = RADIO_CONFIG_INTERFACE_1_2;
+        } else if (gutil_strv_contains(services, RADIO_CONFIG_1_1_FQNAME)) {
+            iface = RADIO_CONFIG_INTERFACE_1_1;
+        } else if (gutil_strv_contains(services, RADIO_CONFIG_AIDL_FQNAME)) {
+            iface = RADIO_CONFIG_AIDL_INTERFACE_1;
+        }
     } else {
         plugin->flags &= ~BINDER_PLUGIN_HAVE_CONFIG_SERVICE;
         if (gutil_strv_contains(services, RADIO_CONFIG_1_0_FQNAME)) {
@@ -1204,7 +1216,7 @@ binder_plugin_service_list_proc(
         }
     }
 
-    binder_plugin_check_config_client(plugin);
+    binder_plugin_check_config_client(plugin, iface);
 
     /* Return FALSE to free the service list */
     return FALSE;
@@ -1302,14 +1314,14 @@ binder_plugin_drop_radio_config(
 static
 void
 binder_plugin_check_config_client(
-    BinderPlugin* plugin)
+    BinderPlugin* plugin,
+    RADIO_CONFIG_INTERFACE iface)
 {
     if (plugin->flags & BINDER_PLUGIN_HAVE_CONFIG_SERVICE) {
         if (!plugin->radio_config) {
             plugin->radio_config =
                 radio_config_new_with_version_and_interface_type
-                    (RADIO_CONFIG_INTERFACE_1_1,
-                     plugin->settings.interface_type);
+                    (iface, plugin->settings.interface_type);
             binder_radio_config_trace_update(plugin);
             binder_radio_config_dump_update(plugin);
             if (plugin->data_manager) {
