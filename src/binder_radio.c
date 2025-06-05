@@ -124,6 +124,13 @@ static const BinderRadioApi binder_radio_api_hidl_1_5 = {
     RADIO_RESP_SET_RADIO_POWER_1_5,
     binder_radio_prepare_set_power_req_hidl_1_5
 };
+static const BinderRadioApi binder_radio_api_hidl_1_6 = {
+    "hidl_1_6",
+    RADIO_IND_RADIO_STATE_CHANGED,
+    RADIO_REQ_SET_RADIO_POWER_1_6,
+    RADIO_RESP_SET_RADIO_POWER_1_6,
+    binder_radio_prepare_set_power_req_hidl_1_5
+};
 static const BinderRadioApi binder_radio_api_aidl = {
     "aidl",
     RADIO_MODEM_IND_RADIO_STATE_CHANGED,
@@ -364,6 +371,7 @@ binder_radio_new(
     const RADIO_AIDL_INTERFACE aidl = radio_client_aidl_interface(client);
     const BinderRadioApi* api =
         (aidl == RADIO_MODEM_INTERFACE) ? &binder_radio_api_aidl :
+        (hidl >= RADIO_INTERFACE_1_6) ? &binder_radio_api_hidl_1_6 :
         (hidl >= RADIO_INTERFACE_1_5) ? &binder_radio_api_hidl_1_5 :
         &binder_radio_api_hidl;
 
