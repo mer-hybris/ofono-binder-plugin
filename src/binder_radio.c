@@ -295,6 +295,8 @@ binder_radio_state_changed(
  * setRadioPower(int32 serial, bool on)
  * setRadioPower_1_5(int32 serial, bool on, bool forEmergencyCall,
  *     bool preferredForEmergencyCall)
+ * setRadioPower_1_6(int32 serial, bool on, bool forEmergencyCall,
+ *     bool preferredForEmergencyCall)
  *
  * AIDL:
  * setRadioPower(int32 serial, bool on, bool forEmergencyCall,
@@ -323,6 +325,9 @@ binder_radio_prepare_set_power_req_aidl(
 #define binder_radio_prepare_set_power_req_hidl_1_5 \
     binder_radio_prepare_set_power_req_aidl
 
+#define binder_radio_prepare_set_power_req_hidl_1_6 \
+    binder_radio_prepare_set_power_req_aidl
+
 static const BinderRadioApi binder_radio_api_hidl = {
     "hidl",
     RADIO_IND_RADIO_STATE_CHANGED,
@@ -335,6 +340,13 @@ static const BinderRadioApi binder_radio_api_hidl_1_5 = {
     RADIO_IND_RADIO_STATE_CHANGED,
     RADIO_REQ_SET_RADIO_POWER_1_5,
     binder_radio_prepare_set_power_req_hidl_1_5
+};
+
+static const BinderRadioApi binder_radio_api_hidl_1_6 = {
+    "hidl_1_6",
+    RADIO_IND_RADIO_STATE_CHANGED,
+    RADIO_REQ_SET_RADIO_POWER_1_6,
+    binder_radio_prepare_set_power_req_hidl_1_6
 };
 
 static const BinderRadioApi binder_radio_api_aidl = {
@@ -358,6 +370,7 @@ binder_radio_new(
     const RADIO_AIDL_INTERFACE aidl = radio_client_aidl_interface(client);
     const BinderRadioApi* api =
         (aidl == RADIO_MODEM_INTERFACE) ? &binder_radio_api_aidl :
+        (hidl >= RADIO_INTERFACE_1_6) ? &binder_radio_api_hidl_1_6 :
         (hidl >= RADIO_INTERFACE_1_5) ? &binder_radio_api_hidl_1_5 :
         &binder_radio_api_hidl;
 

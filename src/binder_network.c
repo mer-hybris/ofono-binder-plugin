@@ -1602,6 +1602,27 @@ binder_network_api_read_current_physical_channel_configs_hidl(
             }
             return TRUE;
         }
+    } else if (code == RADIO_IND_CURRENT_PHYSICAL_CHANNEL_CONFIGS_1_6) {
+        gsize count;
+        const RadioPhysicalChannelConfig_1_6* configs =
+            gbinder_reader_read_hidl_type_vec(reader,
+                RadioPhysicalChannelConfig_1_6, &count);
+
+        /* An empty configs list indicates that the radio is idle */
+        if (configs && count > 0) {
+            guint i;
+
+            *nr_connected = FALSE;
+            for (i = 0; i < count; i++) {
+                if (configs[i].rat == RADIO_TECH_NR &&
+                    configs[i].connectionStatus ==
+                    RADIO_CELL_CONNECTION_SECONDARY_SERVING) {
+                    *nr_connected = TRUE;
+                    break;
+                }
+            }
+            return TRUE;
+        }
     } else {
         ofono_warn("Unexpected current physical channel configs code %d", code);
     }
@@ -1955,6 +1976,18 @@ binder_network_api_read_voice_registration_state_hidl(
             *reason_for_denial = result->reasonDataDenied;
             return TRUE;
         }
+    } else if (resp == RADIO_RESP_GET_VOICE_REGISTRATION_STATE_1_6) {
+        const RadioRegStateResult_1_6* result =
+            gbinder_reader_read_hidl_struct(reader,
+                RadioRegStateResult_1_6);
+
+        if (result) {
+            binder_network_location_1_5(&result->cellIdentity, &l);
+            binder_network_set_registration_state(state, result->regState,
+                result->rat, l.lac, l.ci);
+            *reason_for_denial = result->reasonDataDenied;
+            return TRUE;
+        }
     } else {
         ofono_error("Unexpected getVoiceRegistrationState response %d", resp);
     }
@@ -2033,6 +2066,36 @@ binder_network_api_read_data_registration_state_hidl(
         const RadioRegStateResult_1_5* result =
             gbinder_reader_read_hidl_struct(reader,
                 RadioRegStateResult_1_5);
+
+        if (result) {
+            RADIO_TECH rat = result->rat;
+
+            binder_network_location_1_5(&result->cellIdentity, &l);
+            binder_network_set_registration_state(state, result->regState,
+                rat, l.lac, l.ci);
+
+            *nr_connected = FALSE;
+            if (result->accessTechnologySpecificInfoType ==
+                RADIO_REG_ACCESS_TECHNOLOGY_SPECIFIC_INFO_EUTRAN) {
+                const RadioDataRegNrIndicators* nrIndicators = &result->
+                    accessTechnologySpecificInfo.eutranInfo.nrIndicators;
+
+                if ((rat == RADIO_TECH_LTE || rat == RADIO_TECH_LTE_CA) &&
+                    nrIndicators->isEndcAvailable &&
+                    !nrIndicators->isDcNrRestricted &&
+                    nrIndicators->isNrAvailable) {
+                    DBG_(self, "NSA 5G detected");
+                    *nr_connected = TRUE;
+                }
+            }
+            *reason_for_denial = result->reasonDataDenied;
+            *max_data_calls = MAX_DATA_CALLS;
+            return TRUE;
+        }
+    } else if (resp == RADIO_RESP_GET_DATA_REGISTRATION_STATE_1_6) {
+        const RadioRegStateResult_1_6* result =
+            gbinder_reader_read_hidl_struct(reader,
+                RadioRegStateResult_1_6);
 
         if (result) {
             RADIO_TECH rat = result->rat;
@@ -2153,6 +2216,10 @@ binder_network_api_write_set_preferred_network_bitmap_args(
     /*
      * 1.4/IRadio.hal:
      * oneway setPreferredNetworkTypeBitmap(int32_t serial,
+     *     bitfield<RadioAccessFamily> networkTypeBitmap);
+     *
+     * 1.6/IRadio.hal:
+     * oneway setAllowedNetworkTypeBitmap(int32_t serial,
      *     bitfield<RadioAccessFamily> networkTypeBitmap);
      *
      * IRadioNetwork.aidl:
@@ -2342,6 +2409,33 @@ static const BinderNetworkApi binder_network_api_hidl_1_5 = {
     RADIO_REQ_GET_VOICE_REGISTRATION_STATE,
     binder_network_api_read_voice_registration_state_hidl,
     RADIO_REQ_GET_DATA_REGISTRATION_STATE_1_5,
+    binder_network_api_read_data_registration_state_hidl,
+    RADIO_REQ_SET_DATA_PROFILE_1_5,
+    binder_network_api_write_set_data_profile_args_hidl_1_5,
+    RADIO_REQ_SET_INITIAL_ATTACH_APN_1_5,
+    binder_network_api_write_set_initial_attach_apn_args_hidl_1_5
+};
+
+/*==========================================================================*
+ * HIDL 1.5 API flavor
+ *==========================================================================*/
+
+static const BinderNetworkApi binder_network_api_hidl_1_6 = {
+    "hidl_1_6",
+    binder_read_string_arg_hidl,
+    RADIO_IND_NETWORK_STATE_CHANGED,
+    RADIO_IND_CURRENT_PHYSICAL_CHANNEL_CONFIGS_1_6,
+    binder_network_api_read_current_physical_channel_configs_hidl,
+    RADIO_IND_MODEM_RESET,
+    RADIO_IND_NONE,
+    RADIO_REQ_GET_OPERATOR,
+    RADIO_REQ_GET_ALLOWED_NETWORK_TYPES_BITMAP,
+    binder_network_api_query_preferred_network_type_bitmap_cb,
+    RADIO_REQ_SET_ALLOWED_NETWORK_TYPES_BITMAP,
+    binder_network_api_write_set_preferred_network_bitmap_args,
+    RADIO_REQ_GET_VOICE_REGISTRATION_STATE_1_6,
+    binder_network_api_read_voice_registration_state_hidl,
+    RADIO_REQ_GET_DATA_REGISTRATION_STATE_1_6,
     binder_network_api_read_data_registration_state_hidl,
     RADIO_REQ_SET_DATA_PROFILE_1_5,
     binder_network_api_write_set_data_profile_args_hidl_1_5,
@@ -2860,6 +2954,7 @@ binder_network_new(
     const BinderNetworkApi* api =
         (radio_client_aidl_interface(clients->network_client) ==
          RADIO_NETWORK_INTERFACE) ? &binder_network_api_aidl :
+        (hidl >= RADIO_INTERFACE_1_6) ? &binder_network_api_hidl_1_6 :
         (hidl >= RADIO_INTERFACE_1_5) ? &binder_network_api_hidl_1_5 :
         (hidl >= RADIO_INTERFACE_1_4) ? &binder_network_api_hidl_1_4 :
         &binder_network_api_hidl;

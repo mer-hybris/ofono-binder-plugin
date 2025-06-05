@@ -43,6 +43,7 @@ enum binder_cell_info_event {
     CELL_INFO_EVENT_1_2,
     CELL_INFO_EVENT_1_4,
     CELL_INFO_EVENT_1_5,
+    CELL_INFO_EVENT_1_6,
     CELL_INFO_EVENT_COUNT
 };
 
@@ -947,6 +948,58 @@ binder_cell_read_cell_info_list_1_5(
 
 static
 GPtrArray*
+binder_cell_read_cell_info_list_1_6(
+    BinderCellInfo* self,
+    GBinderReader* reader)
+{
+    gsize count;
+    const RadioCellInfo_1_6* cells = gbinder_reader_read_hidl_type_vec(reader,
+        RadioCellInfo_1_6, &count);
+
+    if (cells) {
+        gsize i;
+        GPtrArray* l = g_ptr_array_sized_new(count + 1);
+
+        for (i = 0; i < count; i++) {
+            const RadioCellInfo_1_6* cell = cells + i;
+            const gboolean reg = cell->registered;
+
+            switch ((RADIO_CELL_INFO_TYPE_1_5)cell->cellInfoType) {
+            case RADIO_CELL_INFO_1_5_GSM:
+                g_ptr_array_add(l, binder_cell_info_new_cell_gsm(reg,
+                    &cell->info.gsm.cellIdentityGsm.base.base,
+                    &cell->info.gsm.signalStrengthGsm));
+                continue;
+            case RADIO_CELL_INFO_1_5_LTE:
+                g_ptr_array_add(l, binder_cell_info_new_cell_lte(reg,
+                    &cell->info.lte.cellIdentityLte.base.base,
+                    &cell->info.lte.signalStrengthLte.base));
+                continue;
+            case RADIO_CELL_INFO_1_5_WCDMA:
+                g_ptr_array_add(l, binder_cell_info_new_cell_wcdma(reg,
+                    &cell->info.wcdma.cellIdentityWcdma.base.base,
+                    &cell->info.wcdma.signalStrengthWcdma.base));
+                continue;
+            case RADIO_CELL_INFO_1_5_NR:
+                g_ptr_array_add(l, binder_cell_info_new_cell_nr(reg,
+                    &cell->info.nr.cellIdentityNr.base,
+                    &cell->info.nr.signalStrengthNr.base));
+                continue;
+            case RADIO_CELL_INFO_1_5_TD_SCDMA:
+            case RADIO_CELL_INFO_1_5_CDMA:
+                break;
+            }
+            DBG("unsupported cell type %d", cell->cellInfoType);
+        }
+        return l;
+    } else {
+        ofono_warn("Failed to parse cellInfoList_1_5 payload");
+        return NULL;
+    }
+}
+
+static
+GPtrArray*
 binder_cell_info_api_read_cell_info_list_ind_hidl(
     BinderCellInfo* self,
     RADIO_IND ind,
@@ -964,6 +1017,9 @@ binder_cell_info_api_read_cell_info_list_ind_hidl(
      *
      * 1.5/IRadioIndication.hal:
      * oneway cellInfoList_1_5(RadioIndicationType type, vec<CellInfo> records);
+     *
+     * 1.6/IRadioIndication.hal:
+     * oneway cellInfoList_1_6(RadioIndicationType type, vec<CellInfo> records);
      */
     switch (ind) {
     case RADIO_IND_CELL_INFO_LIST:
@@ -974,6 +1030,8 @@ binder_cell_info_api_read_cell_info_list_ind_hidl(
         return binder_cell_read_cell_info_list_1_4(self, reader);
     case RADIO_IND_CELL_INFO_LIST_1_5:
         return binder_cell_read_cell_info_list_1_5(self, reader);
+    case RADIO_IND_CELL_INFO_LIST_1_6:
+        return binder_cell_read_cell_info_list_1_6(self, reader);
     default:
         ofono_warn("Unexpected getCellInfoList ind %d", ind);
         return NULL;
@@ -1003,6 +1061,10 @@ binder_cell_info_api_read_cell_info_list_resp_hidl(
      * 1.5/IRadioResponse.hal:
      * oneway getCellInfoListResponse_1_5(RadioResponseInfo info,
      *   vec<CellInfo> cellInfo);
+     *
+     * 1.6/IRadioResponse.hal:
+     * oneway getCellInfoListResponse_1_6(RadioResponseInfo info,
+     *   vec<CellInfo> cellInfo);
      */
     switch (resp) {
     case RADIO_RESP_GET_CELL_INFO_LIST:
@@ -1013,6 +1075,8 @@ binder_cell_info_api_read_cell_info_list_resp_hidl(
         return binder_cell_read_cell_info_list_1_4(self, reader);
     case RADIO_RESP_GET_CELL_INFO_LIST_1_5:
         return binder_cell_read_cell_info_list_1_5(self, reader);
+    case RADIO_RESP_GET_CELL_INFO_LIST_1_6:
+        return binder_cell_read_cell_info_list_1_6(self, reader);
     default:
         ofono_warn("Unexpected getCellInfoList response %d", resp);
         return NULL;
@@ -1025,7 +1089,8 @@ static const BinderCellInfoApi binder_cell_info_api_hidl = {
         RADIO_IND_CELL_INFO_LIST,
         RADIO_IND_CELL_INFO_LIST_1_2,
         RADIO_IND_CELL_INFO_LIST_1_4,
-        RADIO_IND_CELL_INFO_LIST_1_5
+        RADIO_IND_CELL_INFO_LIST_1_5,
+        RADIO_IND_CELL_INFO_LIST_1_6
     },
     binder_cell_info_api_read_cell_info_list_ind_hidl,
     RADIO_REQ_SET_CELL_INFO_LIST_RATE,

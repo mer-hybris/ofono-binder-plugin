@@ -138,6 +138,7 @@ struct binder_sms_api {
 };
 
 static const BinderSmsApi binder_sms_api_hidl;
+static const BinderSmsApi binder_sms_api_hidl_1_6;
 static const BinderSmsApi binder_sms_api_aidl;
 
 static
@@ -954,8 +955,10 @@ binder_sms_probe(
     BinderModem* modem = binder_modem_get_data(data);
     BinderSms* self = g_new0(BinderSms, 1);
     RadioClient* messaging_client = modem->clients.messaging_client;
+    RADIO_INTERFACE hidl = radio_client_interface(messaging_client);
     const BinderSmsApi* api = radio_client_aidl_interface(messaging_client) ==
         RADIO_MESSAGING_INTERFACE ? &binder_sms_api_aidl :
+        (hidl >= RADIO_INTERFACE_1_6) ? &binder_sms_api_hidl_1_6 :
         &binder_sms_api_hidl;
 
     self->log_prefix = binder_dup_prefix(modem->log_prefix);
@@ -1069,6 +1072,30 @@ static const BinderSmsApi binder_sms_api_hidl = {
     RADIO_REQ_SET_SMSC_ADDRESS,
     RADIO_REQ_SEND_SMS,
     RADIO_REQ_SEND_SMS_EXPECT_MORE,
+    binder_sms_api_write_send_sms_args_hidl,
+    binder_sms_api_read_send_sms_resp_hidl,
+    RADIO_REQ_ACKNOWLEDGE_LAST_INCOMING_GSM_SMS,
+    RADIO_REQ_DELETE_SMS_ON_SIM,
+    RADIO_IND_NEW_SMS,
+    RADIO_IND_NEW_SMS_STATUS_REPORT,
+    RADIO_IND_NEW_SMS_ON_SIM
+};
+
+
+/*==========================================================================*
+ * HIDL 1.6 API flavor
+ *==========================================================================*/
+
+static const BinderSmsApi binder_sms_api_hidl_1_6 = {
+    "hidl_1_6",
+    binder_read_string_arg_hidl,
+    binder_write_string_arg_hidl,
+    binder_take_string_arg_hidl,
+    binder_read_byte_array_hidl,
+    RADIO_REQ_GET_SMSC_ADDRESS,
+    RADIO_REQ_SET_SMSC_ADDRESS,
+    RADIO_REQ_SEND_SMS_1_6,
+    RADIO_REQ_SEND_SMS_EXPECT_MORE_1_6,
     binder_sms_api_write_send_sms_args_hidl,
     binder_sms_api_read_send_sms_resp_hidl,
     RADIO_REQ_ACKNOWLEDGE_LAST_INCOMING_GSM_SMS,

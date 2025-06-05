@@ -169,6 +169,7 @@ struct binder_voicecall_api {
 };
 
 static const BinderVoiceCallApi binder_voicecall_api_hidl;
+static const BinderVoiceCallApi binder_voicecall_api_hidl_1_6;
 static const BinderVoiceCallApi binder_voicecall_api_aidl;
 
 static
@@ -731,6 +732,10 @@ binder_voicecall_clcc_poll_cb(
          *
          * 1.2/IRadioResponse.hal:
          * oneway getCurrentCallsResponse_1_2(RadioResponseInfo info,
+         *     vec<Call> calls);
+         *
+         * 1.6/IRadioResponse.hal:
+         * oneway getCurrentCallsResponse_1_6(RadioResponseInfo info,
          *     vec<Call> calls);
          *
          * IRadioVoiceResponse.aidl:
@@ -2140,8 +2145,10 @@ binder_voicecall_probe(
     BinderVoiceCall* self = g_new0(BinderVoiceCall, 1);
     const BinderSlotConfig* cfg = &modem->config;
     RadioClient* voice_client = modem->clients.voice_client;
+    RADIO_INTERFACE hidl = radio_client_interface(voice_client);
     const BinderVoiceCallApi* api =
         radio_client_aidl_interface(voice_client) == RADIO_VOICE_INTERFACE ?
+        (hidl >= RADIO_INTERFACE_1_6) ? &binder_voicecall_api_hidl_1_6 :
         &binder_voicecall_api_aidl : &binder_voicecall_api_hidl;
 
     self->log_prefix = binder_dup_prefix(modem->log_prefix);
@@ -2364,6 +2371,16 @@ binder_voicecall_api_read_call_list_hidl(
                     binder_voicecall_info_new_hidl(&calls[i].base));
             }
         }
+    } else if (resp == RADIO_RESP_GET_CURRENT_CALLS_1_6) {
+        const RadioCall_1_6* calls = gbinder_reader_read_hidl_type_vec(reader,
+            RadioCall_1_6, &count);
+
+        if (calls) {
+            for (i = 0; i < count; i++) {
+                list = g_slist_append(list,
+                    binder_voicecall_info_new_hidl(&calls[i].base.base));
+            }
+        }
     } else {
         ofono_error("Unexpected getCurrentCalls response %d", resp);
     }
@@ -2423,6 +2440,39 @@ static const BinderVoiceCallApi binder_voicecall_api_hidl = {
     RADIO_REQ_GET_LAST_CALL_FAIL_CAUSE,
     binder_voicecall_api_read_last_call_fail_cause_hidl,
     RADIO_REQ_GET_CURRENT_CALLS,
+    binder_voicecall_api_read_call_list_hidl,
+    binder_voicecall_api_read_ecclist_hidl
+};
+
+/*==========================================================================*
+ * HIDL 1.6 API flavor
+ *==========================================================================*/
+
+static const BinderVoiceCallApi binder_voicecall_api_hidl_1_6 = {
+    "hidl_1_6",
+    binder_write_string_arg_hidl,
+    RADIO_IND_CALL_STATE_CHANGED,
+    RADIO_IND_INDICATE_RINGBACK_TONE,
+    RADIO_IND_CURRENT_EMERGENCY_NUMBER_LIST,
+    RADIO_IND_SUPP_SVC_NOTIFY,
+    RADIO_IND_NONE,
+    binder_voicecall_api_handle_supp_svc_notify_hidl,
+    RADIO_REQ_SET_SUPP_SERVICE_NOTIFICATIONS,
+    RADIO_REQ_DIAL,
+    binder_voicecall_api_write_dial_args_hidl,
+    RADIO_REQ_ACCEPT_CALL,
+    RADIO_REQ_REJECT_CALL,
+    RADIO_REQ_HANGUP,
+    RADIO_REQ_CONFERENCE,
+    RADIO_REQ_EXPLICIT_CALL_TRANSFER,
+    RADIO_REQ_SEPARATE_CONNECTION,
+    RADIO_REQ_SWITCH_WAITING_OR_HOLDING_AND_ACTIVE,
+    RADIO_REQ_HANGUP_FOREGROUND_RESUME_BACKGROUND,
+    RADIO_REQ_HANGUP_WAITING_OR_BACKGROUND,
+    RADIO_REQ_SEND_DTMF,
+    RADIO_REQ_GET_LAST_CALL_FAIL_CAUSE,
+    binder_voicecall_api_read_last_call_fail_cause_hidl,
+    RADIO_REQ_GET_CURRENT_CALLS_1_6,
     binder_voicecall_api_read_call_list_hidl,
     binder_voicecall_api_read_ecclist_hidl
 };
