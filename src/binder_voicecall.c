@@ -769,6 +769,19 @@ binder_voicecall_clcc_poll_cb(
                                 binder_voicecall_info_compare);
                         }
                     }
+                } else if (resp == RADIO_RESP_GET_CURRENT_CALLS_1_6) {
+                    const RadioCall_1_6* calls =
+                        gbinder_reader_read_hidl_type_vec(&reader,
+                            RadioCall_1_6, &count);
+
+                    if (calls) {
+                        /* Build sorted list */
+                        for (i = 0; i < count; i++) {
+                            list = g_slist_insert_sorted(list,
+                                binder_voicecall_info_new(&calls[i].base.base),
+                                binder_voicecall_info_compare);
+                        }
+                    }
                 } else {
                     ofono_error("Unexpected getCurrentCalls response %d", resp);
                 }
@@ -829,9 +842,16 @@ binder_voicecall_clcc_poll(
 {
     if (!self->clcc_poll_req) {
         /* getCurrentCalls(int32 serial); */
-        guint32 code = self->interface_aidl == RADIO_VOICE_INTERFACE ?
-            RADIO_VOICE_REQ_GET_CURRENT_CALLS :
-            RADIO_REQ_GET_CURRENT_CALLS;
+        guint32 code;
+        if (self->interface_aidl == RADIO_VOICE_INTERFACE) {
+            code = RADIO_VOICE_REQ_GET_CURRENT_CALLS;
+        } else {
+            if (radio_client_interface(self->g->client) >= RADIO_INTERFACE_1_6) {
+                code = RADIO_REQ_GET_CURRENT_CALLS_1_6;
+            } else {
+                code = RADIO_REQ_GET_CURRENT_CALLS;
+            }
+        }
         RadioRequest* req = radio_request_new2(self->g,
             code, NULL,
             binder_voicecall_clcc_poll_cb, NULL, self);

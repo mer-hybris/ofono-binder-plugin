@@ -93,6 +93,7 @@
 #define BINDER_SLOT_RADIO_INTERFACE_1_3 "1.3"
 #define BINDER_SLOT_RADIO_INTERFACE_1_4 "1.4"
 #define BINDER_SLOT_RADIO_INTERFACE_1_5 "1.5"
+#define BINDER_SLOT_RADIO_INTERFACE_1_6 "1.6"
 
 static const char* const binder_radio_ifaces[] = {
     RADIO_1_0, /* android.hardware.radio@1.0::IRadio */
@@ -100,7 +101,8 @@ static const char* const binder_radio_ifaces[] = {
     RADIO_1_2, /* android.hardware.radio@1.2::IRadio */
     RADIO_1_3, /* android.hardware.radio@1.3::IRadio */
     RADIO_1_4, /* android.hardware.radio@1.4::IRadio */
-    RADIO_1_5  /* android.hardware.radio@1.5::IRadio */
+    RADIO_1_5, /* android.hardware.radio@1.5::IRadio */
+    RADIO_1_6  /* android.hardware.radio@1.6::IRadio */
 };
 
 /*
@@ -1515,6 +1517,7 @@ binder_plugin_radio_interface_name(
     case RADIO_INTERFACE_1_3: return BINDER_SLOT_RADIO_INTERFACE_1_3;
     case RADIO_INTERFACE_1_4: return BINDER_SLOT_RADIO_INTERFACE_1_4;
     case RADIO_INTERFACE_1_5: return BINDER_SLOT_RADIO_INTERFACE_1_5;
+    case RADIO_INTERFACE_1_6: return BINDER_SLOT_RADIO_INTERFACE_1_6;
     case RADIO_INTERFACE_NONE:
     case RADIO_INTERFACE_COUNT:
         break;

@@ -51,9 +51,11 @@ enum binder_netreg_radio_ind {
     IND_SIGNAL_STRENGTH,
     IND_SIGNAL_STRENGTH_1_2,
     IND_SIGNAL_STRENGTH_1_4,
+    IND_SIGNAL_STRENGTH_1_6,
     IND_NETWORK_SCAN_RESULT_1_2,
     IND_NETWORK_SCAN_RESULT_1_4,
     IND_NETWORK_SCAN_RESULT_1_5,
+    IND_NETWORK_SCAN_RESULT_1_6,
     IND_MODEM_RESET,
     IND_COUNT
 };
@@ -1346,6 +1348,38 @@ binder_netreg_scan_result_notify(
                             break;
                         }
                     }
+                } else if (code == RADIO_IND_NETWORK_SCAN_RESULT_1_6) {
+                    const RadioCellInfo_1_6* cells = result->networkInfos.data.ptr;
+
+                    for (i = 0; i < n; i++) {
+                        const RadioCellInfo_1_6* cell = cells + i;
+
+                        switch ((RADIO_CELL_INFO_TYPE_1_5)cell->cellInfoType) {
+                        case RADIO_CELL_INFO_1_5_GSM:
+                            binder_netreg_scan_op_convert_gsm(cell->registered,
+                                &cell->info.gsm.cellIdentityGsm.base,
+                                binder_netreg_scan_op_append(scan));
+                            break;
+                        case RADIO_CELL_INFO_1_5_WCDMA:
+                            binder_netreg_scan_op_convert_wcdma(cell->registered,
+                                &cell->info.wcdma.cellIdentityWcdma.base,
+                                binder_netreg_scan_op_append(scan));
+                            break;
+                        case RADIO_CELL_INFO_1_5_LTE:
+                            binder_netreg_scan_op_convert_lte(cell->registered,
+                                &cell->info.lte.cellIdentityLte.base,
+                                binder_netreg_scan_op_append(scan));
+                            break;
+                        case RADIO_CELL_INFO_1_5_NR:
+                            binder_netreg_scan_op_convert_nr(cell->registered,
+                                &cell->info.nr.cellIdentityNr.base,
+                                binder_netreg_scan_op_append(scan));
+                            break;
+                        case RADIO_CELL_INFO_1_5_CDMA:
+                        case RADIO_CELL_INFO_1_5_TD_SCDMA:
+                            break;
+                        }
+                    }
                 }
                 if (result->status == RADIO_SCAN_COMPLETE) {
                     DBG_(self, "scan completed");
@@ -1847,6 +1881,14 @@ binder_netreg_strength_notify(
                 dbm = binder_netreg_get_signal_strength_dbm
                     (&ss->gsm, &ss->lte, &ss->wcdma, &ss->tdscdma, &ss->nr);
             }
+        } else if (code == RADIO_IND_CURRENT_SIGNAL_STRENGTH_1_6) {
+            const RadioSignalStrength_1_6* ss = gbinder_reader_read_hidl_struct
+                (&reader, RadioSignalStrength_1_6);
+
+            if (ss) {
+                dbm = binder_netreg_get_signal_strength_dbm
+                    (&ss->gsm, &ss->lte.base, &ss->wcdma, &ss->tdscdma, &ss->nr.base);
+            }
         }
     } else {
         dbm = binder_netreg_get_signal_strength_dbm_aidl(&reader);
@@ -2103,6 +2145,10 @@ binder_netreg_register(
             radio_client_add_indication_handler(self->client,
                 RADIO_IND_CURRENT_SIGNAL_STRENGTH_1_4,
                 binder_netreg_strength_notify, self);
+        self->ind_id[IND_SIGNAL_STRENGTH_1_6] =
+            radio_client_add_indication_handler(self->client,
+                RADIO_IND_CURRENT_SIGNAL_STRENGTH_1_6,
+                binder_netreg_strength_notify, self);
 
         /* Incremental scan results */
         self->ind_id[IND_NETWORK_SCAN_RESULT_1_2] =
@@ -2116,6 +2162,10 @@ binder_netreg_register(
         self->ind_id[IND_NETWORK_SCAN_RESULT_1_5] =
             radio_client_add_indication_handler(self->client,
                 RADIO_IND_NETWORK_SCAN_RESULT_1_5,
+                binder_netreg_scan_result_notify, self);
+        self->ind_id[IND_NETWORK_SCAN_RESULT_1_6] =
+            radio_client_add_indication_handler(self->client,
+                RADIO_IND_NETWORK_SCAN_RESULT_1_6,
                 binder_netreg_scan_result_notify, self);
 
         /* Miscellaneous */

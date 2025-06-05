@@ -422,6 +422,8 @@ binder_sms_submit_cb(
         if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
             if (resp == RADIO_RESP_SEND_SMS ||
                 resp == RADIO_RESP_SEND_SMS_EXPECT_MORE ||
+                resp == RADIO_RESP_SEND_SMS_1_6 ||
+                resp == RADIO_RESP_SEND_SMS_EXPECT_MORE_1_6 ||
                 resp == RADIO_RESP_SEND_IMS_SMS) {
                 if (error == RADIO_ERROR_NONE) {
                     const RadioSendSmsResult* res;
@@ -743,12 +745,21 @@ binder_sms_send(
          * sendSMSExpectMore(serial, GsmSmsMessage message);
          */
         GBinderWriter writer;
-        guint32 code = self->interface_aidl == RADIO_MESSAGING_INTERFACE ?
-            ((flags & BINDER_SMS_SEND_FLAG_EXPECT_MORE) ?
+        guint32 code;
+        if (self->interface_aidl == RADIO_MESSAGING_INTERFACE) {
+            code = ((flags & BINDER_SMS_SEND_FLAG_EXPECT_MORE) ?
                 RADIO_MESSAGING_REQ_SEND_SMS_EXPECT_MORE :
-                RADIO_MESSAGING_REQ_SEND_SMS) :
-            ((flags & BINDER_SMS_SEND_FLAG_EXPECT_MORE) ?
-                RADIO_REQ_SEND_SMS_EXPECT_MORE : RADIO_REQ_SEND_SMS);
+                RADIO_MESSAGING_REQ_SEND_SMS);
+        } else {
+            if (radio_client_interface(self->g->client) >= RADIO_INTERFACE_1_6) {
+                code = ((flags & BINDER_SMS_SEND_FLAG_EXPECT_MORE) ?
+                    RADIO_REQ_SEND_SMS_EXPECT_MORE_1_6 :
+                    RADIO_REQ_SEND_SMS_1_6);
+            } else  {
+                code = ((flags & BINDER_SMS_SEND_FLAG_EXPECT_MORE) ?
+                    RADIO_REQ_SEND_SMS_EXPECT_MORE : RADIO_REQ_SEND_SMS);
+            }
+        }
         RadioRequest* req = radio_request_new2(self->g,
             code, &writer,
             binder_sms_submit_cb, binder_sms_submit_cbd_free,
