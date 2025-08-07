@@ -258,6 +258,40 @@ binder_pref_from_raf(
 
 static
 int
+binder_pref_mask_internal(
+    RADIO_PREF_NET_TYPE_INTERNAL pref,
+    int none,
+    int gsm_mask,
+    int umts_mask,
+    int lte_mask,
+    int nr_mask)
+{
+    switch (pref) {
+    case RADIO_PREF_NET_NR_ONLY:
+        return nr_mask;
+
+    case RADIO_PREF_NET_NR_LTE:
+        return lte_mask | nr_mask;
+
+    case RADIO_PREF_NET_NR_LTE_CDMA_EVDO:
+    case RADIO_PREF_NET_NR_LTE_WCDMA:
+    case RADIO_PREF_NET_NR_LTE_TD_SCDMA:
+    case RADIO_PREF_NET_NR_LTE_TD_SCDMA_WCDMA:
+        return umts_mask | lte_mask | nr_mask;
+
+    case RADIO_PREF_NET_NR_LTE_GSM_WCDMA:
+    case RADIO_PREF_NET_NR_LTE_TD_SCDMA_GSM:
+    case RADIO_PREF_NET_NR_LTE_CDMA_EVDO_GSM_WCDMA:
+    case RADIO_PREF_NET_NR_LTE_TD_SCDMA_GSM_WCDMA:
+    case RADIO_PREF_NET_NR_LTE_TD_SCDMA_CDMA_EVDO_GSM_WCDMA:
+        return gsm_mask | umts_mask | lte_mask | nr_mask;
+    }
+
+    return none;
+}
+
+static
+int
 binder_pref_mask(
     RADIO_PREF_NET_TYPE pref,
     int none,
@@ -279,12 +313,6 @@ binder_pref_mask(
     case RADIO_PREF_NET_LTE_CDMA_EVDO:
         return lte_mask;
 
-    case RADIO_PREF_NET_NR_ONLY:
-        return nr_mask;
-
-    case RADIO_PREF_NET_NR_LTE:
-        return lte_mask | nr_mask;
-
     case RADIO_PREF_NET_TD_SCDMA_GSM:
     case RADIO_PREF_NET_GSM_WCDMA:
     case RADIO_PREF_NET_GSM_WCDMA_AUTO:
@@ -305,24 +333,15 @@ binder_pref_mask(
     case RADIO_PREF_NET_TD_SCDMA_LTE_CDMA_EVDO_GSM_WCDMA:
         return gsm_mask | umts_mask | lte_mask;
 
-    case RADIO_PREF_NET_NR_LTE_CDMA_EVDO:
-    case RADIO_PREF_NET_NR_LTE_WCDMA:
-    case RADIO_PREF_NET_NR_LTE_TD_SCDMA:
-    case RADIO_PREF_NET_NR_LTE_TD_SCDMA_WCDMA:
-        return umts_mask | lte_mask | nr_mask;
-
-    case RADIO_PREF_NET_NR_LTE_GSM_WCDMA:
-    case RADIO_PREF_NET_NR_LTE_TD_SCDMA_GSM:
-    case RADIO_PREF_NET_NR_LTE_CDMA_EVDO_GSM_WCDMA:
-    case RADIO_PREF_NET_NR_LTE_TD_SCDMA_GSM_WCDMA:
-    case RADIO_PREF_NET_NR_LTE_TD_SCDMA_CDMA_EVDO_GSM_WCDMA:
-        return gsm_mask | umts_mask | lte_mask | nr_mask;
-
     case RADIO_PREF_NET_CDMA_ONLY:
     case RADIO_PREF_NET_EVDO_ONLY:
     case RADIO_PREF_NET_CDMA_EVDO_AUTO:
     case RADIO_PREF_NET_INVALID:
         return none;
+
+    default:
+        return binder_pref_mask_internal((RADIO_PREF_NET_TYPE_INTERNAL)pref,
+            none, gsm_mask, umts_mask, lte_mask, nr_mask);
     }
 
     DBG("unexpected pref mode %d", pref);
