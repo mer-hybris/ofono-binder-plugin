@@ -1,3 +1,9 @@
+libofonobinderpluginext (1.1.23) unstable; urgency=low
+
+  * Fixed compilation warning
+
+ -- Slava Monich <slava@monich.com>  Mon, 11 Aug 2025 02:21:15 +0300
+
 libofonobinderpluginext (1.1.22) unstable; urgency=low
 
   * Add support for external ringback tone
