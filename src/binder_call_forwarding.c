@@ -135,7 +135,7 @@ binder_call_forwarding_call(
             gbinder_writer_append_string16(&writer, number->number);
         } else {
             gbinder_writer_append_int32(&writer, OFONO_NUMBER_TYPE_UNKNOWN);
-            gbinder_writer_append_string16(&writer, NULL);
+            gbinder_writer_append_string16(&writer, "");
         }
         gbinder_writer_append_int32(&writer, time);
 
@@ -273,29 +273,58 @@ binder_call_forwarding_query_ok(
     const GBinderReader* args)
 {
     struct ofono_error err;
-    const RadioCallForwardInfo* infos;
     struct ofono_call_forwarding_condition* list = NULL;
     GBinderReader reader;
     gsize count = 0;
 
-    /* getCallForwardStatusResponse(RadioResponseInfo, vec<CallForwardInfo>) */
     gbinder_reader_copy(&reader, args);
-    infos = gbinder_reader_read_hidl_type_vec(&reader, RadioCallForwardInfo,
-        &count);
-    if (count) {
-        gsize i;
 
-        list = g_new0(struct ofono_call_forwarding_condition, count);
-        for (i = 0; i < count; i++) {
-            const RadioCallForwardInfo* info = infos + i;
-            struct ofono_call_forwarding_condition* fw = list + i;
+    if (cbd->self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+        /* getCallForwardStatusResponse(RadioResponseInfo, vec<CallForwardInfo>) */
+        const RadioCallForwardInfo* infos = gbinder_reader_read_hidl_type_vec(
+            &reader, RadioCallForwardInfo, &count);
+        if (count) {
+            gsize i;
 
-            fw->status = info->status;
-            fw->cls = info->serviceClass;
-            fw->time = info->timeSeconds;
-            fw->phone_number.type = info->toa;
-            memcpy(fw->phone_number.number, info->number.data.str,
-                MIN(OFONO_MAX_PHONE_NUMBER_LENGTH, info->number.len));
+            list = g_new0(struct ofono_call_forwarding_condition, count);
+            for (i = 0; i < count; i++) {
+                const RadioCallForwardInfo* info = infos + i;
+                struct ofono_call_forwarding_condition* fw = list + i;
+
+                fw->status = info->status;
+                fw->cls = info->serviceClass;
+                fw->time = info->timeSeconds;
+                fw->phone_number.type = info->toa;
+                memcpy(fw->phone_number.number, info->number.data.str,
+                    MIN(OFONO_MAX_PHONE_NUMBER_LENGTH, info->number.len));
+            }
+        }
+    } else {
+        /* getCallForwardStatusResponse(RadioResponseInfo, CallForwardInfo[] callForwardInfos) */
+        gbinder_reader_read_uint32(&reader, (guint32 *)&count);
+        if (count) {
+            gsize i;
+
+            list = g_new0(struct ofono_call_forwarding_condition, count);
+            for (i = 0; i < count; i++) {
+                struct ofono_call_forwarding_condition* fw = list + i;
+
+                // Non-null parcelable
+                gbinder_reader_read_int32(&reader, NULL);
+                // Parcelable size
+                gbinder_reader_read_int32(&reader, NULL);
+                gbinder_reader_read_int32(&reader, &fw->status);
+                gbinder_reader_read_int32(&reader, NULL);
+                gbinder_reader_read_int32(&reader, &fw->cls);
+                gbinder_reader_read_int32(&reader, &fw->phone_number.type);
+                gchar* number = gbinder_reader_read_string16(&reader);
+                if (number) {
+                    memcpy(fw->phone_number.number, number,
+                        MIN(OFONO_MAX_PHONE_NUMBER_LENGTH, strlen(number)));
+                    g_free(number);
+                }
+                gbinder_reader_read_int32(&reader, &fw->time);
+            }
         }
     }
     cbd->cb.query(binder_error_ok(&err), count, list, cbd->data);
