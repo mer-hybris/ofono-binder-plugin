@@ -115,9 +115,12 @@ binder_access_modes_from_raf(
     RADIO_ACCESS_FAMILY raf)
     BINDER_INTERNAL;
 
+/* Returns mask of supported modes up to specified mode or all supported modes
+ * if specified mode is OFONO_RADIO_ACCESS_MODE_ANY */
 enum ofono_radio_access_mode
 binder_access_modes_up_to(
-    enum ofono_radio_access_mode mode)
+    enum ofono_radio_access_mode mode,
+    enum ofono_radio_access_mode supported_modes_mask)
     BINDER_INTERNAL;
 
 enum ofono_access_technology

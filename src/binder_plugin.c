@@ -1829,6 +1829,9 @@ binder_plugin_create_slot(
 
             config->techs |= m;
         }
+        if (!config->techs) {
+            config->techs = BINDER_DEFAULT_SLOT_TECHS;
+        }
         g_strfreev(strv);
     }
 
