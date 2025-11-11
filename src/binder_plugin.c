@@ -1833,7 +1833,8 @@ binder_plugin_create_slot(
     }
 
     /* limit technologies based on radioInterface */
-    if (slot->version < RADIO_INTERFACE_1_4) {
+    if (slot->interface_type == RADIO_INTERFACE_TYPE_HIDL &&
+        slot->version < RADIO_INTERFACE_1_4) {
         config->techs &= ~OFONO_RADIO_ACCESS_MODE_NR;
     }
 
