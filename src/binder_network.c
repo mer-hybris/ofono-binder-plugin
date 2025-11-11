@@ -1544,6 +1544,9 @@ binder_network_set_data_profiles(
         req = radio_request_new(client, RADIO_DATA_REQ_SET_DATA_PROFILE,
             &writer, binder_network_set_data_profiles_done, NULL, self);
 
+        /* Number of profiles */
+        gbinder_writer_append_int32(&writer, n);
+
         for (l = self->data_profiles, i = 0; i < n; l = l->next, i++) {
             binder_network_fill_radio_data_profile_aidl(&writer,
                 (BinderNetworkDataProfile*) l->data, dpc);
