@@ -394,14 +394,15 @@ binder_access_modes_from_raf(
 
 enum ofono_radio_access_mode
 binder_access_modes_up_to(
-    enum ofono_radio_access_mode mode)
+    enum ofono_radio_access_mode mode,
+    enum ofono_radio_access_mode supported_modes)
 {
     /* Make sure only one bit is set in max_mode */
     enum ofono_radio_access_mode max_mode = ofono_radio_access_max_mode(mode);
 
     /* Treat ANY (zero) as ALL, otherwise set all lower bits */
     return (max_mode == OFONO_RADIO_ACCESS_MODE_ANY) ?
-        OFONO_RADIO_ACCESS_MODE_ALL : (max_mode | (max_mode - 1));
+        supported_modes : (max_mode | (max_mode - 1));
 }
 
 enum ofono_access_technology

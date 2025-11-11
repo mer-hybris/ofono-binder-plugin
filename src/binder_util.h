@@ -117,7 +117,8 @@ binder_access_modes_from_raf(
 
 enum ofono_radio_access_mode
 binder_access_modes_up_to(
-    enum ofono_radio_access_mode mode)
+    enum ofono_radio_access_mode mode,
+    enum ofono_radio_access_mode supported_modes)
     BINDER_INTERNAL;
 
 enum ofono_access_technology
