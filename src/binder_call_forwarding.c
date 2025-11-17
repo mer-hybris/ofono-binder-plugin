@@ -195,6 +195,14 @@ binder_call_forwarding_set(
     guint32 code = self->interface_aidl == RADIO_VOICE_INTERFACE ?
         RADIO_VOICE_REQ_SET_CALL_FORWARD :
         RADIO_REQ_SET_CALL_FORWARD;
+
+    /* Modem doesn't seem to like class mask 7, replace it with 0 */
+    if (cls == (RADIO_SERVICE_CLASS_VOICE |
+        RADIO_SERVICE_CLASS_DATA | RADIO_SERVICE_CLASS_FAX)) {
+        DBG_(self, "cls %d => %d", cls, RADIO_SERVICE_CLASS_NONE);
+        cls = RADIO_SERVICE_CLASS_NONE;
+    }
+
     binder_call_forwarding_call(self, code,
         action, reason, cls, number, time, binder_call_forwarding_set_cb,
         BINDER_CB(cb), data);
