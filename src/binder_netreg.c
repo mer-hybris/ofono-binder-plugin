@@ -1711,12 +1711,12 @@ binder_netreg_get_signal_strength_dbm(
         }
     }
 
-    if (rssi >= RSCP_MIN) {
-        return binder_netreg_dbm_from_rssi(rssi);
+    if (rsrp >= RSRP_MIN) {
+        return binder_netreg_dbm_from_rsrp(rsrp);
     } else if (rscp >= RSCP_MIN) {
-        return binder_netreg_dbm_from_rscp(rssi);
-    } else if (rsrp >= RSRP_MIN) {
-        return binder_netreg_dbm_from_rsrp(rssi);
+        return binder_netreg_dbm_from_rscp(rscp);
+    } else if (rssi >= RSSI_MIN) {
+        return binder_netreg_dbm_from_rssi(rssi);
     } else {
         return -140;
     }
@@ -1744,17 +1744,19 @@ binder_netreg_get_signal_strength_dbm_aidl(
     wcdma = gbinder_reader_read_parcelable(reader, NULL);
     nr = gbinder_reader_read_parcelable(reader, NULL);
 
-    if (gsm->signalStrength <= RSSI_MAX) {
+    if (gsm && gsm->signalStrength <= RSSI_MAX) {
         rssi = gsm->signalStrength;
     }
 
-    if (lte->signalStrength <= RSSI_MAX &&
-        (int)lte->signalStrength > rssi) {
-        rssi = lte->signalStrength;
-    }
+    if (lte) {
+        if (lte->signalStrength <= RSSI_MAX &&
+            (int)lte->signalStrength > rssi) {
+            rssi = lte->signalStrength;
+        }
 
-    if (lte->rsrp >= RSRP_MIN && lte->rsrp <= RSRP_MAX) {
-        rsrp = lte->rsrp;
+        if (lte->rsrp >= RSRP_MIN && lte->rsrp <= RSRP_MAX) {
+            rsrp = lte->rsrp;
+        }
     }
 
     if (wcdma) {
@@ -1784,12 +1786,12 @@ binder_netreg_get_signal_strength_dbm_aidl(
         }
     }
 
-    if (rssi >= RSCP_MIN) {
-        return binder_netreg_dbm_from_rssi(rssi);
+    if (rsrp >= RSRP_MIN) {
+        return binder_netreg_dbm_from_rsrp(rsrp);
     } else if (rscp >= RSCP_MIN) {
-        return binder_netreg_dbm_from_rscp(rssi);
-    } else if (rsrp >= RSRP_MIN) {
-        return binder_netreg_dbm_from_rsrp(rssi);
+        return binder_netreg_dbm_from_rscp(rscp);
+    } else if (rssi >= RSSI_MIN) {
+        return binder_netreg_dbm_from_rssi(rssi);
     } else {
         return -140;
     }
