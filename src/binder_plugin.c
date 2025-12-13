@@ -2446,7 +2446,7 @@ binder_plugin_slot_start_timeout(
         plugin->flags &= ~BINDER_PLUGIN_NEED_CONFIG_SERVICE;
     }
     binder_plugin_foreach_slot(plugin, binder_plugin_slot_check_radio_client);
-    if (!slot->client) {
+    if (!binder_plugin_is_slot_client_connected(slot)) {
         plugin->slots = g_slist_remove(plugin->slots, slot);
         binder_plugin_slot_free(slot);
     }
