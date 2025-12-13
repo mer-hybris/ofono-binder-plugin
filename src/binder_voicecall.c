@@ -86,6 +86,7 @@ typedef struct binder_voicecall {
     gulong radio_event[VOICECALL_EVENT_COUNT];
     gulong supp_svc_notification_id;
     gulong ringback_tone_event_id;
+    gulong network_supp_svc_notify_id;
 } BinderVoiceCall;
 
 typedef struct binder_voicecall_cb_data {
@@ -1416,6 +1417,37 @@ binder_voicecall_ext_supp_svc_notification(
 static
 void
 binder_voicecall_supp_svc_notification(
+    BinderVoiceCall* self,
+    gboolean isMT,
+    int code,
+    int index,
+    int type,
+    const char* number)
+{
+    if (isMT) {
+        struct ofono_phone_number ph;
+
+        /* MT unsolicited result code */
+        DBG_(self, "MT code: %d, index: %d type: %d number: %s", code,
+            index, type, number);
+        if (number && number[0]) {
+            ph.type = type;
+            g_strlcpy(ph.number, number, sizeof(ph.number));
+        } else {
+            ph.type = OFONO_NUMBER_TYPE_UNKNOWN;
+            ph.number[0] = 0;
+        }
+
+        ofono_voicecall_ssn_mt_notify(self->vc, 0, code, index, &ph);
+    } else {
+        /* MO intermediate result code */
+        ofono_voicecall_ssn_mo_notify(self->vc, 0, code, index);
+    }
+}
+
+static
+void
+binder_voicecall_hidl_supp_svc_notification(
     RadioClient* client,
     RADIO_IND code,
     const GBinderReader* args,
@@ -1426,63 +1458,37 @@ binder_voicecall_supp_svc_notification(
     GBinderReader reader;
 
     gbinder_reader_copy(&reader, args);
-    if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
-        ssn = gbinder_reader_read_hidl_struct(&reader, RadioSuppSvcNotification);
-        if (ssn) {
-            if (ssn->isMT) {
-                struct ofono_phone_number ph;
+    ssn = gbinder_reader_read_hidl_struct(&reader, RadioSuppSvcNotification);
+    if (ssn) {
+        binder_voicecall_supp_svc_notification(self, ssn->isMT, ssn->code,
+            ssn->index, ssn->type, ssn->number.data.str);
+    }
+}
 
-                /* MT unsolicited result code */
-                DBG_(self, "MT code: %d, index: %d type: %d number: %s", ssn->code,
-                     ssn->index, ssn->type, ssn->number.data.str);
-                if (ssn->number.data.str && ssn->number.len) {
-                    ph.type = ssn->type;
-                    g_strlcpy(ph.number, ssn->number.data.str, sizeof(ph.number));
-                } else {
-                    ph.type = OFONO_NUMBER_TYPE_UNKNOWN;
-                    ph.number[0] = 0;
-                }
+static
+void
+binder_voicecall_aidl_supp_svc_notification(
+    RadioClient* client,
+    RADIO_IND ind,
+    const GBinderReader* args,
+    gpointer user_data)
+{
+    BinderVoiceCall* self = user_data;
+    GBinderReader reader;
+    gboolean mt;
+    gint32 code, index, type;
 
-                ofono_voicecall_ssn_mt_notify(self->vc, 0, ssn->code,
-                    ssn->index, &ph);
-            } else {
-                /* MO intermediate result code */
-                ofono_voicecall_ssn_mo_notify(self->vc, 0, ssn->code, ssn->index);
-            }
-        }
-    } else {
-        if (binder_read_parcelable_size(&reader)) {
-            gboolean is_mt;
-            gint32 code, index, type;
-            char* number;
+    gbinder_reader_copy(&reader, args);
+    if (binder_read_parcelable_size(&reader) &&
+        gbinder_reader_read_bool(&reader, &mt) &&
+        gbinder_reader_read_int32(&reader, &code) &&
+        gbinder_reader_read_int32(&reader, &index) &&
+        gbinder_reader_read_int32(&reader, &type)) {
+        char* number = gbinder_reader_read_string16(&reader);
 
-            gbinder_reader_read_bool(&reader, &is_mt);
-            gbinder_reader_read_int32(&reader, &code);
-            gbinder_reader_read_int32(&reader, &index);
-            gbinder_reader_read_int32(&reader, &type);
-            number = gbinder_reader_read_string16(&reader);
-            if (is_mt) {
-                struct ofono_phone_number ph;
-
-                /* MT unsolicited result code */
-                DBG_(self, "MT code: %d, index: %d type: %d number: %s", code,
-                     index, type, number);
-                if (number && strlen(number)) {
-                    ph.type = type;
-                    g_strlcpy(ph.number, number, sizeof(ph.number));
-                } else {
-                    ph.type = OFONO_NUMBER_TYPE_UNKNOWN;
-                    ph.number[0] = 0;
-                }
-
-                ofono_voicecall_ssn_mt_notify(self->vc, 0, code,
-                    index, &ph);
-            } else {
-                /* MO intermediate result code */
-                ofono_voicecall_ssn_mo_notify(self->vc, 0, code, index);
-            }
-            g_free(number);
-        }
+        binder_voicecall_supp_svc_notification(self,
+            mt, code, index, type, number);
+        g_free(number);
     }
 }
 
@@ -1964,14 +1970,17 @@ binder_voicecall_enable_supp_svc(
     BinderVoiceCall* self)
 {
     GBinderWriter writer;
-    const RADIO_AIDL_INTERFACE iface_aidl =
-        radio_client_aidl_interface(self->network_client);
-    guint32 code = iface_aidl == RADIO_NETWORK_INTERFACE ?
-        RADIO_NETWORK_REQ_SET_SUPP_SERVICE_NOTIFICATIONS :
-        RADIO_REQ_SET_SUPP_SERVICE_NOTIFICATIONS;
-    RadioRequest* req = radio_request_new(self->network_client,
-        code, &writer,
-        NULL, NULL, NULL);
+    RadioRequest* req;
+
+    if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
+        req = radio_request_new2(self->g,
+            RADIO_REQ_SET_SUPP_SERVICE_NOTIFICATIONS, &writer,
+            NULL, NULL, NULL);
+    } else {
+        req = radio_request_new(self->network_client,
+            RADIO_NETWORK_REQ_SET_SUPP_SERVICE_NOTIFICATIONS, &writer,
+            NULL, NULL, NULL);
+    }
 
     /* setSuppServiceNotifications(int32 serial, bool enable); */
     gbinder_writer_append_bool(&writer, TRUE);
@@ -2159,7 +2168,7 @@ binder_voicecall_register(
         self->radio_event[VOICECALL_EVENT_SUPP_SVC_NOTIFICATION] =
             radio_client_add_indication_handler(client,
                 RADIO_IND_SUPP_SVC_NOTIFY,
-                binder_voicecall_supp_svc_notification, self);
+                binder_voicecall_hidl_supp_svc_notification, self);
 
         /* Register for ringback tone notifications */
         self->radio_event[VOICECALL_EVENT_RINGBACK_TONE] =
@@ -2184,10 +2193,10 @@ binder_voicecall_register(
                 binder_voicecall_call_state_changed_event, self);
 
         /* Unsol when call set in hold */
-        self->radio_event[VOICECALL_EVENT_SUPP_SVC_NOTIFICATION] =
+        self->network_supp_svc_notify_id =
             radio_client_add_indication_handler(self->network_client,
                 RADIO_NETWORK_IND_SUPP_SVC_NOTIFY,
-                binder_voicecall_supp_svc_notification, self);
+                binder_voicecall_aidl_supp_svc_notification, self);
 
         /* Register for ringback tone notifications */
         self->radio_event[VOICECALL_EVENT_RINGBACK_TONE] =
@@ -2273,6 +2282,8 @@ binder_voicecall_remove(
     radio_client_remove_all_handlers(self->g->client, self->radio_event);
     radio_request_group_cancel(self->g);
     radio_request_group_unref(self->g);
+    radio_client_remove_handler(self->network_client,
+        self->network_supp_svc_notify_id);
     radio_client_unref(self->network_client);
     radio_instance_unref(self->instance);
 
