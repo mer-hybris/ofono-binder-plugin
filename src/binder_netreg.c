@@ -87,6 +87,7 @@ typedef struct binder_netreg {
     BinderNetRegScan* scan;
     gulong ind_id[IND_COUNT];
     gulong network_event_id[NETREG_NETWORK_EVENT_COUNT];
+    gulong modem_client_reset_ind;
 } BinderNetReg;
 
 typedef struct binder_netreg_cbd {
@@ -2145,7 +2146,7 @@ binder_netreg_register(
                 binder_netreg_scan_result_notify, self);
 
         /* Miscellaneous */
-        self->ind_id[IND_MODEM_RESET] =
+        self->modem_client_reset_ind =
             radio_client_add_indication_handler(self->modem_client,
                 RADIO_MODEM_IND_MODEM_RESET,
                 binder_netreg_modem_reset_notify, self);
@@ -2215,6 +2216,9 @@ binder_netreg_remove(
 
     radio_client_remove_all_handlers(self->client, self->ind_id);
     radio_client_unref(self->client);
+
+    radio_client_remove_handler(self->modem_client,
+        self->modem_client_reset_ind);
     radio_client_unref(self->modem_client);
 
     binder_netreg_scan_drop(self, self->scan);
