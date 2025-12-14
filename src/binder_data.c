@@ -893,6 +893,17 @@ binder_data_check_allowed(
 }
 
 static
+gboolean
+binder_data_manager_set_preferred_data_modem_allowed(
+    BinderDataManager* dm)
+{
+    return dm &&
+        (radio_config_interface_type(dm->rc) == RADIO_INTERFACE_TYPE_AIDL ||
+         (radio_config_interface_type(dm->rc) == RADIO_INTERFACE_TYPE_HIDL &&
+          radio_config_interface(dm->rc) >= RADIO_CONFIG_INTERFACE_1_1));
+}
+
+static
 void
 binder_data_restricted_state_changed(
     RadioClient* client,
@@ -2098,10 +2109,8 @@ binder_data_allow_submit_request(
             binder_data_request_queue(binder_data_allow_new(data, allow));
             return TRUE;
         }
-    } else if (allow) {
-        /* IRadioConfig >= 1.1 */
-        binder_data_request_queue
-            (binder_data_set_preferred_data_modem_new(data));
+    } else if (allow && binder_data_manager_set_preferred_data_modem_allowed(data->dm)) {
+        binder_data_request_queue(binder_data_set_preferred_data_modem_new(data));
     }
     return FALSE;
 }
