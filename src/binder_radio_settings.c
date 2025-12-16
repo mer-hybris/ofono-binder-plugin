@@ -99,7 +99,7 @@ binder_radio_settings_set_rat_mode(
 
     DBG_(self, "%s", ofono_radio_access_mode_to_string(mode));
     binder_sim_settings_set_pref(self->settings,
-        binder_access_modes_up_to(mode));
+        binder_access_modes_up_to(mode, self->settings->techs));
     binder_radio_settings_later(self,
         binder_radio_settings_set_rat_mode_cb, BINDER_CB(cb), data);
 }

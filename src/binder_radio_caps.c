@@ -384,8 +384,12 @@ binder_radio_caps_check_done(
                     gbinder_reader_read_uint32(&reader, &result->phase);
                     gbinder_reader_read_uint32(&reader, &result->raf);
                     uuid_str = gbinder_reader_read_string16(&reader);
-                    result->logicalModemUuid.data.str = (const char*)uuid_str;
-                    result->logicalModemUuid.len = strlen(uuid_str);
+                    if (uuid_str) {
+                        result->logicalModemUuid.data.str = (const char*)uuid_str;
+                        result->logicalModemUuid.len = strlen(uuid_str);
+                    } else {
+                        result->logicalModemUuid.data.str = "";
+                    }
                     gbinder_reader_read_uint32(&reader, &result->status);
                 }
                 if (result) {
