@@ -2,6 +2,7 @@
  *  oFono - Open Source Telephony - binder based adaptation
  *
  *  Copyright (C) 2021-2022 Jolla Ltd.
+ *  Copyright (C) 2025 Slava Monich <slava@monich.com>
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License version 2 as
@@ -128,6 +129,7 @@ typedef struct binder_data_object {
     RadioRequest* query_req;
     gulong io_event_id[IO_EVENT_COUNT];
     gulong settings_event_id[SETTINGS_EVENT_COUNT];
+    gulong network_client_restricted_state_change_id;
     GHashTable* grab;
     gboolean downgraded_tech; /* Status 55 workaround */
 } BinderDataObject;
@@ -914,12 +916,8 @@ binder_data_restricted_state_changed(
     BinderDataObject* data = THIS(user_data);
     GBinderReader reader;
     gint32 state;
-    guint32 ind_code = data->interface_aidl == RADIO_NETWORK_INTERFACE ?
-        RADIO_NETWORK_IND_RESTRICTED_STATE_CHANGED :
-        RADIO_IND_RESTRICTED_STATE_CHANGED;
 
     /* restrictedStateChanged(RadioIndicationType, PhoneRestrictedState); */
-    GASSERT(code == ind_code);
     gbinder_reader_copy(&reader, args);
     if (gbinder_reader_read_int32(&reader, &state)) {
         if (data->restricted_state != state) {
@@ -2262,7 +2260,7 @@ binder_data_new(
                 radio_client_add_indication_handler(client,
                     RADIO_DATA_IND_DATA_CALL_LIST_CHANGED,
                     binder_data_call_list_changed_aidl, self);
-            self->io_event_id[IO_EVENT_RESTRICTED_STATE_CHANGED] =
+            self->network_client_restricted_state_change_id =
                 radio_client_add_indication_handler(network_client,
                     RADIO_NETWORK_IND_RESTRICTED_STATE_CHANGED,
                     binder_data_restricted_state_changed, self);
@@ -2639,6 +2637,9 @@ binder_data_object_finalize(
     radio_request_drop(self->query_req);
     radio_request_group_cancel(self->g);
     radio_request_group_unref(self->g);
+
+    radio_client_remove_handler(self->network_client,
+        self->network_client_restricted_state_change_id);
     radio_client_unref(self->network_client);
 
     binder_radio_power_off(self->radio, self);

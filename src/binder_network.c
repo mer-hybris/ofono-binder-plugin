@@ -2,6 +2,7 @@
  *  oFono - Open Source Telephony - binder based adaptation
  *
  *  Copyright (C) 2021-2022 Jolla Ltd.
+ *  Copyright (C) 2025 Slava Monich <slava@monich.com>
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License version 2 as
@@ -130,6 +131,7 @@ typedef struct binder_network_object {
     RadioRequest* set_ia_apn_req;
     guint timer[TIMER_COUNT];
     gulong ind_id[IND_COUNT];
+    gulong modem_client_reset_ind;
     gulong settings_event_id;
     gulong caps_raf_event_id;
     gulong caps_mgr_event_id[RADIO_CAPS_MGR_EVENT_COUNT];
@@ -2323,9 +2325,6 @@ binder_network_modem_reset_cb(
     gpointer user_data)
 {
     BinderNetworkObject* self = THIS(user_data);
-    guint32 ind_code =
-        radio_client_aidl_interface(client) == RADIO_MODEM_INTERFACE ?
-            RADIO_MODEM_IND_MODEM_RESET : RADIO_IND_MODEM_RESET;
 
     if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
         DBG_(self, "%s", binder_read_hidl_string(args));
@@ -2334,7 +2333,6 @@ binder_network_modem_reset_cb(
         DBG_(self, "%s", reason);
         g_free(reason);
     }
-    GASSERT(code == ind_code);
 
     /* Drop all pending requests */
     radio_request_drop(self->operator_poll_req);
@@ -2598,7 +2596,7 @@ binder_network_new(
             radio_client_add_indication_handler(client,
                 RADIO_NETWORK_IND_NETWORK_STATE_CHANGED,
                 binder_network_state_changed_cb, self);
-        self->ind_id[IND_MODEM_RESET] =
+        self->modem_client_reset_ind =
             radio_client_add_indication_handler(modem_client,
                 RADIO_MODEM_IND_MODEM_RESET,
                 binder_network_modem_reset_cb, self);
@@ -2811,6 +2809,9 @@ binder_network_object_finalize(
     radio_request_group_cancel(self->g);
     radio_request_group_unref(self->g);
     radio_client_unref(self->data_client);
+
+    radio_client_remove_handler(self->modem_client,
+        self->modem_client_reset_ind);
     radio_client_unref(self->modem_client);
 
     binder_network_release_radio_caps(self);
