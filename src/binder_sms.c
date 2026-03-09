@@ -643,25 +643,19 @@ binder_sms_gsm_message_aidl(
      */
     char* tpdu;
     int smsc_len = pdu_len - tpdu_len;
-    gint32 initial_size;
+    GBinderWriter parcelable;
 
     /* PDU is sent as an ASCII hex string */
     tpdu = g_malloc0(sizeof(char) * (tpdu_len * 2 + 1));
     ofono_encode_hex(pdu + smsc_len, tpdu_len, tpdu);
     DBG_(self, "%s", tpdu);
 
-    /* Non-null parcelable */
-    gbinder_writer_append_int32(writer, 1);
-    initial_size = gbinder_writer_bytes_written(writer);
-    /* Dummy parcelable size, replaced at the end */
-    gbinder_writer_append_int32(writer, -1);
+    gbinder_writer_start_parcelable(writer, &parcelable);
 
     gbinder_writer_append_string16_len(writer, (const char*) pdu, smsc_len);
     gbinder_writer_append_string16_len(writer, tpdu, tpdu_len * 2 + 1);
 
-    /* Overwrite parcelable size */
-    gbinder_writer_overwrite_int32(writer, initial_size,
-        gbinder_writer_bytes_written(writer) - initial_size);
+    gbinder_writer_finish_parcelable(&parcelable);
 
     g_free(tpdu);
 }
@@ -675,14 +669,12 @@ binder_sms_ims_message_aidl(
     int pdu_len,
     int tpdu_len)
 {
-    gint32 initial_size;
-    /* Non-null parcelable */
-    gbinder_writer_append_int32(writer, 1);
-    initial_size = gbinder_writer_bytes_written(writer);
-    /* Dummy parcelable size, replaced at the end */
-    gbinder_writer_append_int32(writer, -1);
+    GBinderWriter parcelable;
 
-    gbinder_writer_append_int32(writer, RADIO_TECH_FAMILY_3GPP2);
+    gbinder_writer_start_parcelable(writer, &parcelable);
+
+    /* Writing 3GPP message, 3GPP2 is obsolete in most of the world */
+    gbinder_writer_append_int32(writer, RADIO_TECH_FAMILY_3GPP);
     gbinder_writer_append_bool(writer, FALSE);
     gbinder_writer_append_int32(writer, 0);
 
@@ -692,11 +684,9 @@ binder_sms_ims_message_aidl(
     /* GSM message count */
     gbinder_writer_append_int32(writer, 1);
 
-    /* Overwrite parcelable size */
-    gbinder_writer_overwrite_int32(writer, initial_size,
-        gbinder_writer_bytes_written(writer) - initial_size);
-
     binder_sms_gsm_message_aidl(self, writer, pdu, pdu_len, tpdu_len);
+
+    gbinder_writer_finish_parcelable(&parcelable);
 }
 
 static
