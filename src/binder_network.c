@@ -875,31 +875,31 @@ binder_network_poll_data_state_aidl(
 
     gbinder_reader_skip_string16(reader); /* registeredPlmn */
 
+    gbinder_reader_read_bool(reader, NULL); /* non-null access technology specific info union */
     gbinder_reader_read_uint32(reader, &specific_info_type);
 
     if (specific_info_type == RADIO_REG_ACCESS_TECHNOLOGY_SPECIFIC_INFO_EUTRAN) {
         gboolean is_endc_available;
         gboolean is_dc_nr_restricted;
         gboolean is_nr_available;
+        /* EutranRegistrationInfo parcelable */
+        binder_read_parcelable_size(reader);
         /* Ignore lteVopsInfo */
-        gbinder_reader_read_int32(reader, NULL);
-        gbinder_reader_read_int32(reader, NULL);
-        gbinder_reader_read_bool(reader, NULL);
-        gbinder_reader_read_bool(reader, NULL);
+        gbinder_reader_read_parcelable(reader, NULL);
         /* nrIndicators */
-        gbinder_reader_read_int32(reader, NULL);
-        gbinder_reader_read_int32(reader, NULL);
-        gbinder_reader_read_bool(reader, &is_endc_available);
-        gbinder_reader_read_bool(reader, &is_dc_nr_restricted);
-        gbinder_reader_read_bool(reader, &is_nr_available);
-        /* Ignore rest of the data */
+        if (binder_read_parcelable_size(reader)) {
+            gbinder_reader_read_bool(reader, &is_endc_available);
+            gbinder_reader_read_bool(reader, &is_dc_nr_restricted);
+            gbinder_reader_read_bool(reader, &is_nr_available);
+            /* Ignore rest of the data */
 
-        if ((rat == RADIO_TECH_LTE || rat == RADIO_TECH_LTE_CA) &&
-            self->nr_connected && is_endc_available &&
-            !is_dc_nr_restricted &&
-            is_nr_available) {
-            DBG_(self, "Setting radio technology for NSA 5G");
-            rat = RADIO_TECH_NR;
+            if ((rat == RADIO_TECH_LTE || rat == RADIO_TECH_LTE_CA) &&
+                self->nr_connected && is_endc_available &&
+                !is_dc_nr_restricted &&
+                is_nr_available) {
+                DBG_(self, "Setting radio technology for NSA 5G");
+                rat = RADIO_TECH_NR;
+            }
         }
     }
 
