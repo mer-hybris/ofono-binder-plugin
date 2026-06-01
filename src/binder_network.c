@@ -816,6 +816,7 @@ binder_network_poll_data_state_1_4(
         if (self->nr_connected && nrIndicators->isEndcAvailable &&
             !nrIndicators->isDcNrRestricted &&
             nrIndicators->isNrAvailable) {
+            DBG_(self, "Setting radio technology for NSA 5G");
             rat = RADIO_TECH_NR;
         }
     }
@@ -2363,6 +2364,7 @@ binder_network_current_physical_channel_configs_cb(
     gpointer user_data)
 {
     BinderNetworkObject* self = THIS(user_data);
+    BinderBase* base = &self->base;
     GBinderReader reader;
     gboolean nr_connected = FALSE;
     guint32 ind_code = self->interface_aidl == RADIO_NETWORK_INTERFACE ?
@@ -2415,7 +2417,24 @@ binder_network_current_physical_channel_configs_cb(
     } else {
         ofono_warn("Unexpected current physical channel configs code %d", code);
     }
-    self->nr_connected = nr_connected;
+
+    if (self->nr_connected != nr_connected) {
+        if (nr_connected) {
+            BinderNetwork* net = &self->pub;
+            BinderRegistrationState *data = &net->data;
+
+            if (data->access_tech == OFONO_ACCESS_TECHNOLOGY_EUTRAN) {
+                DBG_(self, "Setting radio technology for NSA 5G");
+                data->access_tech = OFONO_ACCESS_TECHNOLOGY_NR_5GCN;
+                binder_base_queue_property_change(base,
+                    BINDER_NETWORK_PROPERTY_DATA_STATE);
+            }
+        } else {
+            DBG_(self, "NSA 5G diconnected");
+        }
+        self->nr_connected = nr_connected;
+    }
+    binder_base_emit_queued_signals(base);
 }
 
 static
