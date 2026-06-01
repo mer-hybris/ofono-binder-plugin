@@ -40,7 +40,9 @@
 #include <stdlib.h>
 
 #define REGISTRATION_MAX_RETRIES (2)
-#define NETWORK_SCAN_TIMEOUT_SEC (60) /* 1 min */
+/* Some vendors require longer than the binder API minimum */
+#define NETWORK_SCAN_MAX_SEARCH_TIME_SEC (70) /* 1 min 10 seconds */
+#define NETWORK_SCAN_TIMEOUT_SEC (NETWORK_SCAN_MAX_SEARCH_TIME_SEC + 5) /* 1 min 15 seconds */
 #define OPERATOR_LIST_TIMEOUT_SEC (300) /* 5 min */
 #define OPERATOR_LIST_TIMEOUT_MS (OPERATOR_LIST_TIMEOUT_SEC * 1000)
 
@@ -692,7 +694,7 @@ binder_netreg_start_network_scan(
             scan->specifiers.owns_buffer = TRUE;
             scan->specifiers.count = nspecs;
             scan->specifiers.data.ptr = specs;
-            scan->maxSearchTime = 60;
+            scan->maxSearchTime = NETWORK_SCAN_MAX_SEARCH_TIME_SEC;
             scan->incrementalResults = TRUE;
             scan->incrementalResultsPeriodicity = 3;
             gbinder_writer_append_struct(&writer, scan,
@@ -770,7 +772,7 @@ binder_netreg_start_network_scan(
             scan->specifiers.owns_buffer = TRUE;
             scan->specifiers.count = nspecs;
             scan->specifiers.data.ptr = specs;
-            scan->maxSearchTime = 60;
+            scan->maxSearchTime = NETWORK_SCAN_MAX_SEARCH_TIME_SEC;
             scan->incrementalResults = TRUE;
             scan->incrementalResultsPeriodicity = 3;
             gbinder_writer_append_struct(&writer, scan,
@@ -819,7 +821,7 @@ binder_netreg_start_network_scan(
         }
 
         // maxSearchTime
-        gbinder_writer_append_int32(&writer, 60);
+        gbinder_writer_append_int32(&writer, NETWORK_SCAN_MAX_SEARCH_TIME_SEC);
         // incrementalResults
         gbinder_writer_append_bool(&writer, TRUE);
         // incrementalResultsPeriodicity
