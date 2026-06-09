@@ -816,6 +816,7 @@ binder_network_poll_data_state_1_4(
         if (self->nr_connected && nrIndicators->isEndcAvailable &&
             !nrIndicators->isDcNrRestricted &&
             nrIndicators->isNrAvailable) {
+            DBG_(self, "Setting radio technology for NSA 5G");
             rat = RADIO_TECH_NR;
         }
     }
@@ -875,31 +876,31 @@ binder_network_poll_data_state_aidl(
 
     gbinder_reader_skip_string16(reader); /* registeredPlmn */
 
+    gbinder_reader_read_bool(reader, NULL); /* non-null access technology specific info union */
     gbinder_reader_read_uint32(reader, &specific_info_type);
 
     if (specific_info_type == RADIO_REG_ACCESS_TECHNOLOGY_SPECIFIC_INFO_EUTRAN) {
         gboolean is_endc_available;
         gboolean is_dc_nr_restricted;
         gboolean is_nr_available;
+        /* EutranRegistrationInfo parcelable */
+        binder_read_parcelable_size(reader);
         /* Ignore lteVopsInfo */
-        gbinder_reader_read_int32(reader, NULL);
-        gbinder_reader_read_int32(reader, NULL);
-        gbinder_reader_read_bool(reader, NULL);
-        gbinder_reader_read_bool(reader, NULL);
+        gbinder_reader_read_parcelable(reader, NULL);
         /* nrIndicators */
-        gbinder_reader_read_int32(reader, NULL);
-        gbinder_reader_read_int32(reader, NULL);
-        gbinder_reader_read_bool(reader, &is_endc_available);
-        gbinder_reader_read_bool(reader, &is_dc_nr_restricted);
-        gbinder_reader_read_bool(reader, &is_nr_available);
-        /* Ignore rest of the data */
+        if (binder_read_parcelable_size(reader)) {
+            gbinder_reader_read_bool(reader, &is_endc_available);
+            gbinder_reader_read_bool(reader, &is_dc_nr_restricted);
+            gbinder_reader_read_bool(reader, &is_nr_available);
+            /* Ignore rest of the data */
 
-        if ((rat == RADIO_TECH_LTE || rat == RADIO_TECH_LTE_CA) &&
-            self->nr_connected && is_endc_available &&
-            !is_dc_nr_restricted &&
-            is_nr_available) {
-            DBG_(self, "Setting radio technology for NSA 5G");
-            rat = RADIO_TECH_NR;
+            if ((rat == RADIO_TECH_LTE || rat == RADIO_TECH_LTE_CA) &&
+                self->nr_connected && is_endc_available &&
+                !is_dc_nr_restricted &&
+                is_nr_available) {
+                DBG_(self, "Setting radio technology for NSA 5G");
+                rat = RADIO_TECH_NR;
+            }
         }
     }
 
@@ -2363,6 +2364,7 @@ binder_network_current_physical_channel_configs_cb(
     gpointer user_data)
 {
     BinderNetworkObject* self = THIS(user_data);
+    BinderBase* base = &self->base;
     GBinderReader reader;
     gboolean nr_connected = FALSE;
     guint32 ind_code = self->interface_aidl == RADIO_NETWORK_INTERFACE ?
@@ -2415,7 +2417,24 @@ binder_network_current_physical_channel_configs_cb(
     } else {
         ofono_warn("Unexpected current physical channel configs code %d", code);
     }
-    self->nr_connected = nr_connected;
+
+    if (self->nr_connected != nr_connected) {
+        if (nr_connected) {
+            BinderNetwork* net = &self->pub;
+            BinderRegistrationState *data = &net->data;
+
+            if (data->access_tech == OFONO_ACCESS_TECHNOLOGY_EUTRAN) {
+                DBG_(self, "Setting radio technology for NSA 5G");
+                data->access_tech = OFONO_ACCESS_TECHNOLOGY_NR_5GCN;
+                binder_base_queue_property_change(base,
+                    BINDER_NETWORK_PROPERTY_DATA_STATE);
+            }
+        } else {
+            DBG_(self, "NSA 5G diconnected");
+        }
+        self->nr_connected = nr_connected;
+    }
+    binder_base_emit_queued_signals(base);
 }
 
 static
