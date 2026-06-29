@@ -69,7 +69,7 @@ COVERAGE_BUILD_DIR = $(BUILD_DIR)/coverage
 # Tools and flags
 #
 
-CC = $(CROSS_COMPILE)gcc
+CC ?= $(CROSS_COMPILE)gcc
 LD = $(CC)
 STRIP ?= strip
 WARNINGS = -Wall -Wstrict-aliasing -Wunused-result
