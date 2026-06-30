@@ -1,6 +1,7 @@
 /*
  *  oFono - Open Source Telephony - binder based adaptation
  *
+ *  Copyright (C) 2026 Jolla Mobile Ltd
  *  Copyright (C) 2021-2022 Jolla Ltd.
  *
  *  This program is free software; you can redistribute it and/or modify
@@ -16,8 +17,7 @@
 #include "binder_devmon.h"
 #include "binder_connman.h"
 #include "binder_log.h"
-
-#include <ofono/log.h>
+#include "binder_util.h"
 
 #include <mce_battery.h>
 #include <mce_charger.h>
@@ -55,6 +55,11 @@ enum binder_devmon_ds_connman_event {
     CONNMAN_EVENT_COUNT
 };
 
+typedef struct binder_devmon_ds_api {
+    const char* name;
+    RADIO_REQ send_device_state_req;
+} DevMonApi;
+
 typedef struct binder_devmon_ds {
     BinderDevmon pub;
     BinderConnman* connman;
@@ -69,10 +74,11 @@ typedef struct binder_devmon_ds_io {
     BinderDevmonIo pub;
     BinderConnman* connman;
     struct ofono_slot* slot;
+    const DevMonApi* api;
     MceBattery* battery;
     MceCharger* charger;
     MceDisplay* display;
-    RadioClient* client;
+    RadioClient* modem_client;
     RadioRequest* low_data_req;
     RadioRequest* charging_req;
     gboolean low_data;
@@ -87,8 +93,19 @@ typedef struct binder_devmon_ds_io {
     int cell_info_interval_long_ms;
 } DevMonIo;
 
+/* Binder API flavors */
+static const DevMonApi binder_devmon_ds_api_hidl = {
+    "hidl",
+    RADIO_REQ_SEND_DEVICE_STATE
+};
+
+static const DevMonApi binder_devmon_ds_api_aidl = {
+    "aidl",
+    RADIO_MODEM_REQ_SEND_DEVICE_STATE
+};
+
 #define DBG_(self,fmt,args...) \
-    DBG("%s: " fmt, radio_client_slot((self)->client), ##args)
+    DBG("%s: " fmt, radio_client_slot((self)->modem_client), ##args)
 
 static inline DevMon* binder_devmon_ds_cast(BinderDevmon* pub)
     { return G_CAST(pub, DevMon, pub); }
@@ -119,24 +136,19 @@ binder_devmon_ds_io_low_data_state_sent(
     gpointer user_data)
 {
     DevMonIo* self = user_data;
-    guint32 code =
-        radio_client_aidl_interface(self->client) == RADIO_MODEM_INTERFACE ?
-            RADIO_MODEM_RESP_SEND_DEVICE_STATE : RADIO_RESP_SEND_DEVICE_STATE;
 
     GASSERT(self->low_data_req == req);
     radio_request_unref(self->low_data_req);
     self->low_data_req = NULL;
 
-    if (status == RADIO_TX_STATUS_OK) {
-        if (resp == code) {
-            if (error == RADIO_ERROR_REQUEST_NOT_SUPPORTED) {
-                DBG_(self, "LOW_DATA_EXPECTED state is not supported");
-                self->low_data_supported = FALSE;
-            }
-        } else {
-            ofono_error("Unexpected sendDeviceState response %d", resp);
-            self->low_data_supported = FALSE;
-        }
+    if (status != RADIO_TX_STATUS_OK) {
+        DBG_(self, "sendDeviceState tx failed");
+    } else if (error == RADIO_ERROR_REQUEST_NOT_SUPPORTED) {
+        DBG_(self, "LOW_DATA_EXPECTED state is not supported");
+        self->low_data_supported = FALSE;
+    } else if (error != RADIO_ERROR_NONE) {
+        DBG_(self, "sendDeviceState(LOW_DATA_EXPECTED) error %s",
+             binder_radio_error_string(error));
     }
 }
 
@@ -151,24 +163,19 @@ binder_devmon_ds_io_charging_state_sent(
     gpointer user_data)
 {
     DevMonIo* self = user_data;
-    guint32 code =
-        radio_client_aidl_interface(self->client) == RADIO_MODEM_INTERFACE ?
-            RADIO_MODEM_RESP_SEND_DEVICE_STATE : RADIO_RESP_SEND_DEVICE_STATE;
 
     GASSERT(self->charging_req == req);
     radio_request_unref(self->charging_req);
     self->charging_req = NULL;
 
-    if (status == RADIO_TX_STATUS_OK) {
-        if (resp == code) {
-            if (error == RADIO_ERROR_REQUEST_NOT_SUPPORTED) {
-                DBG_(self, "CHARGING state is not supported");
-                self->charging_supported = FALSE;
-            }
-        } else {
-            ofono_error("Unexpected sendDeviceState response %d", resp);
-            self->charging_supported = FALSE;
-        }
+    if (status != RADIO_TX_STATUS_OK) {
+        DBG_(self, "sendDeviceState tx failed");
+    } else if (error == RADIO_ERROR_REQUEST_NOT_SUPPORTED) {
+        DBG_(self, "CHARGING state is not supported");
+        self->charging_supported = FALSE;
+    } else if (error != RADIO_ERROR_NONE) {
+        DBG_(self, "sendDeviceState(CHARGING) error %s",
+             binder_radio_error_string(error));
     }
 }
 
@@ -180,24 +187,23 @@ binder_devmon_ds_io_send_device_state(
     gboolean state,
     RadioRequestCompleteFunc callback)
 {
-    GBinderWriter writer;
-    RadioRequest* req;
-    guint32 code =
-        radio_client_aidl_interface(self->client) == RADIO_MODEM_INTERFACE ?
-            RADIO_MODEM_REQ_SEND_DEVICE_STATE : RADIO_REQ_SEND_DEVICE_STATE;
+    GBinderWriter args;
+    RadioRequest* req = radio_request_new(self->modem_client,
+        self->api->send_device_state_req, &args, callback, NULL, self);
 
-    req = radio_request_new(self->client,
-        code, &writer, callback, NULL, self);
-
+    /*
+     * IRadio.hal:
+     * oneway sendDeviceState(int32_t serial,
+     *     DeviceStateType deviceStateType, bool state);
+     *
+     * IRadioModem.aidl:
+     * void sendDeviceState(in int serial,
+     *     in DeviceStateType deviceStateType, in boolean state);
+     */
     /* sendDeviceState(int32_t serial, DeviceStateType type, bool state); */
-    gbinder_writer_append_int32(&writer, type);
-    gbinder_writer_append_bool(&writer, state);
-    if (radio_request_submit(req)) {
-        return req;
-    } else {
-        radio_request_unref(req);
-        return NULL;
-    }
+    gbinder_writer_append_int32(&args, type); /* deviceStateType */
+    gbinder_writer_append_bool(&args, state); /* state */
+    return radio_request_try_submit(req);
 }
 
 static
@@ -319,7 +325,7 @@ binder_devmon_ds_io_free(
 
     radio_request_drop(self->low_data_req);
     radio_request_drop(self->charging_req);
-    radio_client_unref(self->client);
+    radio_client_unref(self->modem_client);
 
     ofono_slot_drop_cell_info_requests(self->slot, self);
     ofono_slot_unref(self->slot);
@@ -330,8 +336,7 @@ static
 BinderDevmonIo*
 binder_devmon_ds_start_io(
     BinderDevmon* devmon,
-    RadioClient* ds_client,
-    RadioClient* if_client,
+    BinderClients* clients,
     struct ofono_slot* slot)
 {
     DevMon* ds = binder_devmon_ds_cast(devmon);
@@ -340,8 +345,11 @@ binder_devmon_ds_start_io(
     self->pub.free = binder_devmon_ds_io_free;
     self->low_data_supported = TRUE;
     self->charging_supported = TRUE;
-    self->client = radio_client_ref(ds_client);
     self->slot = ofono_slot_ref(slot);
+    self->modem_client = radio_client_ref(clients->modem_client);
+    self->api = radio_client_aidl_interface(self->modem_client) ==
+        RADIO_MODEM_INTERFACE ? &binder_devmon_ds_api_aidl :
+        &binder_devmon_ds_api_hidl;
 
     self->connman = binder_connman_ref(ds->connman);
     self->connman_event_id[CONNMAN_EVENT_VALID] =

@@ -1,6 +1,7 @@
 /*
  *  oFono - Open Source Telephony - binder based adaptation
  *
+ *  Copyright (C) 2026 Jolla Mobile Ltd
  *  Copyright (C) 2021-2022 Jolla Ltd.
  *
  *  This program is free software; you can redistribute it and/or modify
@@ -36,8 +37,11 @@ enum binder_devinfo_cb_tag {
     DEVINFO_QUERY_SVN
 };
 
+typedef struct binder_devinfo_api BinderDevInfoApi;
+
 typedef struct binder_devinfo {
     struct ofono_devinfo* di;
+    const BinderDevInfoApi* api;
     RadioRequestGroup* g;
     GUtilIdleQueue* iq;
     char* log_prefix;
@@ -52,6 +56,16 @@ typedef struct binder_devinfo_callback_data {
 } BinderDevInfoCbData;
 
 #define DBG_(self,fmt,args...) DBG("%s" fmt, (self)->log_prefix, ##args)
+
+/* Binder API flavors */
+struct binder_devinfo_api {
+    const char* name;
+    RADIO_REQ get_baseband_version_req;
+    BinderReadStringArg read_string_arg;
+};
+
+static const BinderDevInfoApi binder_devinfo_api_hidl;
+static const BinderDevInfoApi binder_devinfo_api_aidl;
 
 static inline BinderDevInfo* binder_devinfo_get_data(struct ofono_devinfo* di)
     { return ofono_devinfo_get_data(di); }
@@ -93,33 +107,6 @@ binder_devinfo_query_unsupported(
 
 static
 void
-binder_devinfo_query_revision_ok(
-    const BinderDevInfoCbData* cbd,
-    const GBinderReader* args)
-{
-    struct ofono_error err;
-    GBinderReader reader;
-    char* res;
-    RADIO_AIDL_INTERFACE interface_aidl =
-        radio_client_aidl_interface(cbd->self->g->client);
-
-    /* getBasebandVersionResponse(RadioResponseInfo, string version); */
-    gbinder_reader_copy(&reader, args);
-    if (interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
-        res = gbinder_reader_read_hidl_string(&reader);
-    } else {
-        res = gbinder_reader_read_string16(&reader);
-
-    }
-
-    DBG_(cbd->self, "%s", res);
-    cbd->cb(binder_error_ok(&err), res ? res : "", cbd->data);
-
-    g_free(res);
-}
-
-static
-void
 binder_devinfo_query_revision_cb(
     RadioRequest* req,
     RADIO_TX_STATUS status,
@@ -130,22 +117,35 @@ binder_devinfo_query_revision_cb(
 {
     struct ofono_error err;
     const BinderDevInfoCbData* cbd = user_data;
-    guint32 code =
-        radio_client_aidl_interface(
-            cbd->self->g->client) == RADIO_MODEM_INTERFACE ?
-                RADIO_MODEM_RESP_GET_BASEBAND_VERSION :
-                RADIO_RESP_GET_BASEBAND_VERSION;
 
-    if (status == RADIO_TX_STATUS_OK) {
-        if (resp == code) {
-            if (error == RADIO_ERROR_NONE) {
-                binder_devinfo_query_revision_ok(cbd, args);
-                return;
-            } else {
-                ofono_error("getBasebandVersion error %d", error);
-            }
-        } else {
-            ofono_error("Unexpected getBasebandVersion response %d", resp);
+    if (status != RADIO_TX_STATUS_OK) {
+        DBG_(cbd->self, "getBasebandVersion tx failed");
+    } else if (error != RADIO_ERROR_NONE) {
+        ofono_error("getBasebandVersion error %s",
+            binder_radio_error_string(error));
+    } else {
+        GBinderReader reader;
+        char* tmp = NULL;
+        const char* res;
+
+        /*
+         * IRadioResponse.hal:
+         * oneway getBasebandVersionResponse(RadioResponseInfo info,
+         *     string version);
+         *
+         * IRadioModemResponse.aidl:
+         * void getBasebandVersionResponse(in RadioResponseInfo info,
+         *     in String version);
+         */
+        gbinder_reader_copy(&reader, args);
+        res = cbd->self->api->read_string_arg(&reader, &tmp);
+
+        if (res) {
+            DBG_(cbd->self, "%s", res);
+            cbd->cb(binder_error_ok(&err), res ? res : "", cbd->data);
+
+            g_free(tmp);
+            return;
         }
     }
     cbd->cb(binder_error_failure(&err), NULL, cbd->data);
@@ -159,20 +159,13 @@ binder_devinfo_query_revision(
     void* data)
 {
     BinderDevInfo* self = binder_devinfo_get_data(di);
-    guint32 code =
-        (radio_client_aidl_interface(self->g->client) == RADIO_MODEM_INTERFACE) ?
-            RADIO_MODEM_REQ_GET_BASEBAND_VERSION :
-            RADIO_REQ_GET_BASEBAND_VERSION;
 
-    RadioRequest* req = radio_request_new2(self->g,
-        code, NULL,
+    DBG_(self, "");
+    binder_submit_request2(self->g,
+        self->api->get_baseband_version_req,
         binder_devinfo_query_revision_cb,
         binder_devinfo_callback_data_free,
         binder_devinfo_callback_data_new(self, cb, data));
-
-    DBG_(self, "");
-    radio_request_submit(req);
-    radio_request_unref(req);
 }
 
 static
@@ -268,12 +261,17 @@ binder_devinfo_probe(
 {
     BinderModem* modem = binder_modem_get_data(data);
     BinderDevInfo* self = g_new0(BinderDevInfo, 1);
+    RadioClient* modem_client = modem->clients.modem_client;
+    const BinderDevInfoApi* api =
+        radio_client_aidl_interface(modem_client) == RADIO_MODEM_INTERFACE ?
+        &binder_devinfo_api_aidl : &binder_devinfo_api_hidl;
 
     self->log_prefix = binder_dup_prefix(modem->log_prefix);
 
-    DBG_(self, "%s", modem->imei);
-    self->g = radio_request_group_new(modem->client);
+    DBG_(self, "%s %s api", modem->imei, api->name);
+    self->g = radio_request_group_new(modem_client);
     self->di = di;
+    self->api = api;
     self->imeisv = g_strdup(modem->imeisv);
     self->imei = g_strdup(modem->imei);
     self->iq = gutil_idle_queue_new();
@@ -300,6 +298,26 @@ binder_devinfo_remove(
     g_free(self->imei);
     g_free(self);
 }
+
+/*==========================================================================*
+ * HIDL API flavor
+ *==========================================================================*/
+
+static const BinderDevInfoApi binder_devinfo_api_hidl = {
+    "hidl",
+    RADIO_REQ_GET_BASEBAND_VERSION,
+    binder_read_string_arg_hidl
+};
+
+/*==========================================================================*
+ * AIDL API flavor
+ *==========================================================================*/
+
+static const BinderDevInfoApi binder_devinfo_api_aidl = {
+    "aidl",
+    RADIO_MODEM_REQ_GET_BASEBAND_VERSION,
+    binder_read_string_arg_aidl
+};
 
 /*==========================================================================*
  * API

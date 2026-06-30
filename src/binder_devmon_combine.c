@@ -1,6 +1,7 @@
 /*
  *  oFono - Open Source Telephony - binder based adaptation
  *
+ *  Copyright (C) 2026 Jolla Mobile Ltd
  *  Copyright (C) 2021-2022 Jolla Ltd.
  *
  *  This program is free software; you can redistribute it and/or modify
@@ -14,8 +15,6 @@
  */
 
 #include "binder_devmon.h"
-
-#include <ofono/log.h>
 
 #include <gutil_macros.h>
 
@@ -55,8 +54,7 @@ static
 BinderDevmonIo*
 binder_devmon_combine_start_io(
     BinderDevmon* devmon,
-    RadioClient* ds_client,
-    RadioClient* if_client,
+    BinderClients* clients,
     struct ofono_slot* slot)
 {
     guint i;
@@ -68,8 +66,7 @@ binder_devmon_combine_start_io(
     io->impl = (BinderDevmonIo**)(io + 1);
     io->count = self->count;
     for (i = 0; i < io->count; i++) {
-        io->impl[i] = binder_devmon_start_io(self->impl[i], ds_client,
-            if_client, slot);
+        io->impl[i] = binder_devmon_start_io(self->impl[i], clients, slot);
     }
     return &io->pub;
 }

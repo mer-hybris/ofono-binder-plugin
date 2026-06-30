@@ -1,6 +1,7 @@
 /*
  *  oFono - Open Source Telephony - binder based adaptation
  *
+ *  Copyright (C) 2026 Jolla Mobile Ltd
  *  Copyright (C) 2021-2022 Jolla Ltd.
  *
  *  This program is free software; you can redistribute it and/or modify
@@ -62,8 +63,6 @@ typedef struct binder_slot_config {
     int cell_info_interval_long_ms;
     int network_mode_timeout_ms;
     int network_selection_timeout_ms;
-    int signal_strength_dbm_weak;
-    int signal_strength_dbm_strong;
     enum ofono_radio_access_mode techs;
     RADIO_PREF_NET_TYPE lte_network_mode;
     RADIO_PREF_NET_TYPE umts_network_mode;
@@ -75,6 +74,7 @@ typedef struct binder_slot_config {
     gboolean use_network_scan;
     gboolean replace_strange_oper;
     gboolean force_gsm_when_radio_off;
+    gboolean prefer_lte_signal_strength;
     BinderDataProfileConfig data_profile_config;
     GUtilInts* local_hangup_reasons;
     GUtilInts* remote_hangup_reasons;
@@ -113,17 +113,56 @@ typedef void (*BinderCallback)(void);
 
 /* 27.007 Section 7.11 */
 enum bearer_class {
-        BEARER_CLASS_VOICE =            1,
-        BEARER_CLASS_DATA =             2,
-        BEARER_CLASS_FAX =              4,
-        BEARER_CLASS_DEFAULT =          7,
-        BEARER_CLASS_SMS =              8,
-        BEARER_CLASS_DATA_SYNC =        16,
-        BEARER_CLASS_DATA_ASYNC =       32,
-        BEARER_CLASS_SS_DEFAULT =       61,
-        BEARER_CLASS_PACKET =           64,
-        BEARER_CLASS_PAD =              128
+    BEARER_CLASS_VOICE =            1,
+    BEARER_CLASS_DATA =             2,
+    BEARER_CLASS_FAX =              4,
+    BEARER_CLASS_DEFAULT =          7,
+    BEARER_CLASS_SMS =              8,
+    BEARER_CLASS_DATA_SYNC =        16,
+    BEARER_CLASS_DATA_ASYNC =       32,
+    BEARER_CLASS_SS_DEFAULT =       61,
+    BEARER_CLASS_PACKET =           64,
+    BEARER_CLASS_PAD =              128
 };
+
+/* AIDL union android.hardware.radio.network.CellInfoRatSpecificInfo tag */
+typedef enum network_cell_info_type {
+    NETWORK_CELL_INFO_GSM = 0,
+    NETWORK_CELL_INFO_WCDMA,
+    NETWORK_CELL_INFO_TDSCDMA,
+    NETWORK_CELL_INFO_LTE,
+    NETWORK_CELL_INFO_NR,
+    NETWORK_CELL_INFO_CDMA
+} NETWORK_CELL_INFO_TYPE;
+
+/* AIDL union android.hardware.radio.network.CellIdentity tag */
+typedef enum network_cell_identity_type {
+    NETWORK_CELL_IDENTITY_NONE = 0,
+    NETWORK_CELL_IDENTITY_GSM,
+    NETWORK_CELL_IDENTITY_WCDMA,
+    NETWORK_CELL_IDENTITY_TDSCDMA,
+    NETWORK_CELL_IDENTITY_CDMA,
+    NETWORK_CELL_IDENTITY_LTE,
+    NETWORK_CELL_IDENTITY_NR
+} NETWORK_CELL_IDENTITY_TYPE;
+
+/* client(TYPE,type) */
+#define BINDER_FOREACH_CLIENT(client) \
+    client(DATA,data) \
+    client(IMS,ims) \
+    client(MESSAGING,messaging) \
+    client(MODEM,modem) \
+    client(NETWORK,network) \
+    client(SIM,sim) \
+    client(VOICE,voice)
+
+#define BINDER_CLIENT_COUNT (7) /* Must match the above */
+
+typedef struct binder_clients {
+    #define BINDER_CLIENT_FIELD(TYPE,type) RadioClient* type##_client;
+    BINDER_FOREACH_CLIENT(BINDER_CLIENT_FIELD)
+    #undef BINDER_CLIENT_FIELD
+} BinderClients;
 
 #endif /* BINDER_TYPES_H */
 

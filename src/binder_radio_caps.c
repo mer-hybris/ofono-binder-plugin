@@ -1,6 +1,7 @@
 /*
  *  oFono - Open Source Telephony - binder based adaptation
  *
+ *  Copyright (C) 2026 Jolla Mobile Ltd
  *  Copyright (C) 2021-2022 Jolla Ltd.
  *
  *  This program is free software; you can redistribute it and/or modify
@@ -80,6 +81,7 @@ enum binder_radio_events {
     RADIO_EVENT_COUNT
 };
 
+typedef struct binder_radio_caps_api BinderRadioCapsApi;
 typedef struct binder_radio_caps_object {
     GObject object;
     struct binder_radio_caps pub;
@@ -88,7 +90,7 @@ typedef struct binder_radio_caps_object {
     char* log_prefix;
     RadioClient* client;
     RadioRequestGroup* g;
-    RADIO_AIDL_INTERFACE interface_aidl;
+    const BinderRadioCapsApi* api;
     GUtilIdlePool* idle_pool;
     gulong watch_event_id[WATCH_EVENT_COUNT];
     gulong settings_event_id[SETTINGS_EVENT_COUNT];
@@ -120,6 +122,29 @@ typedef struct binder_radio_caps_manager {
     BinderDataManager* data_manager;
 } BinderRadioCapsManager;
 
+typedef struct binder_radio_caps_request_tx_phase {
+    const char* name;
+    RADIO_CAPABILITY_PHASE phase;
+    RADIO_CAPABILITY_STATUS status;
+    gboolean send_new_cap;
+} BinderRadioCapsRequestTxPhase;
+
+struct binder_radio_caps_api {
+    const char* name;
+    RADIO_IND radio_capability_indication_ind;
+    RADIO_REQ get_radio_capability_req;
+    gboolean (*parse_radio_capability_arg)(
+        GBinderReader* reader,
+        void (*done)(const RadioCapability* result, gpointer user_data),
+        gpointer user_data);
+    RADIO_REQ set_radio_capability_req;
+    void (*write_set_radio_capability_args)(
+        GBinderWriter* args,
+        BinderRadioCapsManager* mgr,
+        BinderRadioCapsObject* caps,
+        const BinderRadioCapsRequestTxPhase* phase);
+};
+
 typedef struct binder_radio_caps_closure {
     GCClosure cclosure;
     BinderRadioCapsFunc cb;
@@ -136,17 +161,10 @@ struct binder_radio_caps_request {
 };
 
 typedef struct binder_radio_caps_check_data {
+    const BinderRadioCapsApi* api;
     BinderRadioCapsCheckFunc cb;
     void* cb_data;
-    RADIO_AIDL_INTERFACE interface_aidl;
 } BinderRadioCapsCheckData;
-
-typedef struct binder_radio_caps_request_tx_phase {
-    const char* name;
-    RADIO_CAPABILITY_PHASE phase;
-    RADIO_CAPABILITY_STATUS status;
-    gboolean send_new_cap;
-} BinderRadioCapsRequestTxPhase;
 
 typedef
 void
@@ -354,7 +372,23 @@ binder_radio_caps_equal(
 
 static
 void
-binder_radio_caps_check_done(
+binder_radio_caps_check_cap(
+    const RadioCapability* cap,
+    gpointer user_data)
+{
+    BinderRadioCapsCheckData* check = user_data;
+
+    if (cap) {
+        DBG("tx=%d,phase=%d,raf=0x%x,uuid=%s,status=%d",
+            cap->session, cap->phase, cap->raf,
+            cap->logicalModemUuid.data.str, cap->status);
+    }
+    check->cb(cap, check->cb_data);
+}
+
+static
+void
+binder_radio_caps_check_cb(
     RadioRequest* req,
     RADIO_TX_STATUS status,
     RADIO_RESP resp,
@@ -363,54 +397,34 @@ binder_radio_caps_check_done(
     void* user_data)
 {
     BinderRadioCapsCheckData* check = user_data;
-    RadioCapability* result = NULL;
-    char* uuid_str = NULL;
 
-    if (status == RADIO_TX_STATUS_OK) {
-        guint32 code = check->interface_aidl == RADIO_MODEM_INTERFACE ?
-            RADIO_MODEM_RESP_GET_RADIO_CAPABILITY :
-            RADIO_RESP_GET_RADIO_CAPABILITY;
+    if (status != RADIO_TX_STATUS_OK) {
+        DBG("getRadioCapability tx failed");
+    } else if (error != RADIO_ERROR_NONE) {
+        DBG("getRadioCapability error %s", binder_radio_error_string(error));
+    } else {
+        GBinderReader reader;
 
-        if (resp == code) {
-            if (error == RADIO_ERROR_NONE) {
-                if (check->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
-                    result = (RadioCapability*)binder_read_hidl_struct(args, RadioCapability);
-                } else {
-                    GBinderReader reader;
-                    gbinder_reader_copy(&reader, args);
-                    result = g_malloc0(sizeof(RadioCapability));
-                    binder_read_parcelable_size(&reader);
-                    gbinder_reader_read_int32(&reader, &result->session);
-                    gbinder_reader_read_uint32(&reader, &result->phase);
-                    gbinder_reader_read_uint32(&reader, &result->raf);
-                    uuid_str = gbinder_reader_read_string16(&reader);
-                    if (uuid_str) {
-                        result->logicalModemUuid.data.str = (const char*)uuid_str;
-                        result->logicalModemUuid.len = strlen(uuid_str);
-                    } else {
-                        result->logicalModemUuid.data.str = "";
-                    }
-                    gbinder_reader_read_uint32(&reader, &result->status);
-                }
-                if (result) {
-                    DBG("tx=%d,phase=%d,raf=0x%x,uuid=%s,status=%d",
-                        result->session, result->phase, result->raf,
-                        result->logicalModemUuid.data.str, result->status);
-                }
-            } else {
-                DBG("getRadioCapability error %s",
-                    binder_radio_error_string(error));
-            }
-        } else {
-            ofono_error("Unexpected getRadioCapability response %d", resp);
+        /*
+         * IRadioResponse.hal:
+         * oneway getRadioCapabilityResponse(RadioResponseInfo info,
+         *     RadioCapability rc);
+         *
+         * IRadioModemResponse.aidl:
+         * void getRadioCapabilityResponse(in RadioResponseInfo info,
+         *     in RadioCapability rc);
+         */
+        gbinder_reader_copy(&reader, args);
+        if (check->api->parse_radio_capability_arg(&reader,
+            binder_radio_caps_check_cap, check)) {
+            /*
+             * parse_radio_capability_arg returns TRUE if it has invoked
+             * the callback with non-null result.
+             */
+            return;
         }
     }
-
-    check->cb(result, check->cb_data);
-    if (check->interface_aidl == RADIO_MODEM_INTERFACE) {
-        g_free(result);
-        g_free(uuid_str);
-    }
+    binder_radio_caps_check_cap(NULL, check);
 }
 
 static
@@ -434,44 +448,6 @@ binder_radio_caps_check_retry(
         }
     }
     return TRUE;
-}
-
-RadioRequest*
-binder_radio_caps_check(
-    RadioClient* client,
-    BinderRadioCapsCheckFunc cb,
-    void* cb_data)
-{
-    BinderRadioCapsCheckData* check = g_new0(BinderRadioCapsCheckData, 1);
-    const RADIO_AIDL_INTERFACE iface_aidl = radio_client_aidl_interface(client);
-    guint32 code = iface_aidl == RADIO_MODEM_INTERFACE ?
-        RADIO_MODEM_REQ_GET_RADIO_CAPABILITY :
-        RADIO_REQ_GET_RADIO_CAPABILITY;
-
-    /* getRadioCapability(int32 serial) */
-    RadioRequest* req = radio_request_new(client,
-        code, NULL,
-        binder_radio_caps_check_done, g_free, check);
-
-    check->cb = cb;
-    check->cb_data = cb_data;
-    check->interface_aidl = iface_aidl;
-
-    /*
-     * Make is blocking because this is typically happening at startup
-     * when there are lots of things happening at the same time which
-     * makes some modems unhappy. Slow things down a bit by not letting
-     * to submit any other requests while this one is pending.
-     */
-    radio_request_set_blocking(req, TRUE);
-    radio_request_set_retry(req, GET_CAPS_TIMEOUT_MS, GET_CAPS_RETRIES);
-    radio_request_set_retry_func(req, binder_radio_caps_check_retry);
-    if (radio_request_submit(req)) {
-        return req;
-    } else {
-        radio_request_unref(req);
-        return NULL;
-    }
 }
 
 /*==========================================================================*
@@ -633,23 +609,42 @@ binder_radio_caps_settings_event(
 
 static
 void
+binder_radio_caps_changed_cap(
+    const RadioCapability* cap,
+    gpointer user_data)
+{
+    BinderRadioCapsObject* self = RADIO_CAPS(user_data);
+
+    g_free(self->cap);
+    self->cap = binder_radio_caps_dup(cap);
+    binder_radio_caps_update_raf(self);
+    binder_radio_caps_manager_schedule_check(self->pub.mgr);
+}
+
+static
+void
 binder_radio_caps_changed_cb(
     RadioClient* client,
     RADIO_IND code,
     const GBinderReader* args,
     gpointer user_data)
 {
-    /* radioCapabilityIndication(RadioIndicationType, RadioCapability rc) */
     BinderRadioCapsObject* self = RADIO_CAPS(user_data);
-    const RadioCapability* cap = binder_read_hidl_struct(args, RadioCapability);
+    GBinderReader reader;
 
+    /*
+     * IRadioIndication.hal:
+     * oneway radioCapabilityIndication(RadioIndicationType type,
+     *     RadioCapability rc);
+     *
+     * IRadioModemIndication.aidl:
+     * void radioCapabilityIndication(in RadioIndicationType type,
+     *     in RadioCapability rc);
+     */
     DBG_(self, "");
-    if (cap) {
-        g_free(self->cap);
-        self->cap = binder_radio_caps_dup(cap);
-        binder_radio_caps_update_raf(self);
-        binder_radio_caps_manager_schedule_check(self->pub.mgr);
-    } else {
+    gbinder_reader_copy(&reader, args);
+    if (!self->api->parse_radio_capability_arg(&reader,
+        binder_radio_caps_changed_cap, self)) {
         ofono_error("Failed to parse RadioCapability payload");
     }
 }
@@ -662,11 +657,24 @@ binder_radio_caps_finish_init(
     /* Register for update notifications */
     self->client_event_id[CLIENT_EVENT_IND_RADIO_CAPABILITY] =
         radio_client_add_indication_handler(self->client,
-            RADIO_IND_RADIO_CAPABILITY_INDICATION,
+            self->api->radio_capability_indication_ind,
             binder_radio_caps_changed_cb, self);
 
     /* Schedule capability check */
     binder_radio_caps_manager_schedule_check(self->pub.mgr);
+}
+
+static
+void
+binder_radio_caps_initial_query_cap(
+    const RadioCapability* cap,
+    gpointer user_data)
+{
+    BinderRadioCapsObject* self = RADIO_CAPS(user_data);
+
+    self->cap = binder_radio_caps_dup(cap);
+    self->pub.raf = cap->raf;
+    binder_radio_caps_update_raf(self);
 }
 
 static
@@ -680,29 +688,241 @@ binder_radio_caps_initial_query_cb(
     gpointer user_data)
 {
     BinderRadioCapsObject* self = RADIO_CAPS(user_data);
-    const RadioCapability* cap = NULL;
 
-    if (status == RADIO_TX_STATUS_OK) {
-        guint32 code = self->interface_aidl == RADIO_MODEM_INTERFACE ?
-            RADIO_MODEM_RESP_GET_RADIO_CAPABILITY :
-            RADIO_RESP_GET_RADIO_CAPABILITY;
-        if (resp == code) {
-            /* getRadioCapabilityResponse(RadioResponseInfo, RadioCapability) */
-            if (error == RADIO_ERROR_NONE) {
-                cap = binder_read_hidl_struct(args, RadioCapability);
+    if (status != RADIO_TX_STATUS_OK) {
+        DBG_(self, "getRadioCapability tx failed");
+    } else if (error != RADIO_ERROR_NONE) {
+        DBG_(self, "Failed get radio caps, error %s",
+            binder_radio_error_string(error));
+    } else {
+        GBinderReader reader;
+
+        /*
+         * IRadioResponse.hal:
+         * oneway getRadioCapabilityResponse(RadioResponseInfo info,
+         *     RadioCapability rc);
+         *
+         * IRadioModemResponse.aidl:
+         * void getRadioCapabilityResponse(in RadioResponseInfo info,
+         *     in RadioCapability rc);
+         */
+        gbinder_reader_copy(&reader, args);
+        self->api->parse_radio_capability_arg(&reader,
+            binder_radio_caps_initial_query_cap, self);
+    }
+    binder_radio_caps_finish_init(self);
+}
+
+/*==========================================================================*
+ * HIDL API Flavor
+ *==========================================================================*/
+
+static
+gboolean
+binder_radio_caps_parse_radio_capability_arg_hidl(
+    GBinderReader* reader,
+    void (*done)(const RadioCapability* result, gpointer user_data),
+    gpointer user_data)
+{
+    /*
+     * IRadioResponse.hal:
+     * oneway getRadioCapabilityResponse(RadioResponseInfo info,
+     *     RadioCapability rc);
+     * oneway setRadioCapabilityResponse(RadioResponseInfo info,
+     *     RadioCapability rc);
+     */
+    const RadioCapability* result =
+        binder_read_hidl_struct(reader, RadioCapability);
+
+    if (result) {
+        done(result, user_data);
+        return TRUE;
+    } else {
+        return FALSE;
+    }
+}
+
+static
+void
+binder_radio_caps_api_write_set_radio_capability_args_hidl(
+    GBinderWriter* args,
+    BinderRadioCapsManager* mgr,
+    BinderRadioCapsObject* caps,
+    const BinderRadioCapsRequestTxPhase* phase)
+{
+    RadioCapability* rc = gbinder_writer_new0(args, RadioCapability);
+    const RadioCapability* cap = phase->send_new_cap ? caps->new_cap :
+        caps->old_cap;
+    guint index;
+
+    /*
+     * 1.0/IRadio.hal:
+     * oneway setRadioCapability(int32_t serial, RadioCapability rc);
+     */
+    rc->session = mgr->tx_id;
+    rc->phase = phase->phase;
+    rc->raf = cap->raf;
+    rc->status = phase->status;
+    rc->logicalModemUuid = cap->logicalModemUuid;
+    if (rc->logicalModemUuid.len) {
+        rc->logicalModemUuid.data.str = gbinder_writer_memdup(args,
+            cap->logicalModemUuid.data.str,
+            cap->logicalModemUuid.len + 1);
+    }
+
+    /* Write transaction arguments */
+    index = gbinder_writer_append_buffer_object(args, rc, sizeof(*rc));
+    binder_append_hidl_string_data(args, rc, logicalModemUuid, index);
+}
+
+static const BinderRadioCapsApi binder_radio_caps_api_hidl = {
+    "hidl",
+    RADIO_IND_RADIO_CAPABILITY_INDICATION,
+    RADIO_REQ_GET_RADIO_CAPABILITY,
+    binder_radio_caps_parse_radio_capability_arg_hidl,
+    RADIO_REQ_SET_RADIO_CAPABILITY,
+    binder_radio_caps_api_write_set_radio_capability_args_hidl
+};
+
+/*==========================================================================*
+ * AIDL API Flavor
+ *==========================================================================*/
+
+/*
+ * package android.hardware.radio.modem;
+ * parcelable RadioCapability {
+ *   int session;
+ *   int phase;
+ *   int raf;
+ *   String logicalModemUuid;
+ *   int status;
+ * }
+ */
+
+static
+gboolean
+binder_radio_caps_parse_radio_capability_arg_aidl(
+    GBinderReader* reader,
+    void (*done)(const RadioCapability* result, gpointer user_data),
+    gpointer user_data)
+{
+    gboolean ok = FALSE;
+    GBinderReader parcel;
+
+    /*
+     * IRadioModemResponse.aidl:
+     * void getRadioCapabilityResponse(in RadioResponseInfo info,
+     *     in RadioCapability rc);
+     * void setRadioCapabilityResponse(in RadioResponseInfo info,
+     *     in RadioCapability rc);
+     *
+     * IRadioModemIndication.aidl:
+     * void radioCapabilityIndication(in RadioIndicationType type,
+     *     in RadioCapability rc);
+     */
+    if (gbinder_reader_start_parcelable(reader, &parcel, NULL)) {
+        gint32 session, phase, raf;
+        char* uuid;
+
+        if (gbinder_reader_read_int32(&parcel, &session) &&
+            gbinder_reader_read_int32(&parcel, &phase) &&
+            gbinder_reader_read_int32(&parcel, &raf) &&
+            gbinder_reader_read_nullable_string16(&parcel, &uuid)) {
+            RadioCapability result;
+
+            memset(&result, 0, sizeof(result));
+            result.session = session;
+            result.phase = phase;
+            result.raf = raf;
+            if (uuid) {
+                result.logicalModemUuid.data.str = uuid;
+                result.logicalModemUuid.len = strlen(uuid);
             } else {
-                DBG_(self, "Failed get radio caps, error %s",
-                    binder_radio_error_string(error));
+                result.logicalModemUuid.data.str = "";
             }
-        } else {
-            ofono_error("Unexpected getRadioCapability response %d", resp);
+            done(&result, user_data);
+            g_free(uuid);
+            ok = TRUE;
         }
+        gbinder_reader_finish_parcelable(&parcel);
     }
+    return ok;
+}
 
-    if (cap) {
-        binder_radio_caps_update_raf(self);
-        binder_radio_caps_finish_init(self);
-    }
+static
+void
+binder_radio_caps_api_write_set_radio_capability_args_aidl(
+    GBinderWriter* args,
+    BinderRadioCapsManager* mgr,
+    BinderRadioCapsObject* caps,
+    const BinderRadioCapsRequestTxPhase* phase)
+{
+    GBinderWriter rc;
+    const RadioCapability* cap = phase->send_new_cap ? caps->new_cap :
+        caps->old_cap;
+
+    /*
+     * IRadioModem.aidl:
+     * void setRadioCapability(in int serial, in RadioCapability rc);
+     */
+    gbinder_writer_start_parcelable(args, &rc);
+    gbinder_writer_append_int32(&rc, mgr->tx_id); /* session */
+    gbinder_writer_append_int32(&rc, phase->phase);
+    gbinder_writer_append_int32(&rc, cap->raf);
+    gbinder_writer_append_string16(&rc, cap->logicalModemUuid.data.str);
+    gbinder_writer_append_int32(&rc, phase->status);
+    gbinder_writer_finish_parcelable(&rc);
+}
+
+static const BinderRadioCapsApi binder_radio_caps_api_aidl = {
+    "aidl",
+    RADIO_MODEM_IND_RADIO_CAPABILITY_INDICATION,
+    RADIO_MODEM_REQ_GET_RADIO_CAPABILITY,
+    binder_radio_caps_parse_radio_capability_arg_aidl,
+    RADIO_MODEM_REQ_SET_RADIO_CAPABILITY,
+    binder_radio_caps_api_write_set_radio_capability_args_aidl
+};
+
+/* Binder API chooser */
+
+static
+const BinderRadioCapsApi*
+binder_radio_caps_api_for_client(
+    RadioClient* client)
+{
+    return radio_client_aidl_interface(client) == RADIO_MODEM_INTERFACE ?
+        &binder_radio_caps_api_aidl : &binder_radio_caps_api_hidl;
+}
+
+/*==========================================================================*
+ * API
+ *==========================================================================*/
+
+RadioRequest*
+binder_radio_caps_check(
+    RadioClient* client,
+    BinderRadioCapsCheckFunc cb,
+    void* cb_data)
+{
+    const BinderRadioCapsApi* api = binder_radio_caps_api_for_client(client);
+    BinderRadioCapsCheckData* check = g_new0(BinderRadioCapsCheckData, 1);
+    RadioRequest* req = radio_request_new(client, api->get_radio_capability_req,
+        NULL, binder_radio_caps_check_cb, g_free, check);
+
+    check->api = api;
+    check->cb = cb;
+    check->cb_data = cb_data;
+
+    /*
+     * Make is blocking because this is typically happening at startup
+     * when there are lots of things happening at the same time which
+     * makes some modems unhappy. Slow things down a bit by not letting
+     * to submit any other requests while this one is pending.
+     */
+    radio_request_set_blocking(req, TRUE);
+    radio_request_set_retry(req, GET_CAPS_TIMEOUT_MS, GET_CAPS_RETRIES);
+    radio_request_set_retry_func(req, binder_radio_caps_check_retry);
+    return radio_request_try_submit(req);
 }
 
 BinderRadioCaps*
@@ -727,11 +947,10 @@ binder_radio_caps_new(
         self->log_prefix = binder_dup_prefix(log_prefix);
 
         self->g = radio_request_group_new(client);
-        self->interface_aidl = radio_client_aidl_interface(client);
         self->radio = binder_radio_ref(radio);
         self->data = binder_data_ref(data);
         caps->mgr = binder_radio_caps_manager_ref(mgr);
-
+        self->api = binder_radio_caps_api_for_client(client);
         self->radio = binder_radio_ref(radio);
         self->radio_event_id[RADIO_EVENT_STATE] =
             binder_radio_add_property_handler(radio,
@@ -773,11 +992,13 @@ binder_radio_caps_new(
         } else {
             /* Need to query current capabilities */
             RadioRequest* req = radio_request_new2(self->g,
-                RADIO_REQ_GET_RADIO_CAPABILITY, NULL,
+                self->api->get_radio_capability_req, NULL,
                 binder_radio_caps_initial_query_cb, NULL, self);
 
             radio_request_set_retry(req, GET_CAPS_TIMEOUT_MS, GET_CAPS_RETRIES);
-            radio_request_submit(req);
+            if (!radio_request_submit(req)) {
+                binder_radio_caps_finish_init(self);
+            }
             radio_request_unref(req);
         }
         return caps;
@@ -908,6 +1129,7 @@ void
 binder_radio_caps_object_init(
     BinderRadioCapsObject* self)
 {
+    self->api = &binder_radio_caps_api_hidl;
     self->idle_pool = gutil_idle_pool_ref
         (gutil_idle_pool_get(&binder_radio_caps_shared_pool));
 }
@@ -1101,31 +1323,11 @@ binder_radio_caps_manager_issue_requests(
         /* Ignore the modems not associated with this transaction */
         if (caps->tx_id == self->tx_id) {
             GBinderWriter args;
+            const BinderRadioCapsApi* api = caps->api;
             RadioRequest* req = radio_request_new2(caps->g,
-                RADIO_REQ_SET_RADIO_CAPABILITY, &args,
-                handler, NULL, caps);
-            const RadioCapability* cap = phase->send_new_cap ?
-                caps->new_cap : caps->old_cap;
-            RadioCapability* rc = gbinder_writer_new0(&args, RadioCapability);
-            guint index;
+                api->set_radio_capability_req, &args, handler, NULL, caps);
 
-            /* setRadioCapability(int32 serial, RadioCapability rc) */
-            rc->session = self->tx_id;
-            rc->phase = phase->phase;
-            rc->raf = cap->raf;
-            rc->status = phase->status;
-            rc->logicalModemUuid = cap->logicalModemUuid;
-            if (rc->logicalModemUuid.len) {
-                rc->logicalModemUuid.data.str = gbinder_writer_memdup(&args,
-                    cap->logicalModemUuid.data.str,
-                    cap->logicalModemUuid.len + 1);
-            }
-
-            /* Write transaction arguments */
-            index = gbinder_writer_append_buffer_object(&args, rc, sizeof(*rc));
-            binder_append_hidl_string_data(&args, rc, logicalModemUuid, index);
-
-            /* Submit the request */
+            api->write_set_radio_capability_args(&args, self, caps, phase);
             radio_request_set_timeout(req, SET_CAPS_TIMEOUT_MS);
             if (radio_request_submit(req)) {
                 /* Count it */
@@ -1166,7 +1368,8 @@ binder_radio_caps_manager_next_transaction(
 }
 
 static
-void binder_radio_caps_manager_cancel_cb(
+void
+binder_radio_caps_manager_cancel_cb(
     BinderRadioCapsManager* self,
     BinderRadioCapsObject* caps)
 {
@@ -1195,30 +1398,23 @@ binder_radio_caps_manager_abort_cb(
     const GBinderReader* args,
     gpointer user_data)
 {
-    BinderRadioCapsObject* caps = RADIO_CAPS(user_data);
-    BinderRadioCapsManager* self = caps->pub.mgr;
+    BinderRadioCapsObject* self = RADIO_CAPS(user_data);
+    BinderRadioCapsManager* mgr = self->pub.mgr;
 
-    if (status == RADIO_TX_STATUS_OK) {
-        guint32 code = caps->interface_aidl == RADIO_MODEM_INTERFACE ?
-            RADIO_MODEM_RESP_SET_RADIO_CAPABILITY :
-            RADIO_RESP_SET_RADIO_CAPABILITY;
-        if (resp == code) {
-            if (error != RADIO_ERROR_NONE) {
-                DBG_(caps, "Failed to abort radio caps switch, error %s",
-                    binder_radio_error_string(error));
-            }
-        } else {
-            ofono_error("Unexpected setRadioCapability response %d", resp);
-        }
+    if (status != RADIO_TX_STATUS_OK) {
+        DBG_(self, "setRadioCapability tx failed");
+    } else if (error != RADIO_ERROR_NONE) {
+        DBG_(self, "Failed to abort radio caps switch, error %s",
+            binder_radio_error_string(error));
+    } else {
+        GASSERT(self->tx_pending > 0);
+        self->tx_pending--;
+        DBG_(self, "tx_pending=%d", self->tx_pending);
     }
 
-    GASSERT(caps->tx_pending > 0);
-    caps->tx_pending--;
-    DBG_(caps, "tx_pending=%d", caps->tx_pending);
-
-    if (!binder_radio_caps_manager_tx_pending(self)) {
+    if (!binder_radio_caps_manager_tx_pending(mgr)) {
         DBG("transaction aborted");
-        binder_radio_caps_manager_transaction_done(self);
+        binder_radio_caps_manager_transaction_done(mgr);
     }
 }
 
@@ -1258,7 +1454,19 @@ binder_radio_caps_manager_abort_transaction(
 }
 
 static
-void binder_radio_caps_manager_next_phase_cb(
+void
+binder_radio_caps_manager_next_phase_result(
+    const RadioCapability* result,
+    gpointer user_data)
+{
+    RADIO_CAPABILITY_STATUS* status = user_data;
+
+    *status = result->status;
+}
+
+static
+void
+binder_radio_caps_manager_next_phase_cb(
     RadioRequest* req,
     RADIO_TX_STATUS status,
     RADIO_RESP resp,
@@ -1266,49 +1474,51 @@ void binder_radio_caps_manager_next_phase_cb(
     const GBinderReader* args,
     gpointer user_data)
 {
-    BinderRadioCapsObject* caps = RADIO_CAPS(user_data);
-    BinderRadioCapsManager* self = caps->pub.mgr;
+    BinderRadioCapsObject* self = RADIO_CAPS(user_data);
+    BinderRadioCapsManager* mgr = self->pub.mgr;
     gboolean ok = FALSE;
 
-    GASSERT(caps->tx_pending > 0);
-    if (status == RADIO_TX_STATUS_OK) {
-        guint32 code = caps->interface_aidl ==  RADIO_MODEM_INTERFACE ?
-            RADIO_MODEM_RESP_SET_RADIO_CAPABILITY :
-            RADIO_RESP_SET_RADIO_CAPABILITY;
-        /* getRadioCapabilityResponse(RadioResponseInfo, RadioCapability rc) */
-        if (resp == code) {
-            if (error == RADIO_ERROR_NONE) {
-                GBinderReader reader;
-                const RadioCapability* rc;
+    GASSERT(self->tx_pending > 0);
+    if (status != RADIO_TX_STATUS_OK) {
+        DBG_(self, "setRadioCapability tx failed");
+    } else if (error != RADIO_ERROR_NONE) {
+        DBG_(self, "Failed to set radio caps, error %s",
+            binder_radio_error_string(error));
+    } else {
+        GBinderReader reader;
+        RADIO_CAPABILITY_STATUS result = RADIO_CAPABILITY_STATUS_FAIL;
 
-                gbinder_reader_copy(&reader, args);
-                rc = gbinder_reader_read_hidl_struct(&reader, RadioCapability);
-                if (rc && rc->status != RADIO_CAPABILITY_STATUS_FAIL) {
-                    ok = TRUE;
-                }
-            } else {
-                DBG_(caps, "Failed to set radio caps, error %s",
-                    binder_radio_error_string(error));
-            }
-        } else {
-            ofono_error("Unexpected setRadioCapability response %d", resp);
+        /*
+         * IRadioResponse.hal:
+         * oneway setRadioCapabilityResponse(RadioResponseInfo info,
+         *     RadioCapability rc);
+         *
+         * IRadioModemResponse.aidl:
+         * void setRadioCapabilityResponse(in RadioResponseInfo info,
+         *     in RadioCapability rc);
+         */
+        gbinder_reader_copy(&reader, args);
+        if (self->api->parse_radio_capability_arg(&reader,
+            binder_radio_caps_manager_next_phase_result, &result) &&
+            result != RADIO_CAPABILITY_STATUS_FAIL) {
+            ok = TRUE;
         }
     }
 
     if (!ok) {
-        if (!self->tx_failed) {
-            self->tx_failed = TRUE;
-            DBG("transaction %d failed", self->tx_id);
+        if (!mgr->tx_failed) {
+            mgr->tx_failed = TRUE;
+            DBG("transaction %d failed", mgr->tx_id);
         }
     }
 
-    caps->tx_pending--;
-    DBG_(caps, "tx_pending=%d", caps->tx_pending);
-    if (!binder_radio_caps_manager_tx_pending(self)) {
-        if (self->tx_failed) {
-            binder_radio_caps_manager_abort_transaction(self);
+    self->tx_pending--;
+    DBG_(self, "tx_pending=%d", self->tx_pending);
+    if (!binder_radio_caps_manager_tx_pending(mgr)) {
+        if (mgr->tx_failed) {
+            binder_radio_caps_manager_abort_transaction(mgr);
         } else {
-            binder_radio_caps_manager_next_phase(self);
+            binder_radio_caps_manager_next_phase(mgr);
         }
     }
 }
@@ -1414,8 +1624,9 @@ binder_radio_caps_manager_data_off(
     BinderRadioCapsObject* caps)
 {
     if (binder_data_manager_need_set_data_allowed(self->data_manager)) {
-        RadioRequest* req = binder_data_set_data_allowed_request_new(caps->g,
-            FALSE, binder_radio_caps_manager_data_disallowed, NULL, caps);
+        RadioRequest* req = binder_data_set_data_allowed_request_new(caps->data,
+            FALSE, binder_radio_caps_manager_data_disallowed,
+            g_object_unref, g_object_ref(caps));
 
         caps->tx_pending++;
         DBG_(caps, "tx_pending=%d", caps->tx_pending);
@@ -1472,9 +1683,9 @@ binder_radio_caps_deactivate_data_call(
     BinderRadioCapsObject* caps,
     int cid)
 {
-    RadioRequest* req = binder_data_deactivate_data_call_request_new(caps->g,
+    RadioRequest* req = binder_data_deactivate_data_call_request_new(caps->data,
         cid, binder_radio_caps_manager_deactivate_data_call_done,
-        NULL, caps);
+        g_object_unref, g_object_ref(caps));
 
     caps->tx_pending++;
     DBG_(caps, "cid=%u, tx_pending=%d", cid, caps->tx_pending);
@@ -1787,10 +1998,7 @@ binder_radio_caps_manager_recheck_later(
     BinderRadioCapsManager* self)
 {
     if (!binder_radio_caps_manager_tx_pending(self)) {
-        if (self->check_id) {
-            g_source_remove(self->check_id);
-            self->check_id = 0;
-        }
+        gutil_source_remove(self->check_id);
         self->check_id = g_timeout_add_seconds(CHECK_LATER_TIMEOUT_SEC,
             binder_radio_caps_manager_check_cb, self);
     }
@@ -1892,7 +2100,8 @@ binder_radio_caps_manager_add(
 }
 
 static
-void binder_radio_caps_manager_remove(
+void
+binder_radio_caps_manager_remove(
     BinderRadioCapsManager* self,
     BinderRadioCapsObject* caps)
 {
@@ -1995,9 +2204,7 @@ binder_radio_caps_manager_finalize(
     g_ptr_array_free(self->caps_list, TRUE);
     g_ptr_array_free(self->order_list, TRUE);
     g_ptr_array_free(self->requests, TRUE);
-    if (self->check_id) {
-        g_source_remove(self->check_id);
-    }
+    gutil_source_remove(self->check_id);
     binder_data_manager_unref(self->data_manager);
     gutil_idle_pool_unref(self->idle_pool);
     G_OBJECT_CLASS(binder_radio_caps_manager_parent_class)->finalize(object);
@@ -2033,7 +2240,7 @@ binder_radio_caps_request_new(
     BinderRadioCapsObject* caps = binder_radio_caps_cast(pub);
 
     if (caps) {
-        BinderRadioCapsManager *mgr = pub->mgr;
+        BinderRadioCapsManager* mgr = pub->mgr;
 
         DBG_(caps, "%s %s (0x%02x)",
             binder_radio_caps_manager_role_str(pub->mgr, role),

@@ -1,6 +1,7 @@
 /*
  *  oFono - Open Source Telephony - binder based adaptation
  *
+ *  Copyright (C) 2026 Jolla Mobile Ltd
  *  Copyright (C) 2022 Jolla Ltd.
  *
  *  This program is free software; you can redistribute it and/or modify
@@ -28,8 +29,11 @@ typedef struct binder_oplist {
     guint count;
 } BinderOpList;
 
+#define binder_oplist_new() binder_oplist_sized_new(0)
+
 BinderOpList*
-binder_oplist_new()
+binder_oplist_sized_new(
+    guint reserved_size)
     BINDER_INTERNAL;
 
 BinderOpList*
@@ -42,6 +46,23 @@ BinderOpList*
 binder_oplist_append(
     BinderOpList* oplist,
     const struct ofono_network_operator* op)
+    BINDER_INTERNAL;
+
+struct ofono_network_operator*
+binder_oplist_append_op(
+    BinderOpList* oplist)
+    BINDER_INTERNAL;
+
+struct ofono_network_operator*
+binder_oplist_find(
+    BinderOpList* oplist,
+    const char* mcc,
+    const char* mnc)
+    BINDER_INTERNAL;
+
+struct ofono_network_operator*
+binder_oplist_last(
+    BinderOpList* oplist)
     BINDER_INTERNAL;
 
 void

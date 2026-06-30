@@ -33,7 +33,6 @@ typedef struct binder_radio_api {
     const char* name;
     RADIO_IND radio_state_change_ind;
     RADIO_REQ set_radio_power_req;
-    RADIO_RESP set_radio_power_resp;
     void (*prepare_set_radio_power_req)(GBinderWriter* writer, gboolean on);
 } BinderRadioApi;
 
@@ -72,65 +71,6 @@ void
 binder_radio_submit_power_request(
     BinderRadioObject* self,
     gboolean on);
-
-/*==========================================================================*
- * Binder API flavors
- *==========================================================================*/
-
-/*
- * HIDL:
- * setRadioPower(int32 serial, bool on)
- * setRadioPower_1_5(int32 serial, bool on, bool forEmergencyCall,
- *     bool preferredForEmergencyCall)
- *
- * AIDL:
- * setRadioPower(int32 serial, bool on, bool forEmergencyCall,
- *     bool preferredForEmergencyCall)
- */
-static
-void
-binder_radio_prepare_set_power_req_hidl(
-   GBinderWriter* writer,
-   gboolean on)
-{
-    gbinder_writer_append_bool(writer, on);
-}
-
-static
-void
-binder_radio_prepare_set_power_req_aidl(
-   GBinderWriter* writer,
-   gboolean on)
-{
-    gbinder_writer_append_bool(writer, on);
-    gbinder_writer_append_bool(writer, FALSE); /* forEmergencyCall */
-    gbinder_writer_append_bool(writer, FALSE); /* preferredForEmergencyCall */
-}
-
-#define binder_radio_prepare_set_power_req_hidl_1_5 \
-    binder_radio_prepare_set_power_req_aidl
-
-static const BinderRadioApi binder_radio_api_hidl = {
-    "hidl",
-    RADIO_IND_RADIO_STATE_CHANGED,
-    RADIO_REQ_SET_RADIO_POWER,
-    RADIO_RESP_SET_RADIO_POWER,
-    binder_radio_prepare_set_power_req_hidl
-};
-static const BinderRadioApi binder_radio_api_hidl_1_5 = {
-    "hidl_1_5",
-    RADIO_IND_RADIO_STATE_CHANGED,
-    RADIO_REQ_SET_RADIO_POWER_1_5,
-    RADIO_RESP_SET_RADIO_POWER_1_5,
-    binder_radio_prepare_set_power_req_hidl_1_5
-};
-static const BinderRadioApi binder_radio_api_aidl = {
-    "aidl",
-    RADIO_MODEM_IND_RADIO_STATE_CHANGED,
-    RADIO_MODEM_REQ_SET_RADIO_POWER,
-    RADIO_MODEM_RESP_SET_RADIO_POWER,
-    binder_radio_prepare_set_power_req_aidl
-};
 
 /*==========================================================================*
  * Implementation
@@ -214,15 +154,11 @@ binder_radio_power_request_cb(
     radio_request_unref(self->pending_req);
     self->pending_req = NULL;
 
-    if (status == RADIO_TX_STATUS_OK) {
-        if (resp != self->api->set_radio_power_resp) {
-            ofono_error("Unexpected setRadioPower response %d", resp);
-        } else if (error != RADIO_ERROR_NONE) {
-            ofono_error("Power request failed: %s",
-                binder_radio_error_string(error));
-        }
-    } else {
-        ofono_error("Power request failed");
+    if (status != RADIO_TX_STATUS_OK) {
+        DBG_(self, "setRadioPower tx failed");
+    } else if (error != RADIO_ERROR_NONE) {
+        ofono_error("Power request failed: %s",
+            binder_radio_error_string(error));
     }
 
     binder_radio_power_request_done(self);
@@ -351,6 +287,64 @@ binder_radio_state_changed(
 }
 
 /*==========================================================================*
+ * Binder API flavors
+ *==========================================================================*/
+
+/*
+ * HIDL:
+ * setRadioPower(int32 serial, bool on)
+ * setRadioPower_1_5(int32 serial, bool on, bool forEmergencyCall,
+ *     bool preferredForEmergencyCall)
+ *
+ * AIDL:
+ * setRadioPower(int32 serial, bool on, bool forEmergencyCall,
+ *     bool preferredForEmergencyCall)
+ */
+static
+void
+binder_radio_prepare_set_power_req_hidl(
+   GBinderWriter* writer,
+   gboolean on)
+{
+    gbinder_writer_append_bool(writer, on);
+}
+
+static
+void
+binder_radio_prepare_set_power_req_aidl(
+   GBinderWriter* writer,
+   gboolean on)
+{
+    gbinder_writer_append_bool(writer, on);
+    gbinder_writer_append_bool(writer, FALSE); /* forEmergencyCall */
+    gbinder_writer_append_bool(writer, FALSE); /* preferredForEmergencyCall */
+}
+
+#define binder_radio_prepare_set_power_req_hidl_1_5 \
+    binder_radio_prepare_set_power_req_aidl
+
+static const BinderRadioApi binder_radio_api_hidl = {
+    "hidl",
+    RADIO_IND_RADIO_STATE_CHANGED,
+    RADIO_REQ_SET_RADIO_POWER,
+    binder_radio_prepare_set_power_req_hidl
+};
+
+static const BinderRadioApi binder_radio_api_hidl_1_5 = {
+    "hidl_1_5",
+    RADIO_IND_RADIO_STATE_CHANGED,
+    RADIO_REQ_SET_RADIO_POWER_1_5,
+    binder_radio_prepare_set_power_req_hidl_1_5
+};
+
+static const BinderRadioApi binder_radio_api_aidl = {
+    "aidl",
+    RADIO_MODEM_IND_RADIO_STATE_CHANGED,
+    RADIO_MODEM_REQ_SET_RADIO_POWER,
+    binder_radio_prepare_set_power_req_aidl
+};
+
+/*==========================================================================*
  * API
  *==========================================================================*/
 
@@ -371,7 +365,7 @@ binder_radio_new(
     self->log_prefix = binder_dup_prefix(log_prefix);
     self->api = api;
     DBG_(self, "%s api", api->name);
-        
+
     self->state_event_id = radio_client_add_indication_handler(client,
         api->radio_state_change_ind, binder_radio_state_changed, self);
     /*

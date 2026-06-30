@@ -1,6 +1,7 @@
 /*
  *  oFono - Open Source Telephony - binder based adaptation
  *
+ *  Copyright (C) 2026 Jolla Mobile Ltd
  *  Copyright (C) 2019-2021 Jolla Ltd.
  *
  *  This program is free software; you can redistribute it and/or modify
@@ -532,19 +533,17 @@ binder_connman_ref(
 
     if (G_LIKELY(self)) {
         g_object_ref(self);
+        return connman;
+    } else {
+        return NULL;
     }
-    return connman;
 }
 
 void
 binder_connman_unref(
     BinderConnman* connman)
 {
-    ConnManObject* self = connman_object_cast(connman);
-
-    if (G_LIKELY(self)) {
-        g_object_unref(self);
-    }
+    gutil_object_unref(connman_object_cast(connman));
 }
 
 gulong

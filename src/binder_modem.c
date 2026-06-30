@@ -1,6 +1,7 @@
 /*
  *  oFono - Open Source Telephony - binder based adaptation
  *
+ *  Copyright (C) 2026 Jolla Mobile Ltd
  *  Copyright (C) 2021-2022 Jolla Ltd.
  *
  *  This program is free software; you can redistribute it and/or modify
@@ -52,6 +53,7 @@
 #include <radio_request_group.h>
 
 #include <gutil_macros.h>
+#include <gutil_misc.h>
 
 #include <errno.h>
 
@@ -130,10 +132,7 @@ void
 binder_modem_online_request_ok(
     BinderModemOnlineRequest* req)
 {
-    if (req->timeout_id) {
-        g_source_remove(req->timeout_id);
-        req->timeout_id = 0;
-    }
+    gutil_source_clear(&req->timeout_id);
     binder_modem_online_request_done(req);
 }
 
@@ -413,9 +412,7 @@ binder_modem_set_online(
 
     req->cb = cb;
     req->data = data;
-    if (req->timeout_id) {
-        g_source_remove(req->timeout_id);
-    }
+    gutil_source_remove(req->timeout_id);
     req->timeout_id = g_timeout_add_seconds(ONLINE_TIMEOUT_SECS,
         binder_modem_online_request_timeout, req);
     binder_modem_schedule_online_check(self);
@@ -480,15 +477,9 @@ binder_modem_remove(
     ofono_watch_remove_all_handlers(modem->watch, self->watch_event_id);
     ofono_watch_unref(modem->watch);
 
-    if (self->online_check_id) {
-        g_source_remove(self->online_check_id);
-    }
-    if (self->set_online.timeout_id) {
-        g_source_remove(self->set_online.timeout_id);
-    }
-    if (self->set_offline.timeout_id) {
-        g_source_remove(self->set_offline.timeout_id);
-    }
+    gutil_source_remove(self->online_check_id);
+    gutil_source_remove(self->set_online.timeout_id);
+    gutil_source_remove(self->set_offline.timeout_id);
 
     binder_ext_slot_unref(modem->ext);
     binder_ims_reg_unref(modem->ims);
@@ -499,13 +490,11 @@ binder_modem_remove(
 
     radio_request_group_cancel(self->g);
     radio_request_group_unref(self->g);
-    radio_client_unref(modem->client);
-    radio_client_unref(modem->data_client);
-    radio_client_unref(modem->messaging_client);
-    radio_client_unref(modem->network_client);
-    radio_client_unref(modem->sim_client);
-    radio_client_unref(modem->voice_client);
-    radio_instance_unref(modem->instance);
+
+    #define BINDER_CLIENT_UNREF(TYPE,type) \
+    radio_client_unref(modem->clients.type##_client);
+    BINDER_FOREACH_CLIENT(BINDER_CLIENT_UNREF)
+    #undef BINDER_CLIENT_UNREF
 
     g_free(self->last_known_iccid);
     g_free(self->reset_iccid);
@@ -545,13 +534,7 @@ binder_modem_cleanup()
 
 BinderModem*
 binder_modem_create(
-    RadioInstance* instance,
-    RadioClient* client,
-    RadioClient* data_client,
-    RadioClient* messaging_client,
-    RadioClient* network_client,
-    RadioClient* sim_client,
-    RadioClient* voice_client,
+    BinderClients* clients,
     const char* log_prefix,
     const char* path,
     const char* imei,
@@ -592,16 +575,15 @@ binder_modem_create(
         modem->cell_info = ofono_cell_info_ref(cell_info);
         modem->data = binder_data_ref(data);
         modem->watch = ofono_watch_new(path);
-        modem->instance = radio_instance_ref(instance);
-        modem->client = radio_client_ref(client);
-        modem->data_client = radio_client_ref(data_client);
-        modem->messaging_client = radio_client_ref(messaging_client);
-        modem->network_client = radio_client_ref(network_client);
-        modem->sim_client = radio_client_ref(sim_client);
-        modem->voice_client = radio_client_ref(voice_client);
-        modem->ims = binder_ims_reg_new(network_client, ext, log_prefix);
         modem->ext = binder_ext_slot_ref(ext);
-        self->g = radio_request_group_new(client);
+        modem->ims = binder_ims_reg_new(clients->network_client, ext,
+            log_prefix);
+
+        #define BINDER_CLIENT_REF(TYPE,type) \
+        modem->clients.type##_client = radio_client_ref(clients->type##_client);
+        BINDER_FOREACH_CLIENT(BINDER_CLIENT_REF)
+        #undef BINDER_CLIENT_REF
+
         self->last_known_iccid = g_strdup(modem->watch->iccid);
 
         self->watch_event_id[WATCH_IMSI] =
@@ -639,18 +621,14 @@ binder_modem_create(
              * the only reason for making this call.
              */
             if (config->query_available_band_mode) {
-                 guint32 code =
-                     radio_client_aidl_interface(
-                         modem->network_client) == RADIO_NETWORK_INTERFACE ?
-                             RADIO_NETWORK_REQ_GET_AVAILABLE_BAND_MODES :
-                             RADIO_REQ_GET_AVAILABLE_BAND_MODES;
-                /* oneway getAvailableBandModes(int32 serial); */
-                RadioRequest* req = radio_request_new2(self->g,
-                    code, NULL,
-                    NULL, NULL, NULL);
+                RadioClient* network_client = clients->network_client;
 
-                radio_request_submit(req);
-                radio_request_unref(req);
+                binder_submit_request(self->g =
+                    radio_request_group_new(network_client),
+                    radio_client_aidl_interface(network_client) ==
+                    RADIO_NETWORK_INTERFACE ?
+                    RADIO_NETWORK_REQ_GET_AVAILABLE_BAND_MODES :
+                    RADIO_REQ_GET_AVAILABLE_BAND_MODES);
             }
 
             binder_modem_update_radio_settings(self);

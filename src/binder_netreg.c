@@ -1,8 +1,9 @@
 /*
  *  oFono - Open Source Telephony - binder based adaptation
  *
- *  Copyright (C) 2021-2022 Jolla Ltd.
+ *  Copyright (C) 2026 Jolla Mobile Ltd
  *  Copyright (C) 2025 Slava Monich <slava@monich.com>
+ *  Copyright (C) 2021-2022 Jolla Ltd.
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License version 2 as
@@ -36,6 +37,7 @@
 #include <gbinder_writer.h>
 
 #include <gutil_macros.h>
+#include <gutil_misc.h>
 
 #include <stdlib.h>
 
@@ -46,39 +48,46 @@
 #define OPERATOR_LIST_TIMEOUT_SEC (300) /* 5 min */
 #define OPERATOR_LIST_TIMEOUT_MS (OPERATOR_LIST_TIMEOUT_SEC * 1000)
 
+#define INCREMENTAL_RESULTS_PERIODICITY_RANGE_MIN (1)
+#define INCREMENTAL_RESULTS_PERIODICITY_RANGE_MAX (10)
+
 typedef struct binder_netreg_scan BinderNetRegScan;
+typedef struct binder_netreg_ss BinderSs;
 
 enum binder_netreg_radio_ind {
     IND_NITZ_TIME_RECEIVED,
     IND_SIGNAL_STRENGTH,
-    IND_SIGNAL_STRENGTH_1_2,
-    IND_SIGNAL_STRENGTH_1_4,
-    IND_NETWORK_SCAN_RESULT_1_2,
-    IND_NETWORK_SCAN_RESULT_1_4,
-    IND_NETWORK_SCAN_RESULT_1_5,
-    IND_MODEM_RESET,
+    IND_NETWORK_SCAN_RESULT,
+    IND_NETWORK_MODEM_RESET,
     IND_COUNT
+};
+
+enum binder_netreg_modem_ind_events {
+    IND_MODEM_RESET,
+    IND_MODEM_COUNT
 };
 
 enum binder_netreg_network_events {
     NETREG_NETWORK_EVENT_DATA_STATE_CHANGED,
     NETREG_NETWORK_EVENT_VOICE_STATE_CHANGED,
+    NETREG_NETWORK_EVENT_OPERATOR_CHANGED,
     NETREG_NETWORK_EVENT_COUNT
 };
 
+typedef struct binder_netreg_api BinderNetRegApi;
 typedef struct binder_netreg {
     RadioClient* client;
     RadioClient* modem_client;
-    RADIO_AIDL_INTERFACE interface_aidl;
     struct ofono_watch* watch;
     struct ofono_netreg* netreg;
+    const BinderNetRegApi* api;
     BinderNetwork* network;
     BinderRegistrationState reg_state;
     enum ofono_radio_access_mode techs;
+    gboolean operator_changed;
     gboolean use_network_scan;
     gboolean replace_strange_oper;
-    int signal_strength_dbm_weak;
-    int signal_strength_dbm_strong;
+    gboolean prefer_lte_signal_strength;
     int network_selection_timeout_ms;
     RadioRequest* register_req;
     RadioRequest* strength_req;
@@ -89,7 +98,7 @@ typedef struct binder_netreg {
     BinderNetRegScan* scan;
     gulong ind_id[IND_COUNT];
     gulong network_event_id[NETREG_NETWORK_EVENT_COUNT];
-    gulong modem_client_reset_ind;
+    gulong modem_ind_id[IND_MODEM_COUNT];
 } BinderNetReg;
 
 typedef struct binder_netreg_cbd {
@@ -113,54 +122,349 @@ struct binder_netreg_scan {
     guint timeout_id;
 };
 
+typedef enum binder_radio_tech_type {
+    BINDER_RADIO_TECH_NONE = 0,
+    BINDER_RADIO_TECH_GSM = 0x01,
+    BINDER_RADIO_TECH_TDSCDMA = 0x02,
+    BINDER_RADIO_TECH_WCDMA = 0x04,
+    BINDER_RADIO_TECH_LTE = 0x08,
+    BINDER_RADIO_TECH_NR = 0x10,
+    BINDER_RADIO_TECH_MAX = BINDER_RADIO_TECH_NR,
+    BINDER_RADIO_TECH_ALL = ((BINDER_RADIO_TECH_MAX << 1) - 1)
+} BINDER_RADIO_TECH_TYPE;
+
+typedef enum binder_radio_access_specifier_bands_type {
+    BINDER_RADIO_ACCESS_SPECIFIER_BANDS_NONE,
+    BINDER_RADIO_ACCESS_SPECIFIER_BANDS_GERAN,
+    BINDER_RADIO_ACCESS_SPECIFIER_BANDS_UTRAN,
+    BINDER_RADIO_ACCESS_SPECIFIER_BANDS_EUTRAN,
+    BINDER_RADIO_ACCESS_SPECIFIER_BANDS_NGRAN
+} BINDER_RADIO_ACCESS_SPECIFIER_BANDS_TYPE;
+
 typedef struct binder_netreg_radio_type {
     enum ofono_radio_access_mode mode;
     RADIO_ACCESS_NETWORKS ran;
-    RADIO_NETWORK_SCAN_SPECIFIER_1_5_TYPE spec_1_5_type;
+    RADIO_NETWORK_SCAN_SPECIFIER_1_5_TYPE hidl_type;
+    BINDER_RADIO_ACCESS_SPECIFIER_BANDS_TYPE aidl_type;
 } BinderNetRegRadioType;
+
+typedef struct binder_radio_signal_strength {
+    const RadioSignalStrengthGsm* gsm;
+    const RadioSignalStrengthLte* lte;
+    const RadioSignalStrengthWcdma_1_2* wcdma;
+    const RadioSignalStrengthTdScdma_1_2* tdscdma;
+    const RadioSignalStrengthNr* nr;
+} BinderRadioSignalStrength;
+
+struct binder_netreg_api {
+    const char* name;
+    BinderReadStringArg read_string_arg;
+    BinderOpList* (*read_oplist)(
+        BinderNetReg* self,
+        GBinderReader* reader);
+    gboolean (*read_signal_strength_resp)(
+        BinderNetReg* self,
+        RADIO_RESP resp,
+        GBinderReader* reader,
+        BinderSs* ss);
+    gboolean (*read_signal_strength_ind)(
+        BinderNetReg* self,
+        RADIO_IND ind,
+        GBinderReader* reader,
+        BinderSs* ss);
+    BinderOpList* (*read_network_scan)(
+        BinderNetReg* self,
+        RADIO_IND code,
+        GBinderReader* reader,
+        RADIO_SCAN_STATUS* scan_status);
+    void (*write_start_network_scan_args)(
+        BinderNetReg* self,
+        GBinderWriter* writer);
+    void (*write_set_network_selection_mode_manual_args)(
+        GBinderWriter* writer,
+        const char* numeric);
+    RADIO_REQ start_network_scan_req;
+    RADIO_REQ stop_network_scan_req;
+    RADIO_REQ get_available_networks_req;
+    RADIO_REQ get_signal_strength_req;
+    RADIO_REQ get_network_selection_mode_req;
+    RADIO_REQ set_network_selection_mode_automatic_req;
+    RADIO_REQ set_network_selection_mode_manual_req;
+    RADIO_IND nitz_time_received_ind;
+    RADIO_IND current_signal_strength_ind;
+    RADIO_IND network_scan_result_ind;
+    RADIO_IND network_modem_reset_ind;
+    RADIO_IND modem_reset_ind;
+};
+
+static const BinderNetRegApi binder_netreg_api_hidl;
+static const BinderNetRegApi binder_netreg_api_hidl_1_2;
+static const BinderNetRegApi binder_netreg_api_hidl_1_4;
+static const BinderNetRegApi binder_netreg_api_hidl_1_5;
+static const BinderNetRegApi binder_netreg_api_aidl;
 
 static const BinderNetRegRadioType binder_netreg_radio_types[] = {
     {
          OFONO_RADIO_ACCESS_MODE_GSM,
          RADIO_ACCESS_NETWORKS_GERAN,
-         RADIO_NETWORK_SCAN_SPECIFIER_1_5_GERAN
+         RADIO_NETWORK_SCAN_SPECIFIER_1_5_GERAN,
+         BINDER_RADIO_ACCESS_SPECIFIER_BANDS_GERAN
     },{
          OFONO_RADIO_ACCESS_MODE_UMTS,
          RADIO_ACCESS_NETWORKS_UTRAN,
-         RADIO_NETWORK_SCAN_SPECIFIER_1_5_UTRAN
+         RADIO_NETWORK_SCAN_SPECIFIER_1_5_UTRAN,
+         BINDER_RADIO_ACCESS_SPECIFIER_BANDS_UTRAN
     },{
          OFONO_RADIO_ACCESS_MODE_LTE,
          RADIO_ACCESS_NETWORKS_EUTRAN,
-         RADIO_NETWORK_SCAN_SPECIFIER_1_5_EUTRAN
-    }
-};
-
-static const BinderNetRegRadioType binder_netreg_radio_types_1_5[] = {
-    {
-         OFONO_RADIO_ACCESS_MODE_GSM,
-         RADIO_ACCESS_NETWORKS_GERAN,
-         RADIO_NETWORK_SCAN_SPECIFIER_1_5_GERAN
-    },{
-         OFONO_RADIO_ACCESS_MODE_UMTS,
-         RADIO_ACCESS_NETWORKS_UTRAN,
-         RADIO_NETWORK_SCAN_SPECIFIER_1_5_UTRAN
-    },{
-         OFONO_RADIO_ACCESS_MODE_LTE,
-         RADIO_ACCESS_NETWORKS_EUTRAN,
-         RADIO_NETWORK_SCAN_SPECIFIER_1_5_EUTRAN
+         RADIO_NETWORK_SCAN_SPECIFIER_1_5_EUTRAN,
+         BINDER_RADIO_ACCESS_SPECIFIER_BANDS_EUTRAN
     },{
          OFONO_RADIO_ACCESS_MODE_NR,
          RADIO_ACCESS_NETWORKS_NGRAN,
-         RADIO_NETWORK_SCAN_SPECIFIER_1_5_NGRAN
+         RADIO_NETWORK_SCAN_SPECIFIER_1_5_NGRAN,
+         BINDER_RADIO_ACCESS_SPECIFIER_BANDS_NGRAN
     }
 };
 
-#define N_RADIO_TYPES G_N_ELEMENTS(binder_netreg_radio_types)
-#define N_RADIO_TYPES_1_5 G_N_ELEMENTS(binder_netreg_radio_types_1_5)
-G_STATIC_ASSERT(N_RADIO_TYPES == (OFONO_RADIO_ACCESS_MODE_COUNT - 1));
+#define N_RADIO_TYPES_1_5 G_N_ELEMENTS(binder_netreg_radio_types)
+#define N_RADIO_TYPES (N_RADIO_TYPES_1_5 - 1) /* No NG */
+#define N_RADIO_TYPES_AIDL N_RADIO_TYPES_1_5
 G_STATIC_ASSERT(N_RADIO_TYPES_1_5 == OFONO_RADIO_ACCESS_MODE_COUNT);
 
+/* enum ofono_operator_status and RADIO_OP_STATUS must be identical */
+G_STATIC_ASSERT((int)RADIO_OP_STATUS_UNKNOWN == OFONO_OPERATOR_STATUS_UNKNOWN);
+G_STATIC_ASSERT((int)RADIO_OP_AVAILABLE == OFONO_OPERATOR_STATUS_AVAILABLE);
+G_STATIC_ASSERT((int)RADIO_OP_CURRENT == OFONO_OPERATOR_STATUS_CURRENT);
+G_STATIC_ASSERT((int)RADIO_OP_FORBIDDEN == OFONO_OPERATOR_STATUS_FORBIDDEN);
+
 #define DBG_(self,fmt,args...) DBG("%s" fmt, (self)->log_prefix, ##args)
+
+/* Signal strength measurement */
+
+typedef struct binder_ss_threshold {
+    int value;
+    int percent;
+} BinderSsThreshold;
+
+typedef struct binder_ss_percent_map {
+    const char* name;
+    BINDER_RADIO_TECH_TYPE tech_mask;
+    const BinderSsThreshold* threshold;
+    guint count;
+} BinderSsPercentMap;
+
+/* m(NAME,name) */
+#define BINDER_SS_MEASUREMENTS(m) \
+    m(RXLEV,rxlev)   /* GSM */ \
+    m(RSSI,rssi)     /* WCDMA, TD-SCDMA, LTE */ \
+    m(RSCP,rscp)     /* WCDMA, TD-SCDMA */ \
+    m(RSRP,rsrp)     /* LTE */ \
+    m(RSRQ,rsrq)     /* LTE */ \
+    m(RSSNR,rssnr)   /* LTE */ \
+    m(SSRSRP,ssrsrp) /* NR */ \
+    m(SSRSRQ,ssrsrq) /* NR */ \
+    m(SSSINR,sssinr) /* NR */
+
+#define BINDER_RADIO_TECH_MASK_RXLEV  BINDER_RADIO_TECH_GSM
+#define BINDER_RADIO_TECH_MASK_RSSI  (BINDER_RADIO_TECH_WCDMA | \
+                                      BINDER_RADIO_TECH_TDSCDMA | \
+                                      BINDER_RADIO_TECH_LTE)
+#define BINDER_RADIO_TECH_MASK_RSCP  (BINDER_RADIO_TECH_WCDMA | \
+                                      BINDER_RADIO_TECH_TDSCDMA)
+#define BINDER_RADIO_TECH_MASK_RSRP   BINDER_RADIO_TECH_LTE
+#define BINDER_RADIO_TECH_MASK_RSRQ   BINDER_RADIO_TECH_LTE
+#define BINDER_RADIO_TECH_MASK_RSSNR  BINDER_RADIO_TECH_LTE
+#define BINDER_RADIO_TECH_MASK_SSRSRP BINDER_RADIO_TECH_NR
+#define BINDER_RADIO_TECH_MASK_SSRSRQ BINDER_RADIO_TECH_NR
+#define BINDER_RADIO_TECH_MASK_SSSINR BINDER_RADIO_TECH_NR
+
+typedef enum binder_ss_measurement {
+    #define SIGNAL_STRENGTH_ENUM_(NAME,name) \
+    BINDER_SS_##NAME,
+    BINDER_SS_MEASUREMENTS(SIGNAL_STRENGTH_ENUM_)
+    #undef SIGNAL_STRENGTH_ENUM_
+    BINDER_SS_MEASUREMENT_COUNT
+} BINDER_SS_MEASUREMENT;
+
+struct binder_netreg_ss {
+    int m[BINDER_SS_MEASUREMENT_COUNT];
+};
+
+#define SIGNAL_STRENGTH_MAP(var,type,map...) \
+    static const BinderSsThreshold var##_[] = map; \
+    static const BinderSsPercentMap var = {#type, \
+        BINDER_RADIO_TECH_MASK_##type, var##_, G_N_ELEMENTS(var##_)}
+
+#define NO_MEASUREMENT INT_MAX
+
+/*
+ * RXLEV
+ * Received signal strength level
+ *
+ * Reference: 3GPP TS 27.007 section 8.69
+ * Range -110..-48 dBm
+ * Valid values (0-61, 99)
+ *
+ * 0       less than -110 dBm
+ * 1..62   -110... -49 dBm
+ * 63      -48 dBm or greater
+ * 99      not known or not detectable
+ */
+#define RXLEV_VALID(x) ((x) != INT_MAX && (x) != 99)
+SIGNAL_STRENGTH_MAP(binder_rxlev_map, RXLEV,
+    {{0, 1}, {3, 20}, {7, 40}, {13, 60}, {21, 80}, {59, 100}});
+
+/*
+ * RSSI
+ * Received Signal Strength Indication
+ *
+ * Reference: 3GPP TS 27.007 section 8.5
+ * Range -113..-51 dBm
+ * Valid values (0-31, 99)
+ *
+ * 0       -113 dBm or less
+ * 1       -111 dBm
+ * 2...30  -109... -53 dBm
+ * 31      -51 dBm or greater
+ * 99      not known or not detectable
+ */
+#define RSSI_VALID(x) ((x) != INT_MAX && (x) != 99)
+SIGNAL_STRENGTH_MAP(binder_rssi_map, RSSI,
+    {{1, 1}, {3, 20}, {8, 40}, {13, 60}, {18, 80}, {31, 100}});
+
+/*
+ * RSCP
+ * Received Signal Code Power
+ *
+ * Reference: 3GPP TS 27.007 section 8.69
+ * Range: -120..-24 dBm
+ * Valid values (0-96, 255)
+ *
+ * 0       -120 dBm or less
+ * 1       -119 dBm
+ * 2...95  -118...-25 dBm
+ * 96      -24 dBm or greater
+ * 255     not known or not detectable
+ */
+#define RSCP_VALID(x) ((x) != INT_MAX && (x) != 255)
+SIGNAL_STRENGTH_MAP(binder_rscp_map, RSCP,
+    {{0, 1}, {10, 20}, {23, 40}, {47, 60}, {71, 80}, {96, 100}});
+
+/*
+ * RSRP
+ * Reference Signal Received Power
+ *
+ * Reference: 3GPP TS 36.133 section 9.1.4
+ * Range -140..-44 dBm
+ * Value is dBm multipled by -1
+ */
+#define RSRP_VALID(x) ((x) != INT_MAX)
+SIGNAL_STRENGTH_MAP(binder_rsrp_map, RSRP,
+    {{-115, 1}, {-105, 33}, {-95, 66}, {-85, 100}});
+
+/*
+ * RSRQ
+ * Reference Signal Receive Quality in dB
+ *
+ * Reference: 3GPP TS 36.133 9.1.7
+ * Range -34..3 dB
+ * Value is dB multipled by -1
+ */
+#define RSRQ_VALID(x) ((x) != INT_MAX)
+SIGNAL_STRENGTH_MAP(binder_rsrq_map, RSRQ,
+   {{-19, 1}, {-17, 33}, {-14, 66}, {-12, 100}});
+
+/*
+ * RSSNR
+ * Reference signal signal-to-noise ratio in 0.1 dB units.
+ *
+ * Reference: 3GPP TS 36.101 8.1.1
+ * Range -200..300
+ */
+#define RSSNR_VALID(x) ((x) != INT_MAX)
+SIGNAL_STRENGTH_MAP(binder_rssnr_map, RSSNR,
+    {{-30, 1}, {10, 33}, {50, 66}, {130, 100}});
+
+/*
+ * SSRSRP
+ * 5G SS reference signal received power
+ *
+ * Reference: 3GPP TS 38.215.
+ * Range -140..-44 dBm
+ * Value is dBm multipled by -1
+ */
+#define SSRSRP_VALID(x) ((x) != INT_MAX)
+SIGNAL_STRENGTH_MAP(binder_ssrsrp_map, SSRSRP,
+ /* {{-110, 1}, {-90, 33}, {-80, 66}, {-65, 100}}); */
+    {{-130, 1}, {-110, 33}, {-100, 66}, {-85, 100}});
+
+/*
+ * SSRSRQ
+ * 5G SS reference signal received quality
+ *
+ * Reference: 3GPP TS 38.215, 3GPP TS 38.133 section 10
+ * Range: -43..20 dB
+ * Value is dB multipled by -1
+ */
+#define SSRSRQ_VALID(x) ((x) != INT_MAX)
+SIGNAL_STRENGTH_MAP(binder_ssrsrq_map, SSRSRQ,
+    {{-31, 1}, {-19, 33}, {-7, 66}, {6, 100}});
+
+/*
+ * SSSINR
+ * 5G SS signal-to-noise and interference ratio
+ *
+ * Reference: 3GPP TS 38.215 section 5.1, 3GPP TS 38.133 section 10.1.16.1.
+ * Range: -23..40 dB
+ */
+#define SSSINR_VALID(x) ((x) != INT_MAX)
+SIGNAL_STRENGTH_MAP(binder_sssinr_map, SSSINR,
+    {{-5, 1}, {5, 33}, {15, 66}, {30, 100}});
+
+
+static
+BINDER_RADIO_TECH_TYPE
+binder_netreg_tech_type(
+    enum ofono_access_technology tech)
+{
+    switch (tech) {
+    case OFONO_ACCESS_TECHNOLOGY_GSM:
+    case OFONO_ACCESS_TECHNOLOGY_GSM_COMPACT:
+    case OFONO_ACCESS_TECHNOLOGY_GSM_EGPRS:
+        return BINDER_RADIO_TECH_GSM;
+    case OFONO_ACCESS_TECHNOLOGY_UTRAN:
+        return BINDER_RADIO_TECH_WCDMA;
+    case OFONO_ACCESS_TECHNOLOGY_UTRAN_HSDPA:
+    case OFONO_ACCESS_TECHNOLOGY_UTRAN_HSUPA:
+    case OFONO_ACCESS_TECHNOLOGY_UTRAN_HSDPA_HSUPA:
+        return BINDER_RADIO_TECH_TDSCDMA;
+    case OFONO_ACCESS_TECHNOLOGY_EUTRAN:
+    case OFONO_ACCESS_TECHNOLOGY_NB_IOT_M1:
+    case OFONO_ACCESS_TECHNOLOGY_NB_IOT_NB1:
+    case OFONO_ACCESS_TECHNOLOGY_EUTRA_5GCN:
+        return BINDER_RADIO_TECH_LTE;
+    case OFONO_ACCESS_TECHNOLOGY_NR_5GCN:
+    case OFONO_ACCESS_TECHNOLOGY_NG_RAN:
+    case OFONO_ACCESS_TECHNOLOGY_EUTRA_NR:
+        return BINDER_RADIO_TECH_NR;
+    case OFONO_ACCESS_TECHNOLOGY_NONE:
+        break;
+    }
+    return BINDER_RADIO_TECH_NONE;
+}
+
+static
+void
+binder_netreg_ss_clear(
+    BinderSs* ss)
+{
+    guint i;
+
+    for (i = 0; i < G_N_ELEMENTS(ss->m); i++) {
+        ss->m[i] = NO_MEASUREMENT;
+    }
+}
 
 static inline BinderNetReg* binder_netreg_get_data(struct ofono_netreg *ofono)
     { return ofono ? ofono_netreg_get_data(ofono) : NULL; }
@@ -229,15 +533,22 @@ binder_netreg_status_notify_cb(
     GASSERT(self->notify_id);
     self->notify_id = 0;
 
-    if (current->status != reg_status ||
+    /*
+     * The only way to report operator change to ofono is to call
+     * ofono_netreg_status_notify and hope that it will invoke
+     * our .current_operator callback.
+     */
+    if (self->operator_changed ||
+        current->status != reg_status ||
         current->access_tech != reg->access_tech ||
         current->lac != reg->lac ||
         current->ci != reg->ci) {
-        /* Registration state has changed */
+        /* Registration state or operator has changed */
         current->status = reg_status;
         current->access_tech = reg->access_tech;
         current->lac = reg->lac;
         current->ci = reg->ci;
+        self->operator_changed = FALSE; /* Clear the change */
         ofono_netreg_status_notify(self->netreg, current->status,
             current->lac, current->ci, current->access_tech);
     }
@@ -261,6 +572,20 @@ binder_netreg_status_notify(
         DBG_(self, "queuing notification");
         self->notify_id = g_idle_add(binder_netreg_status_notify_cb, self);
     }
+}
+
+static
+void
+binder_netreg_operator_notify(
+    BinderNetwork* net,
+    BINDER_NETWORK_PROPERTY property,
+    void* user_data)
+{
+    BinderNetReg* self = user_data;
+
+    /* Force ofono_netreg_status_notify even if the state didn't change */
+    self->operator_changed = TRUE;
+    binder_netreg_status_notify(net, property, self);
 }
 
 static
@@ -313,10 +638,7 @@ binder_netreg_current_operator(
      * any context with individual calls, we can safely assume
      * that such a call essentially cancels the previous one.
      */
-    if (self->current_operator_id) {
-        g_source_remove(self->current_operator_id);
-    }
-
+    gutil_source_remove(self->current_operator_id);
     self->current_operator_id = g_idle_add_full(G_PRIORITY_DEFAULT_IDLE,
         binder_netreg_current_operator_cb,
         binder_netreg_cbd_new(self, BINDER_CB(cb), data),
@@ -414,14 +736,10 @@ binder_netreg_scan_free(
 
             scan->cb(binder_error_failure(&err), 0, NULL, scan->data);
         }
-        if (scan->timeout_id) {
-            g_source_remove(scan->timeout_id);
-        }
+        gutil_source_remove(scan->timeout_id);
         if (scan->stop) {
-            guint32 code = self->interface_aidl == RADIO_NETWORK_INTERFACE ?
-                RADIO_NETWORK_REQ_STOP_NETWORK_SCAN : RADIO_REQ_STOP_NETWORK_SCAN;
             RadioRequest* req = radio_request_new(self->client,
-                code, NULL, NULL, NULL, NULL);
+                self->api->stop_network_scan_req, NULL, NULL, NULL, NULL);
 
             radio_request_submit(req);
             radio_request_unref(req);
@@ -470,56 +788,6 @@ binder_netreg_scan_drop(
         scan->cb = NULL;
         binder_netreg_scan_free(self, scan);
     }
-}
-
-static
-BinderOpList*
-binder_netreg_oplist_fill(
-    BinderOpList* oplist,
-    const RadioOperatorInfo* ops,
-    gsize count,
-    enum ofono_access_technology default_tech)
-{
-    guint i;
-
-    /* This allocates the list if necessary */
-    oplist = binder_oplist_set_count(oplist, count);
-    for (i = 0; i < count; i++) {
-        const RadioOperatorInfo* src = ops + i;
-        struct ofono_network_operator* dest = oplist->op + i;
-
-        /* Try to use long by default */
-        if (src->alphaLong.len) {
-            g_strlcpy(dest->name, src->alphaLong.data.str, sizeof(dest->name));
-        } else if (src->alphaShort.len) {
-            g_strlcpy(dest->name, src->alphaShort.data.str, sizeof(dest->name));
-        }
-
-        /* Set the proper status  */
-        dest->status = OFONO_OPERATOR_STATUS_UNKNOWN;
-        switch (src->status) {
-        case RADIO_OP_STATUS_UNKNOWN:
-            break;
-        case RADIO_OP_AVAILABLE:
-            dest->status = OFONO_OPERATOR_STATUS_AVAILABLE;
-            break;
-        case RADIO_OP_CURRENT:
-            dest->status = OFONO_OPERATOR_STATUS_CURRENT;
-            break;
-        case RADIO_OP_FORBIDDEN:
-            dest->status = OFONO_OPERATOR_STATUS_FORBIDDEN;
-            break;
-        }
-
-        dest->tech = default_tech;
-        binder_parse_mcc_mnc(src->operatorNumeric.data.str, dest);
-        DBG("[operator=%s, %s, %s, %s, %s]",
-            dest->name, dest->mcc, dest->mnc,
-            binder_ofono_access_technology_string(dest->tech),
-            binder_radio_op_status_string(src->status));
-    }
-
-    return oplist;
 }
 
 static
@@ -579,272 +847,6 @@ binder_netreg_start_scan_cb(
 
 static
 void
-binder_netreg_start_network_scan(
-    BinderNetReg* self)
-{
-    /*
-     * Caller has checked that a) self->scan exists and b) radio
-     * interface version is >= 1.2
-     */
-    BinderNetRegScan* scan = self->scan;
-    const RADIO_INTERFACE iface = radio_client_interface(self->client);
-
-    /*
-     * startNetworkScan(serial, NetworkScanRequest) <= we don't use that
-     * startNetworkScan_1_2(serial, NetworkScanRequest_1_2)
-     * startNetworkScan_1_4(serial, NetworkScanRequest_1_2)
-     * startNetworkScan_1_5(serial, NetworkScanRequest_1_5)
-     */
-    guint32 req_code;
-
-    if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
-        req_code =
-            (iface < RADIO_INTERFACE_1_4) ? RADIO_REQ_START_NETWORK_SCAN_1_2 :
-            (iface < RADIO_INTERFACE_1_5) ? RADIO_REQ_START_NETWORK_SCAN_1_4 :
-            RADIO_REQ_START_NETWORK_SCAN_1_5;
-    } else {
-        req_code = RADIO_NETWORK_REQ_START_NETWORK_SCAN;
-    }
-    GBinderWriter writer;
-    guint i, nspecs = 0;
-
-    scan->stop = TRUE; /* Assume that startNetworkScan succeeds */
-    scan->timeout_id = g_timeout_add_seconds(NETWORK_SCAN_TIMEOUT_SEC,
-        binder_netreg_scan_timeoult_cb, self);
-    scan->req = radio_request_new(self->client, req_code, &writer,
-        binder_netreg_start_scan_cb, NULL, self);
-
-    /* Write the arguments */
-    if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
-        if (iface <= RADIO_INTERFACE_1_4) {
-            /*
-             * typedef struct radio_network_scan_specifier {
-             *     RADIO_ACCESS_NETWORKS radioAccessNetwork;
-             *     GBinderHidlVec geranBands; // vec<RADIO_GERAN_BAND>
-             *     GBinderHidlVec utranBands; // vec<RADIO_UTRAN_BAND>
-             *     GBinderHidlVec eutranBands; // vec<RADIO_EUTRAN_BAND>
-             *     GBinderHidlVec channels; // vec<int32_t>
-             * } RadioAccessSpecifier;
-             */
-            static const GBinderWriterField radio_network_scan_specifier_f[] = {
-               GBINDER_WRITER_FIELD_HIDL_VEC_INT32
-                   (RadioAccessSpecifier, geranBands),
-               GBINDER_WRITER_FIELD_HIDL_VEC_INT32
-                   (RadioAccessSpecifier, utranBands),
-               GBINDER_WRITER_FIELD_HIDL_VEC_INT32
-                   (RadioAccessSpecifier, eutranBands),
-               GBINDER_WRITER_FIELD_HIDL_VEC_INT32
-                   (RadioAccessSpecifier, channels),
-               GBINDER_WRITER_FIELD_END()
-            };
-
-            static const GBinderWriterType radio_network_scan_specifier_t = {
-                GBINDER_WRITER_STRUCT_NAME_AND_SIZE(RadioAccessSpecifier),
-                radio_network_scan_specifier_f
-            };
-
-            /*
-             * typedef struct radio_network_scan_request {
-             *     RADIO_SCAN_TYPE type;
-             *     gint32 interval;           // [5..300] seconds
-             *     GBinderHidlVec specifiers; // vec <RadioAccessSpecifier>
-             *     gint32 maxSearchTime;      // [60..3600] seconds
-             *     guint8 incrementalResults; // TRUE/FALSE
-             *     gint32 incrementalResultsPeriodicity; // [1..10]
-             *     GBinderHidlVec mccMncs;    // vec<hidl_string>
-             * } RadioNetworkScanRequest_1_2;
-             */
-            static const GBinderWriterField radio_network_scan_request_f[] = {
-                GBINDER_WRITER_FIELD_HIDL_VEC
-                    (RadioNetworkScanRequest_1_2, specifiers,
-                        &radio_network_scan_specifier_t),
-                GBINDER_WRITER_FIELD_HIDL_VEC_STRING
-                    (RadioNetworkScanRequest_1_2, mccMncs),
-                GBINDER_WRITER_FIELD_END()
-            };
-            static const GBinderWriterType radio_network_scan_request_t = {
-                GBINDER_WRITER_STRUCT_NAME_AND_SIZE(RadioNetworkScanRequest_1_2),
-                radio_network_scan_request_f
-            };
-
-            RadioNetworkScanRequest_1_2* scan = gbinder_writer_new0(&writer,
-                RadioNetworkScanRequest_1_2);
-
-            /* Which modes are supported and enabled */
-            const BinderNetRegRadioType* radio_types[N_RADIO_TYPES];
-
-            for (i = 0; i < N_RADIO_TYPES; i++) {
-                if (self->techs & binder_netreg_radio_types[i].mode) {
-                    radio_types[nspecs++] = binder_netreg_radio_types + i;
-                }
-            }
-
-            RadioAccessSpecifier* specs = gbinder_writer_malloc0(&writer,
-                nspecs * sizeof(*specs));
-
-            for (i = 0; i < nspecs; i++) {
-                const BinderNetRegRadioType* radio_type = radio_types[i];
-                RadioAccessSpecifier* spec = specs + i;
-
-                spec->radioAccessNetwork = radio_type->ran;
-                /* The rest may (hopefully) remain zero-initialized */
-            }
-            scan->type = RADIO_SCAN_ONE_SHOT;
-            scan->interval = 10;
-            scan->specifiers.owns_buffer = TRUE;
-            scan->specifiers.count = nspecs;
-            scan->specifiers.data.ptr = specs;
-            scan->maxSearchTime = NETWORK_SCAN_MAX_SEARCH_TIME_SEC;
-            scan->incrementalResults = TRUE;
-            scan->incrementalResultsPeriodicity = 3;
-            gbinder_writer_append_struct(&writer, scan,
-                &radio_network_scan_request_t, NULL);
-        } else {
-            /*
-             * typedef struct radio_network_scan_specifier_1_5 {
-             *     RADIO_ACCESS_NETWORKS radioAccessNetwork;
-             *     guint8 type;
-             *     GBinderHidlVec bands;    // vec<enum>
-             *     GBinderHidlVec channels; // vec<int32_t>
-             * } RadioAccessSpecifier_1_5;
-             */
-            static const GBinderWriterField radio_network_scan_specifier_1_5_f[] = {
-                GBINDER_WRITER_FIELD_HIDL_VEC_INT32
-                    (RadioAccessSpecifier_1_5, bands),
-                GBINDER_WRITER_FIELD_HIDL_VEC_INT32
-                    (RadioAccessSpecifier_1_5, channels),
-                GBINDER_WRITER_FIELD_END()
-            };
-            static const GBinderWriterType radio_network_scan_specifier_1_5_t = {
-                GBINDER_WRITER_STRUCT_NAME_AND_SIZE(RadioAccessSpecifier_1_5),
-                radio_network_scan_specifier_1_5_f
-            };
-
-            /*
-             * typedef struct radio_network_scan_request {
-             *     RADIO_SCAN_TYPE type;
-             *     gint32 interval;           // [5..300] seconds
-             *     GBinderHidlVec specifiers; // vec <RadioAccessSpecifier>
-             *     gint32 maxSearchTime;      // [60..3600] seconds
-             *     guint8 incrementalResults; // TRUE/FALSE
-             *     gint32 incrementalResultsPeriodicity; // [1..10]
-             *     GBinderHidlVec mccMncs;    // vec<hidl_string>
-             * } RadioNetworkScanRequest_1_5;
-             */
-            static const GBinderWriterField radio_network_scan_request_1_5_f[] = {
-                GBINDER_WRITER_FIELD_HIDL_VEC
-                    (RadioNetworkScanRequest_1_5, specifiers,
-                        &radio_network_scan_specifier_1_5_t),
-                GBINDER_WRITER_FIELD_HIDL_VEC_STRING
-                    (RadioNetworkScanRequest_1_5, mccMncs),
-                GBINDER_WRITER_FIELD_END()
-            };
-            static const GBinderWriterType radio_network_scan_request_1_5_t = {
-                GBINDER_WRITER_STRUCT_NAME_AND_SIZE(RadioNetworkScanRequest_1_5),
-                radio_network_scan_request_1_5_f
-            };
-
-            RadioNetworkScanRequest_1_5* scan = gbinder_writer_new0(&writer,
-                RadioNetworkScanRequest_1_5);
-
-            /* Which modes are supported and enabled */
-            const BinderNetRegRadioType* radio_types[N_RADIO_TYPES_1_5];
-
-            for (i = 0; i < N_RADIO_TYPES_1_5; i++) {
-                if (self->techs & binder_netreg_radio_types_1_5[i].mode) {
-                    radio_types[nspecs++] = binder_netreg_radio_types_1_5 + i;
-                }
-            }
-
-            RadioAccessSpecifier_1_5* specs = gbinder_writer_malloc0(&writer,
-                nspecs * sizeof(*specs));
-
-            for (i = 0; i < nspecs; i++) {
-                const BinderNetRegRadioType* radio_type = radio_types[i];
-                RadioAccessSpecifier_1_5* spec = specs + i;
-
-                specs[i].radioAccessNetwork = radio_type->ran;
-                spec->type = radio_type->spec_1_5_type;
-                /* The rest may (hopefully) remain zero-initialized */
-            }
-            scan->type = RADIO_SCAN_ONE_SHOT;
-            scan->interval = 10;
-            scan->specifiers.owns_buffer = TRUE;
-            scan->specifiers.count = nspecs;
-            scan->specifiers.data.ptr = specs;
-            scan->maxSearchTime = NETWORK_SCAN_MAX_SEARCH_TIME_SEC;
-            scan->incrementalResults = TRUE;
-            scan->incrementalResultsPeriodicity = 3;
-            gbinder_writer_append_struct(&writer, scan,
-                &radio_network_scan_request_1_5_t, NULL);
-        }
-    } else {
-        /* Non-null parcelable */
-        gbinder_writer_append_int32(&writer, 1);
-        gint32 initial_size = gbinder_writer_bytes_written(&writer);
-        /* Dummy parcelable size, replaced at the end */
-        gbinder_writer_append_int32(&writer, -1);
-        // type
-        gbinder_writer_append_int32(&writer, RADIO_SCAN_ONE_SHOT);
-        // interval
-        gbinder_writer_append_int32(&writer, 10);
-
-        /* Which modes are supported and enabled */
-        const BinderNetRegRadioType* radio_types[N_RADIO_TYPES_1_5];
-
-        for (i = 0; i < N_RADIO_TYPES_1_5; i++) {
-            if (self->techs & binder_netreg_radio_types_1_5[i].mode) {
-                radio_types[nspecs++] = binder_netreg_radio_types_1_5 + i;
-            }
-        }
-
-        // write specifier count
-        gbinder_writer_append_int32(&writer, nspecs);
-
-        // specifiers
-        for (i = 0; i < nspecs; i++) {
-            const BinderNetRegRadioType* radio_type = radio_types[i];
-            // Non-null parcelable
-            gbinder_writer_append_int32(&writer, 1);
-            // parcelable size
-            gbinder_writer_append_int32(&writer, 6 * sizeof(gint32));
-            // accessNetwork
-            gbinder_writer_append_int32(&writer, radio_type->ran);
-            // bands (not-null)
-            gbinder_writer_append_int32(&writer, 1);
-            // bands tag
-            gbinder_writer_append_int32(&writer, radio_type->spec_1_5_type + 1);
-            // bands count
-            gbinder_writer_append_int32(&writer, 0);
-            // channels count
-            gbinder_writer_append_int32(&writer, 0);
-        }
-
-        // maxSearchTime
-        gbinder_writer_append_int32(&writer, NETWORK_SCAN_MAX_SEARCH_TIME_SEC);
-        // incrementalResults
-        gbinder_writer_append_bool(&writer, TRUE);
-        // incrementalResultsPeriodicity
-        gbinder_writer_append_int32(&writer, 3);
-        // mccMncs count
-        gbinder_writer_append_int32(&writer, 0);
-        /* Overwrite parcelable size */
-        gint32 size = gbinder_writer_bytes_written(&writer);
-        gbinder_writer_overwrite_int32(&writer, initial_size, size - initial_size);
-    }
-
-    /* Submit the request */
-    if (radio_request_submit(scan->req)) {
-        DBG_(self, "querying available networks");
-    } else {
-        DBG_(self, "failed to query available networks");
-        self->scan = NULL;
-        binder_netreg_scan_free(self, scan);
-    }
-}
-
-static
-void
 binder_netreg_get_available_networks_cb(
     RadioRequest* req,
     RADIO_TX_STATUS status,
@@ -855,6 +857,7 @@ binder_netreg_get_available_networks_cb(
 {
     BinderNetReg* self = user_data;
     BinderNetRegScan* scan = self->scan;
+    const BinderNetRegApi* api = self->api;
 
     /*
      * Scan must be non-NULL because when it gets deallocated,
@@ -865,38 +868,39 @@ binder_netreg_get_available_networks_cb(
     radio_request_unref(scan->req);
     scan->req = NULL;
 
-    if (status == RADIO_TX_STATUS_OK) {
-        if (resp == RADIO_RESP_GET_AVAILABLE_NETWORKS) {
-            if (error == RADIO_ERROR_NONE) {
-                 GBinderReader reader;
-                 const RadioOperatorInfo* ops;
-                 gsize count = 0;
+    if (status != RADIO_TX_STATUS_OK) {
+        DBG_(self, "getAvailableNetworks tx failed");
+    } else if (error == RADIO_ERROR_REQUEST_NOT_SUPPORTED) {
+        DBG_(self, "getAvailableNetworks not supported");
+        if (api->start_network_scan_req) {
+            GBinderWriter writer;
 
-                 /*
-                  * getAvailableNetworksResponse(RadioResponseInfo,
-                  *   vec<OperatorInfo> networkInfos);
-                  */
-                 gbinder_reader_copy(&reader, args);
-                 ops = gbinder_reader_read_hidl_type_vec(&reader,
-                     RadioOperatorInfo, &count);
-                 if (ops) {
-                     scan->oplist = binder_netreg_oplist_fill(scan->oplist,
-                         ops, count, self->network->voice.access_tech);
-                     self->scan = NULL;
-                     binder_netreg_scan_complete(self, scan);
-                     return;
-                 }
-            } else if (error == RADIO_ERROR_REQUEST_NOT_SUPPORTED &&
-                radio_client_interface(self->client) >= RADIO_INTERFACE_1_2) {
-                /* Try startNetworkScan instead */
-                DBG_(self, "getAvailableNetworks not supported");
-                binder_netreg_start_network_scan(self);
-            } else {
-                ofono_warn("Failed to get the list of operators: %s",
-                    binder_radio_error_string(error));
+            /* Try startNetworkScan instead */
+            scan->req = radio_request_new(self->client,
+                api->start_network_scan_req, &writer,
+                binder_netreg_start_scan_cb, NULL, self);
+            api->write_start_network_scan_args(self, &writer);
+            scan->stop = TRUE;
+            scan->timeout_id = g_timeout_add_seconds(NETWORK_SCAN_TIMEOUT_SEC,
+                binder_netreg_scan_timeoult_cb, self);
+            if (radio_request_submit(scan->req)) {
+                DBG_(self, "trying to scan available networks");
+                return;
             }
-        } else {
-            ofono_error("Unexpected getAvailableNetworks response %d", resp);
+        }
+    } else if (error != RADIO_ERROR_NONE) {
+        ofono_warn("Failed to get the list of operators: %s",
+              binder_radio_error_string(error));
+    } else {
+        GBinderReader reader;
+        const BinderNetRegApi* api = self->api;
+
+        gbinder_reader_copy(&reader, args);
+        if ((scan->oplist = api->read_oplist(self, &reader)) != NULL) {
+            /* Got the list */
+            self->scan = NULL;
+            binder_netreg_scan_complete(self, scan);
+            return;
         }
     }
 
@@ -914,39 +918,39 @@ binder_netreg_list_operators(
 {
     BinderNetReg* self = binder_netreg_get_data(netreg);
     BinderNetRegScan* scan = binder_netreg_scan_new(cb, data);
+    const BinderNetRegApi* api = self->api;
 
     /* Drop the pending request if there is one */
     binder_netreg_scan_drop(self, self->scan);
     self->scan = scan;
 
-    /*
-     * Even though startNetworkScan was introduced in IRadio 1.1
-     * getAvailableNetworks works there as well, and in addition
-     * to that 1.1 variant of CellIdentity doesn't contain operator
-     * names which makes 1.1 variant of NetworkScanResult (almost)
-     * useless for our purposes here. Therefore we require IRadio 1.2
-     * for startNetworkScan.
-     */
-    if (!self->use_network_scan ||
-        (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE &&
-            radio_client_interface(self->client) < RADIO_INTERFACE_1_2)) {
-        /* getAvailableNetworks(int32_t serial) */
+    /* Prefer incremental scanning */
+    if (self->use_network_scan && api->start_network_scan_req) {
+        GBinderWriter writer;
+
         scan->req = radio_request_new(self->client,
-            RADIO_REQ_GET_AVAILABLE_NETWORKS, NULL,
+            api->start_network_scan_req, &writer,
+            binder_netreg_start_scan_cb, NULL, self);
+        api->write_start_network_scan_args(self, &writer);
+        scan->stop = TRUE; /* Assume that startNetworkScan succeeds */
+        scan->timeout_id = g_timeout_add_seconds(NETWORK_SCAN_TIMEOUT_SEC,
+            binder_netreg_scan_timeoult_cb, self);
+    } else {
+        /* Fallback to getAvailableNetworks */
+        scan->req = radio_request_new(self->client,
+            api->get_available_networks_req, NULL,
             binder_netreg_get_available_networks_cb,
             NULL, self);
         radio_request_set_timeout(scan->req, OPERATOR_LIST_TIMEOUT_MS);
+    }
 
-        /* Submit the request */
-        if (radio_request_submit(scan->req)) {
-            DBG_(self, "querying available networks");
-        } else {
-            DBG_(self, "failed to query available networks");
-            self->scan = NULL;
-            binder_netreg_scan_free(self, scan);
-        }
+    /* Submit the request */
+    if (radio_request_submit(scan->req)) {
+        DBG_(self, "querying available networks");
     } else {
-        binder_netreg_start_network_scan(self);
+        DBG_(self, "failed to query available networks");
+        self->scan = NULL;
+        binder_netreg_scan_free(self, scan);
     }
 }
 
@@ -966,26 +970,976 @@ binder_netreg_scan_op_copy_name(
 
 static
 void
-binder_netreg_scan_op_copy_name_aidl(
-    GBinderReader* reader,
-    struct ofono_network_operator* dest)
+binder_netreg_scan_result_notify(
+    RadioClient* client,
+    RADIO_IND code,
+    const GBinderReader* args,
+    gpointer user_data)
 {
-    char* alpha_long;
-    char* alpha_short;
-    binder_read_parcelable_size(reader);
-    alpha_long = gbinder_reader_read_string16(reader);
-    alpha_short = gbinder_reader_read_string16(reader);
-    gbinder_reader_skip_string16(reader);
-    gbinder_reader_read_int32(reader, NULL);
-    /* Try to use long by default */
-    if (alpha_long) {
-        g_strlcpy(dest->name, alpha_long, sizeof(dest->name));
-    } else if (alpha_short) {
-        g_strlcpy(dest->name, alpha_short, sizeof(dest->name));
+    BinderNetReg* self = user_data;
+    BinderNetRegScan* scan = self->scan;
+
+    if (scan) {
+        GBinderReader reader;
+        RADIO_SCAN_STATUS scan_status;
+        BinderOpList* oplist;
+
+        gbinder_reader_copy(&reader, args);
+        oplist = self->api->read_network_scan(self, code,
+            &reader, &scan_status);
+
+        if (oplist) {
+            guint i;
+
+            /* Merge the lists avoiding dups */
+            for (i = 0; i < oplist->count; i++) {
+                struct ofono_network_operator* new_op = oplist->op + i;
+                struct ofono_network_operator* old_op =
+                    binder_oplist_find(scan->oplist, new_op->mcc, new_op->mnc);
+
+                if (old_op) {
+                    *old_op = *new_op;
+                } else {
+                    scan->oplist = binder_oplist_append(scan->oplist, new_op);
+                }
+            }
+            binder_oplist_free(oplist);
+        } else {
+            DBG_(self, "failed to parse scan result");
+            scan_status = RADIO_SCAN_COMPLETE;
+        }
+
+        if (scan_status == RADIO_SCAN_COMPLETE) {
+            DBG_(self, "scan completed");
+            self->scan = NULL;
+            scan->stop = FALSE;
+            binder_netreg_scan_complete(self, scan);
+        } else {
+            DBG_(self, "expecting more scan results");
+        }
+    } else {
+        DBG_(self, "got scan result without a scan");
     }
-    g_free(alpha_long);
-    g_free(alpha_short);
 }
+
+static
+void
+binder_netreg_register_cb(
+    RadioRequest* req,
+    RADIO_TX_STATUS status,
+    RADIO_RESP resp,
+    RADIO_ERROR error,
+    const GBinderReader* args,
+    gpointer user_data)
+{
+    BinderNetRegCbData* cbd = user_data;
+    BinderNetReg* self = cbd->self;
+    ofono_netreg_register_cb_t cb = cbd->cb.reg;
+    struct ofono_error err;
+
+    GASSERT(self->register_req == req);
+    radio_request_unref(self->register_req);
+    self->register_req = NULL;
+
+    /*
+     * Handles both:
+     * setNetworkSelectionModeAutomaticResponse(RadioResponseInfo);
+     * setNetworkSelectionModeManualResponse(RadioResponseInfo);
+     */
+    if (status != RADIO_TX_STATUS_OK) {
+        DBG_(self, "setNetworkSelectionMode tx failed");
+    } else if (error != RADIO_ERROR_NONE) {
+        ofono_error("registration failed, error %s",
+            binder_radio_error_string(error));
+    } else {
+        /* Success */
+        cb(binder_error_ok(&err), cbd->data);
+        return;
+    }
+
+    /* Error path */
+    cb(binder_error_failure(&err), cbd->data);
+}
+
+static
+void
+binder_netreg_query_register_auto_cb(
+    RadioRequest* req,
+    RADIO_TX_STATUS status,
+    RADIO_RESP resp,
+    RADIO_ERROR error,
+    const GBinderReader* args,
+    gpointer user_data)
+{
+    BinderNetRegCbData* cbd = user_data;
+    BinderNetReg* self = cbd->self;
+    const BinderNetRegApi* api = self->api;
+    ofono_netreg_register_cb_t cb = cbd->cb.reg;
+    struct ofono_error err;
+
+    GASSERT(self->register_req == req);
+    radio_request_unref(self->register_req);
+    self->register_req = NULL;
+
+    if (status != RADIO_TX_STATUS_OK) {
+        DBG_(self, "getNetworkSelectionMode tx failed");
+    } else if (error != RADIO_ERROR_NONE) {
+        ofono_warn("Failed to query network selection mode: %s",
+            binder_radio_error_string(status));
+    } else {
+        GBinderReader reader;
+        gboolean manual;
+
+        /*
+         * getNetworkSelectionModeResponse(RadioResponseInfo,
+         * bool manual);
+         */
+        gbinder_reader_copy(&reader, args);
+        if (gbinder_reader_read_bool(&reader, &manual) && !manual) {
+            ofono_info("nw selection is already auto");
+            cb(binder_error_ok(&err), cbd->data);
+            return;
+        }
+    }
+
+    /*
+     * Either selection is set to manual, or the query failed.
+     * In either case, let's give it a try.
+     */
+    req = radio_request_new(self->client,
+        api->set_network_selection_mode_automatic_req, NULL,
+        binder_netreg_register_cb, binder_netreg_cbd_destroy,
+        binder_netreg_cbd_new(self, cbd->cb.f, cbd->data));
+
+    /* setNetworkSelectionModeAutomatic(int32 serial); */
+    radio_request_set_timeout(req, self->network_selection_timeout_ms);
+    radio_request_set_retry(req, 0, REGISTRATION_MAX_RETRIES);
+    if (radio_request_submit(req)) {
+        ofono_info("%snw select auto", self->log_prefix);
+        self->register_req = req; /* Keep the ref */
+    } else {
+        ofono_warn("%sfailed to select auto nw", self->log_prefix);
+        radio_request_unref(req);
+        cb(binder_error_failure(&err), cbd->data);
+    }
+}
+
+static
+void
+binder_netreg_register_auto(
+    struct ofono_netreg* netreg,
+    ofono_netreg_register_cb_t cb,
+    void* data)
+{
+    BinderNetReg* self = binder_netreg_get_data(netreg);
+    RadioRequest* req = radio_request_new(self->client,
+        self->api->get_network_selection_mode_req, NULL,
+        binder_netreg_query_register_auto_cb,
+        binder_netreg_cbd_destroy,
+        binder_netreg_cbd_new(self, BINDER_CB(cb), data));
+
+    /* getNetworkSelectionMode(int32 serial); */
+    radio_request_drop(self->register_req);
+    if (!(self->register_req = radio_request_try_submit(req))) {
+        struct ofono_error err;
+
+        DBG_(self, "failed to query bw selection mode");
+        cb(binder_error_failure(&err), data);
+    }
+}
+
+static
+void
+binder_netreg_register_manual(
+    struct ofono_netreg* netreg,
+    const char* mcc,
+    const char* mnc,
+    ofono_netreg_register_cb_t cb,
+    void* data)
+{
+    BinderNetReg* self = binder_netreg_get_data(netreg);
+    const BinderNetRegApi* api = self->api;
+    char* numeric = g_strconcat(mcc, mnc, NULL);
+    GBinderWriter writer;
+    RadioRequest* req = radio_request_new(self->client,
+        api->set_network_selection_mode_manual_req, &writer,
+        binder_netreg_register_cb, binder_netreg_cbd_destroy,
+        binder_netreg_cbd_new(self, BINDER_CB(cb), data));
+
+    api->write_set_network_selection_mode_manual_args(&writer, numeric);
+    radio_request_set_timeout(req, self->network_selection_timeout_ms);
+    radio_request_drop(self->register_req);
+    if ((self->register_req = radio_request_try_submit(req)) != NULL) {
+        ofono_info("%snw select manual: %s", self->log_prefix, numeric);
+        self->register_req = req; /* Keep the ref */
+    } else {
+        struct ofono_error err;
+
+        DBG_(self, "failed to set nw select manual: %s", numeric);
+        cb(binder_error_failure(&err), data);
+    }
+    g_free(numeric);
+}
+
+static
+int
+binder_netreg_ss_percent_map(
+    const BinderSsPercentMap* map,
+    int value)
+{
+    if (value <= map->threshold[0].value) {
+        /* Minimum */
+        return map->threshold[0].percent;
+    } else {
+        if (value < map->threshold[map->count - 1].value) {
+            guint i;
+
+            /* Somewhere in the middle */
+            for (i = 1; i < map->count; i++) {
+                const BinderSsThreshold* t = map->threshold + i;
+
+                if (value <= t->value) {
+                    const BinderSsThreshold* t0 = t - 1;
+
+                    /* Linear interpolation between the thresholds */
+                    return t0->percent + (t->percent - t0->percent) *
+                        (value - t0->value) / (t->value - t0->value);
+                }
+            }
+        }
+        /* Maximum */
+        return map->threshold[map->count - 1].percent;
+    }
+}
+
+static
+int
+binder_netreg_tech_percent(
+    BinderNetReg* self,
+    const BinderSs* ss,
+    BINDER_RADIO_TECH_TYPE techs)
+{
+    static const BinderSsPercentMap*
+    ss_maps[BINDER_SS_MEASUREMENT_COUNT] = {
+        #define SIGNAL_STRENGTH_MAP_(NAME,name) &binder_##name##_map,
+        BINDER_SS_MEASUREMENTS(SIGNAL_STRENGTH_MAP_)
+        #undef SIGNAL_STRENGTH_MAP_
+    };
+
+    int i, percent = 0;
+
+    for (i = 0; i < BINDER_SS_MEASUREMENT_COUNT; i++) {
+        if (ss->m[i] != NO_MEASUREMENT) {
+            const BinderSsPercentMap* map = ss_maps[i];
+
+            if (map->tech_mask & techs) {
+                const int p = binder_netreg_ss_percent_map(map, ss->m[i]);
+
+                DBG_(self, "%s %d (%d%%)", map->name, ss->m[i], p);
+                if (!percent || p < percent) {
+                    percent = p;
+                }
+            } else {
+                DBG_(self, "%s %d (ignored)", map->name, ss->m[i]);
+            }
+        }
+    }
+
+    if (percent > 0) {
+        DBG_(self, "%d%%", percent);
+        return percent;
+    }
+
+    return 0;
+}
+
+static
+int
+binder_netreg_ss_percent(
+    BinderNetReg* self,
+    const BinderSs* ss)
+{
+    BINDER_RADIO_TECH_TYPE tech, techs = BINDER_RADIO_TECH_ALL;
+    const BINDER_RADIO_TECH_TYPE access_tech =
+        binder_netreg_tech_type(self->reg_state.access_tech);
+
+    /*
+     * If we are registered with NR, or not registered at all, see if
+     * we should check LTE signal quality indicators first.
+     */
+    if ((access_tech == BINDER_RADIO_TECH_NR ||
+         access_tech == BINDER_RADIO_TECH_NONE) &&
+        self->prefer_lte_signal_strength) {
+        int percent = binder_netreg_tech_percent(self, ss,
+            BINDER_RADIO_TECH_LTE);
+
+        if (percent > 0) {
+            return percent;
+        }
+
+        /* Done with LTE */
+        techs &= ~BINDER_RADIO_TECH_LTE;
+    }
+
+    /*
+     * Then check signal quality indicators for the registration tech,
+     * if there is one. Unless we have checked it already.
+     */
+    if (access_tech != BINDER_RADIO_TECH_NONE && (techs & access_tech)) {
+        int percent = binder_netreg_tech_percent(self, ss, access_tech);
+
+        if (percent > 0) {
+            return percent;
+        }
+
+        /* Done with the current registration tech */
+        techs &= ~access_tech;
+    }
+
+    /* Try all other techs that we haven't tried yet. */
+    tech = BINDER_RADIO_TECH_MAX;
+    while (techs) {
+        if (techs & tech) {
+            int percent = binder_netreg_tech_percent(self, ss, tech);
+
+            if (percent > 0) {
+                return percent;
+            }
+            techs &= ~tech;
+        }
+        tech >>= 1;
+    }
+
+    return 0;
+}
+
+static
+void
+binder_netreg_strength_notify(
+    RadioClient* client,
+    RADIO_IND resp,
+    const GBinderReader* args,
+    gpointer user_data)
+{
+    BinderNetReg* self = user_data;
+    GBinderReader reader;
+    BinderSs ss;
+
+    gbinder_reader_copy(&reader, args);
+    binder_netreg_ss_clear(&ss);
+    if (self->api->read_signal_strength_ind(self, resp, &reader, &ss)) {
+        ofono_netreg_strength_notify(self->netreg,
+            binder_netreg_ss_percent(self, &ss));
+    }
+}
+
+static
+void
+binder_netreg_strength_cb(
+    RadioRequest* req,
+    RADIO_TX_STATUS status,
+    RADIO_RESP resp,
+    RADIO_ERROR error,
+    const GBinderReader* args,
+    gpointer user_data)
+{
+    BinderNetRegCbData* cbd = user_data;
+    BinderNetReg* self = cbd->self;
+    ofono_netreg_strength_cb_t cb = cbd->cb.strength;
+    struct ofono_error err;
+
+    GASSERT(self->strength_req == req);
+    radio_request_unref(self->strength_req);
+    self->strength_req = NULL;
+
+    if (status != RADIO_TX_STATUS_OK) {
+        DBG_(self, "getSignalStrength tx failed");
+    } else if (error != RADIO_ERROR_NONE) {
+        ofono_warn("Failed to retrive the signal strength: %s",
+            binder_radio_error_string(status));
+    } else {
+        GBinderReader reader;
+        BinderSs ss;
+
+        gbinder_reader_copy(&reader, args);
+        binder_netreg_ss_clear(&ss);
+        if (self->api->read_signal_strength_resp(self, resp, &reader, &ss)) {
+            cb(binder_error_ok(&err), binder_netreg_ss_percent(self, &ss),
+                cbd->data);
+            return;
+        }
+    }
+
+    /* Error path */
+    cb(binder_error_failure(&err), -1, cbd->data);
+}
+
+static
+void
+binder_netreg_strength(
+    struct ofono_netreg* netreg,
+    ofono_netreg_strength_cb_t cb,
+    void* data)
+{
+    BinderNetReg* self = binder_netreg_get_data(netreg);
+    RadioRequest* req = radio_request_new(self->client,
+        self->api->get_signal_strength_req, NULL,
+        binder_netreg_strength_cb, binder_netreg_cbd_destroy,
+        binder_netreg_cbd_new(self, BINDER_CB(cb), data));
+
+    radio_request_set_retry(req, BINDER_RETRY_MS, -1);
+    radio_request_drop(self->strength_req);
+    if (!(self->strength_req = radio_request_try_submit(req))) {
+        struct ofono_error err;
+
+        DBG_(self, "failed to query signal strength");
+        cb(binder_error_failure(&err), -1, data);
+    }
+}
+
+static
+void
+binder_netreg_nitz_notify(
+    RadioClient* client,
+    RADIO_IND code,
+    const GBinderReader* args,
+    gpointer user_data)
+{
+    BinderNetReg* self = user_data;
+    GBinderReader reader;
+    int year, mon, mday, hour, min, sec, tzi, dst = 0;
+    char tzs;
+    const char* nitz;
+    char* arg;
+
+    /*
+     * IRadioIndication.hal:
+     * oneway nitzTimeReceived(RadioIndicationType type,
+     *     string nitzTime, uint64_t receivedTime);
+     *
+     * IRadioNetworkIndication.aidl:
+     * void nitzTimeReceived(in RadioIndicationType type,
+     *     in String nitzTime, in long receivedTimeMs, in long ageMs);
+     */
+    gbinder_reader_copy(&reader, args);
+    nitz = self->api->read_string_arg(&reader, &arg);
+
+    DBG_(self, "%s", nitz);
+
+    /*
+     * Format: yy/mm/dd,hh:mm:ss(+/-)tz[,ds]
+     * The ds part is considered optional, initialized to zero.
+     */
+    if (nitz && sscanf(nitz, "%u/%u/%u,%u:%u:%u%c%u,%u", &year, &mon, &mday,
+        &hour, &min, &sec, &tzs, &tzi, &dst) >= 8 &&
+        (tzs == '+' || tzs == '-')) {
+        struct ofono_network_time time;
+        char tz[4];
+
+        snprintf(tz, sizeof(tz), "%c%d", tzs, tzi);
+        time.sec = sec;
+        time.min = min;
+        time.hour = hour;
+        time.mday = mday;
+        time.mon = mon;
+        time.year = 2000 + year;
+        time.dst = dst;
+        time.utcoff = atoi(tz) * 15 * 60;
+
+        ofono_netreg_time_notify(self->netreg, &time);
+    } else {
+        ofono_warn("Failed to parse NITZ string \"%s\"", nitz);
+    }
+
+    g_free(arg);
+}
+
+static
+void
+binder_netreg_modem_reset_notify(
+    RadioClient* client,
+    RADIO_IND code,
+    const GBinderReader* args,
+    gpointer user_data)
+{
+    BinderNetReg* self = user_data;
+    GBinderReader reader;
+    char* arg = NULL;
+
+    /*
+     * IRadioIndication.hal:
+     * oneway modemReset(RadioIndicationType type, string reason);
+     *
+     * IRadioModemIndication.aidl:
+     * void modemReset(in RadioIndicationType type, in String reason);
+     */
+
+    gbinder_reader_copy(&reader, args);
+    DBG_(self, "%s", self->api->read_string_arg(&reader, &arg));
+    g_free(arg);
+
+    /* Drop pending requests */
+    radio_request_drop(self->register_req);
+    radio_request_drop(self->strength_req);
+    self->register_req = NULL;
+    self->strength_req = NULL;
+
+    /* And complete the scan (successfully if there were any results) */
+    if (self->scan) {
+        BinderNetRegScan* scan = self->scan;
+
+        self->scan = NULL;
+        if (scan->oplist && scan->oplist->count) {
+            binder_netreg_scan_complete(self, scan);
+        } else {
+            binder_netreg_scan_free(self, scan);
+        }
+    }
+}
+
+static
+gboolean
+binder_netreg_register(
+    gpointer user_data)
+{
+    BinderNetReg* self = user_data;
+    const BinderNetRegApi* api = self->api;
+
+    GASSERT(self->init_id);
+    self->init_id = 0;
+    ofono_netreg_register(self->netreg);
+
+    /* Register for network state changes */
+    self->network_event_id[NETREG_NETWORK_EVENT_DATA_STATE_CHANGED] =
+        binder_network_add_property_handler(self->network,
+            BINDER_NETWORK_PROPERTY_DATA_STATE,
+            binder_netreg_status_notify, self);
+    self->network_event_id[NETREG_NETWORK_EVENT_VOICE_STATE_CHANGED] =
+        binder_network_add_property_handler(self->network,
+            BINDER_NETWORK_PROPERTY_VOICE_STATE,
+            binder_netreg_status_notify, self);
+    self->network_event_id[NETREG_NETWORK_EVENT_OPERATOR_CHANGED] =
+        binder_network_add_property_handler(self->network,
+            BINDER_NETWORK_PROPERTY_OPERATOR,
+            binder_netreg_operator_notify, self);
+
+    /* Register for network time updates */
+    self->ind_id[IND_NITZ_TIME_RECEIVED] =
+        radio_client_add_indication_handler(self->client,
+            api->nitz_time_received_ind,
+            binder_netreg_nitz_notify, self);
+
+    /* Register for signal strength changes */
+    self->ind_id[IND_SIGNAL_STRENGTH] =
+        radio_client_add_indication_handler(self->client,
+            api->current_signal_strength_ind,
+          binder_netreg_strength_notify, self);
+
+    /* Incremental scan results */
+    if (api->network_scan_result_ind) {
+        self->ind_id[IND_NETWORK_SCAN_RESULT] =
+            radio_client_add_indication_handler(self->client,
+                api->network_scan_result_ind,
+                binder_netreg_scan_result_notify, self);
+    }
+
+    if (api->network_modem_reset_ind) {
+        self->ind_id[IND_NETWORK_MODEM_RESET] =
+            radio_client_add_indication_handler(self->client,
+                api->network_modem_reset_ind,
+                binder_netreg_modem_reset_notify, self);
+    }
+
+    if (api->modem_reset_ind) {
+        self->modem_ind_id[IND_MODEM_RESET] =
+            radio_client_add_indication_handler(self->modem_client,
+                api->modem_reset_ind,
+                binder_netreg_modem_reset_notify, self);
+    }
+
+    return G_SOURCE_REMOVE;
+}
+
+static
+int
+binder_netreg_probe(
+    struct ofono_netreg* netreg,
+    unsigned int vendor,
+    void* data)
+{
+    BinderModem* modem = binder_modem_get_data(data);
+    BinderNetReg* self = g_new0(BinderNetReg, 1);
+    const BinderSlotConfig* config = &modem->config;
+    RadioClient* network_client = modem->clients.network_client;
+    RADIO_INTERFACE hidl = radio_client_interface(network_client);
+    RADIO_AIDL_INTERFACE aidl = radio_client_aidl_interface(network_client);
+    const BinderNetRegApi* api =
+        (aidl == RADIO_NETWORK_INTERFACE) ? &binder_netreg_api_aidl :
+        (hidl >= RADIO_INTERFACE_1_5) ? &binder_netreg_api_hidl_1_5 :
+        (hidl >= RADIO_INTERFACE_1_4) ? &binder_netreg_api_hidl_1_4 :
+        (hidl >= RADIO_INTERFACE_1_2) ? &binder_netreg_api_hidl_1_2 :
+        &binder_netreg_api_hidl;
+
+    self->log_prefix = binder_dup_prefix(modem->log_prefix);
+
+    DBG_(self, "%p %s", netreg, api->name);
+    self->client = radio_client_ref(network_client);
+    self->modem_client = radio_client_ref(modem->clients.modem_client);
+    self->watch = ofono_watch_new(binder_modem_get_path(modem));
+    self->network = binder_network_ref(modem->network);
+    self->netreg = netreg;
+    self->techs = config->techs;
+    self->use_network_scan = config->use_network_scan;
+    self->replace_strange_oper = config->replace_strange_oper;
+    self->prefer_lte_signal_strength = config->prefer_lte_signal_strength;
+    self->network_selection_timeout_ms = config->network_selection_timeout_ms;
+    self->api = api;
+
+    ofono_netreg_set_data(netreg, self);
+    self->init_id = g_idle_add(binder_netreg_register, self);
+    return 0;
+}
+
+static
+void
+binder_netreg_remove(
+    struct ofono_netreg* netreg)
+{
+    BinderNetReg* self = binder_netreg_get_data(netreg);
+
+    DBG_(self, "%p", netreg);
+
+    gutil_source_remove(self->init_id);
+    gutil_source_remove(self->notify_id);
+    gutil_source_remove(self->current_operator_id);
+
+    radio_request_drop(self->register_req);
+    radio_request_drop(self->strength_req);
+
+    ofono_watch_unref(self->watch);
+    binder_network_remove_all_handlers(self->network, self->network_event_id);
+    binder_network_unref(self->network);
+
+    radio_client_remove_all_handlers(self->client, self->ind_id);
+    radio_client_unref(self->client);
+
+    radio_client_remove_all_handlers(self->modem_client, self->modem_ind_id);
+    radio_client_unref(self->modem_client);
+
+    binder_netreg_scan_drop(self, self->scan);
+    g_free(self->log_prefix);
+    g_free(self);
+
+    ofono_netreg_set_data(netreg, NULL);
+}
+
+/*==========================================================================*
+ * HIDL API flavor
+ *==========================================================================*/
+
+static
+BinderOpList*
+binder_netreg_api_read_oplist_hidl(
+    BinderNetReg* self,
+    GBinderReader* reader)
+{
+    /* vec<OperatorInfo> */
+    gsize count;
+    const RadioOperatorInfo* ops = gbinder_reader_read_hidl_type_vec(reader,
+        RadioOperatorInfo, &count);
+
+    if (ops) {
+        BinderOpList* oplist = binder_oplist_sized_new(count);
+        guint i;
+
+        binder_oplist_set_count(oplist, count);
+        for (i = 0; i < count; i++) {
+            const RadioOperatorInfo* src = ops + i;
+            struct ofono_network_operator* dest = oplist->op + i;
+
+            /* Prefer long name */
+            if (src->alphaLong.len) {
+                g_strlcpy(dest->name, src->alphaLong.data.str,
+                    sizeof(dest->name));
+            } else if (src->alphaShort.len) {
+                g_strlcpy(dest->name, src->alphaShort.data.str,
+                    sizeof(dest->name));
+            }
+
+            /* enum ofono_operator_status and RADIO_OP_STATUS are identical */
+            dest->status = (enum ofono_operator_status) src->status;
+            dest->tech = self->network->voice.access_tech;
+            binder_parse_mcc_mnc(src->operatorNumeric.data.str, dest);
+            DBG("[operator=%s, %s, %s, %s, %s]",
+                dest->name, dest->mcc, dest->mnc,
+                binder_ofono_access_technology_string(dest->tech),
+                binder_radio_op_status_string(src->status));
+                binder_oplist_set_count(oplist, oplist->count + 1);
+        }
+        return oplist;
+    }
+    return NULL;
+}
+
+static
+gboolean
+binder_netreg_read_signal_strength_hidl(
+    GBinderReader* reader,
+    BinderRadioSignalStrength* out)
+{
+    const RadioSignalStrength* ss =
+        gbinder_reader_read_hidl_struct(reader, RadioSignalStrength);
+
+    if (ss) {
+        out->gsm = &ss->gw;
+        out->lte = &ss->lte;
+        return TRUE;
+    }
+    return TRUE;
+}
+
+static
+gboolean
+binder_netreg_read_signal_strength_hidl_1_2(
+    GBinderReader* reader,
+    BinderRadioSignalStrength* out)
+{
+    const RadioSignalStrength_1_2* ss =
+        gbinder_reader_read_hidl_struct(reader, RadioSignalStrength_1_2);
+
+    if (ss) {
+        out->gsm = &ss->gw;
+        out->lte = &ss->lte;
+        out->wcdma = &ss->wcdma;
+        return TRUE;
+    }
+    return TRUE;
+}
+
+static
+gboolean
+binder_netreg_read_signal_strength_hidl_1_4(
+    GBinderReader* reader,
+    BinderRadioSignalStrength* out)
+{
+    const RadioSignalStrength_1_4* ss =
+        gbinder_reader_read_hidl_struct(reader, RadioSignalStrength_1_4);
+
+    if (ss) {
+        out->gsm = &ss->gsm;
+        out->lte = &ss->lte;
+        out->wcdma = &ss->wcdma;
+        out->tdscdma = &ss->tdscdma;
+        out->nr = &ss->nr;
+        return TRUE;
+    }
+    return FALSE;
+}
+
+static
+void
+binder_netreg_api_read_signal_strength_hidl(
+    BinderNetReg* self,
+    const BinderRadioSignalStrength* in,
+    BinderSs* out)
+{
+    const RadioSignalStrengthGsm* gsm = in->gsm;
+    const RadioSignalStrengthLte* lte = in->lte;
+    const RadioSignalStrengthWcdma_1_2* wcdma = in->wcdma;
+    const RadioSignalStrengthTdScdma_1_2* tdscdma  = in->tdscdma;
+    const RadioSignalStrengthNr* nr = in->nr;
+
+    if (gsm) {
+        if (RXLEV_VALID(gsm->signalStrength)) {
+            out->m[BINDER_SS_RXLEV] = gsm->signalStrength;
+        }
+    }
+
+    if (lte) {
+        if (RSSI_VALID(lte->signalStrength)) {
+            out->m[BINDER_SS_RSSI] = lte->signalStrength;
+        }
+
+        if (RSRP_VALID(lte->rsrp)) {
+            /* Value is dB multipled by -1 */
+            out->m[BINDER_SS_RSRP] = -(int)lte->rsrp;
+        }
+
+        if (RSRQ_VALID(lte->rsrq)) {
+            /* Value is dB multipled by -1 */
+            out->m[BINDER_SS_RSRQ] = -(int)lte->rsrq;
+        }
+
+        if (RSSNR_VALID(lte->rssnr)) {
+            out->m[BINDER_SS_RSSNR] = lte->rssnr;
+        }
+    }
+
+    if (tdscdma) {
+        const int rssi = tdscdma->signalStrength;
+        const int rscp = tdscdma->rscp;
+
+        if (RSSI_VALID(rssi)) {
+            const int prev = out->m[BINDER_SS_RSSI];
+
+            if (prev == NO_MEASUREMENT || prev > rssi) {
+                DBG_(self, "RSSI %d => %d", prev, rssi);
+                out->m[BINDER_SS_RSSI] = rssi;
+            }
+        }
+
+        if (RSCP_VALID(rscp)) {
+            out->m[BINDER_SS_RSCP] = rscp;
+        }
+    }
+
+    if (wcdma) {
+        const int rssi = wcdma->base.signalStrength;
+        const int rscp = wcdma->rscp;
+
+        if (RSSI_VALID(rssi)) {
+            const int prev = out->m[BINDER_SS_RSSI];
+
+            if (prev == NO_MEASUREMENT || prev > rssi) {
+                DBG_(self, "RSSI %d => %d", prev, rssi);
+                out->m[BINDER_SS_RSSI] = rssi;
+            }
+        }
+
+        if (RSCP_VALID(rscp)) {
+            const int prev = out->m[BINDER_SS_RSCP];
+
+            if (prev == NO_MEASUREMENT || prev > rscp) {
+                DBG_(self, "RSCP %d => %d", prev, rscp);
+                out->m[BINDER_SS_RSCP] = rscp;
+            }
+        }
+    }
+
+    if (nr) {
+        if (SSRSRP_VALID(nr->ssRsrp)) {
+            /* Value is dBm multipled by -1 */
+            out->m[BINDER_SS_SSRSRP] = -(int)nr->ssRsrp;
+        }
+
+        if (SSRSRQ_VALID(nr->ssRsrq)) {
+            /* Value is dB multipled by -1 */
+            out->m[BINDER_SS_SSRSRQ] = -(int)nr->ssRsrq;
+        }
+
+        if (SSSINR_VALID(nr->ssSinr)) {
+            out->m[BINDER_SS_SSSINR] = nr->ssSinr;
+        }
+    }
+}
+
+static
+gboolean
+binder_netreg_api_read_signal_strength_resp_hidl(
+    BinderNetReg* self,
+    RADIO_RESP resp,
+    GBinderReader* reader,
+    BinderSs* out)
+{
+    BinderRadioSignalStrength ss;
+    gboolean (*read_signal_strength)(
+        GBinderReader* reader,
+        BinderRadioSignalStrength* ss) = NULL;
+
+    if (resp == RADIO_RESP_GET_SIGNAL_STRENGTH) {
+        read_signal_strength = binder_netreg_read_signal_strength_hidl;
+    } else if (resp == RADIO_RESP_GET_SIGNAL_STRENGTH_1_2) {
+        read_signal_strength = binder_netreg_read_signal_strength_hidl_1_2;
+    } else if (resp == RADIO_RESP_GET_SIGNAL_STRENGTH_1_4) {
+        read_signal_strength = binder_netreg_read_signal_strength_hidl_1_4;
+    } else {
+        ofono_error("Unexpected getSignalStrength response %d", resp);
+        return FALSE;
+    }
+
+    memset(&ss, 0, sizeof(ss));
+    if (read_signal_strength(reader, &ss)) {
+        binder_netreg_api_read_signal_strength_hidl(self, &ss, out);
+        return TRUE;
+    }
+
+    return FALSE;
+}
+
+static
+gboolean
+binder_netreg_api_read_signal_strength_ind_hidl(
+    BinderNetReg* self,
+    RADIO_IND ind,
+    GBinderReader* reader,
+    BinderSs* out)
+{
+    BinderRadioSignalStrength ss;
+    gboolean (*read_signal_strength)(
+        GBinderReader* reader,
+        BinderRadioSignalStrength* ss) = NULL;
+
+    memset(&ss, 0, sizeof(ss));
+    if (ind == RADIO_IND_CURRENT_SIGNAL_STRENGTH) {
+        read_signal_strength = binder_netreg_read_signal_strength_hidl;
+    } else if (ind == RADIO_IND_CURRENT_SIGNAL_STRENGTH_1_2) {
+        read_signal_strength = binder_netreg_read_signal_strength_hidl_1_2;
+    } else if (ind == RADIO_IND_CURRENT_SIGNAL_STRENGTH_1_4) {
+        read_signal_strength = binder_netreg_read_signal_strength_hidl_1_4;
+    } else {
+        ofono_error("Unexpected currentSignalStrength indication %d", ind);
+        return FALSE;
+    }
+
+    memset(&ss, 0, sizeof(ss));
+    if (read_signal_strength(reader, &ss)) {
+        binder_netreg_api_read_signal_strength_hidl(self, &ss, out);
+        return TRUE;
+    }
+
+    return FALSE;
+}
+
+static
+void
+binder_netreg_api_write_set_network_selection_mode_manual_args_hidl(
+    GBinderWriter* writer,
+    const char* numeric)
+{
+    /*
+     * 1.0/IRadio.hal:
+     * oneway setNetworkSelectionModeManual(int32_t serial,
+     *     string operatorNumeric);
+     */
+    gbinder_writer_append_hidl_string_copy(writer, numeric);
+}
+
+static const BinderNetRegApi binder_netreg_api_hidl = {
+    "hidl",
+    binder_read_string_arg_hidl,
+    binder_netreg_api_read_oplist_hidl,
+    binder_netreg_api_read_signal_strength_resp_hidl,
+    binder_netreg_api_read_signal_strength_ind_hidl,
+    NULL,
+    NULL,
+    binder_netreg_api_write_set_network_selection_mode_manual_args_hidl,
+    RADIO_REQ_NONE,
+    RADIO_REQ_STOP_NETWORK_SCAN,
+    RADIO_REQ_GET_AVAILABLE_NETWORKS,
+    RADIO_REQ_GET_SIGNAL_STRENGTH,
+    RADIO_REQ_GET_NETWORK_SELECTION_MODE,
+    RADIO_REQ_SET_NETWORK_SELECTION_MODE_AUTOMATIC,
+    RADIO_REQ_SET_NETWORK_SELECTION_MODE_MANUAL,
+    RADIO_IND_NITZ_TIME_RECEIVED,
+    RADIO_IND_CURRENT_SIGNAL_STRENGTH,
+    RADIO_IND_NONE,
+    RADIO_IND_MODEM_RESET,
+    RADIO_IND_NONE,
+};
+
+/*==========================================================================*
+ * HIDL 1.2 API flavor
+ *==========================================================================*/
 
 static
 void
@@ -1080,1155 +2034,1183 @@ binder_netreg_scan_op_convert_nr(
 }
 
 static
-struct ofono_network_operator*
-binder_netreg_scan_op_append(
-    BinderNetRegScan* scan)
-{
-    const guint i = scan->oplist ? scan->oplist->count : 0;
-
-    /*
-     * Return a pointer to the newly allocated zero-initialized struct
-     * ofono_network_operator
-     */
-    scan->oplist = binder_oplist_set_count(scan->oplist, i + 1);
-    return scan->oplist->op + i;
-}
-
-static
-void
-binder_netreg_scan_op_convert_aidl(
-    gint32 count,
-    GBinderReader* reader,
-    BinderNetRegScan* scan)
-{
-    guint i;
-    for (i = 0; i < count; i++) {
-        gboolean registered;
-        gint32 type;
-        char* mcc;
-        char* mnc;
-        gsize data_read;
-        gsize initial_size;
-        gsize parcel_size;
-        struct ofono_network_operator* dest;
-
-        if (!binder_read_parcelable_size(reader)) {
-            continue;
-        }
-
-        gbinder_reader_read_bool(reader, &registered);
-        gbinder_reader_read_int32(reader, NULL); /* connectionStatus */
-        gbinder_reader_read_int32(reader, NULL); /* non-null rat specific info union */
-        gbinder_reader_read_int32(reader, &type);
-
-        if (type != RADIO_CELL_INFO_1_5_TD_SCDMA && type != RADIO_CELL_INFO_1_5_CDMA) {
-            dest = binder_netreg_scan_op_append(scan);
-        } else {
-            gbinder_reader_read_parcelable(reader, NULL);
-            continue;
-        }
-
-        memset(dest, 0, sizeof(*dest));
-        dest->status = registered ?
-            OFONO_OPERATOR_STATUS_CURRENT :
-            OFONO_OPERATOR_STATUS_AVAILABLE;
-
-        switch (type) {
-        case RADIO_CELL_INFO_1_5_GSM:
-            dest->tech = OFONO_ACCESS_TECHNOLOGY_GSM;
-            binder_read_parcelable_size(reader); /* Cell info */
-            parcel_size = binder_read_parcelable_size(reader); /* Cell identity */
-            initial_size = gbinder_reader_bytes_read(reader);
-            mcc = gbinder_reader_read_string16(reader);
-            mnc = gbinder_reader_read_string16(reader);
-            gbinder_reader_read_int32(reader, NULL);
-            gbinder_reader_read_int32(reader, NULL);
-            gbinder_reader_read_int32(reader, NULL);
-            gbinder_reader_read_int32(reader, NULL);
-            binder_netreg_scan_op_copy_name_aidl(reader, dest);
-            data_read = gbinder_reader_bytes_read(reader) - initial_size;
-            while (data_read < parcel_size) {
-                gbinder_reader_read_uint32(reader, NULL);
-                data_read += sizeof(guint32);
-            }
-            gbinder_reader_read_parcelable(reader, NULL); /* Signal strength */
-            break;
-        case RADIO_CELL_INFO_1_5_LTE:
-            dest->tech = OFONO_ACCESS_TECHNOLOGY_EUTRAN;
-            binder_read_parcelable_size(reader); /* Cell info */
-            parcel_size = binder_read_parcelable_size(reader); /* Cell identity */
-            initial_size = gbinder_reader_bytes_read(reader);
-            mcc = gbinder_reader_read_string16(reader);
-            mnc = gbinder_reader_read_string16(reader);
-            gbinder_reader_read_int32(reader, NULL);
-            gbinder_reader_read_int32(reader, NULL);
-            gbinder_reader_read_int32(reader, NULL);
-            gbinder_reader_read_int32(reader, NULL);
-            binder_netreg_scan_op_copy_name_aidl(reader, dest);
-            data_read = gbinder_reader_bytes_read(reader) - initial_size;
-            while (data_read < parcel_size) {
-                gbinder_reader_read_uint32(reader, NULL);
-                data_read += sizeof(guint32);
-            }
-            gbinder_reader_read_parcelable(reader, NULL); /* Signal strength */
-            break;
-        case RADIO_CELL_INFO_1_5_WCDMA:
-            dest->tech = OFONO_ACCESS_TECHNOLOGY_UTRAN;
-            binder_read_parcelable_size(reader); /* Cell info */
-            parcel_size = binder_read_parcelable_size(reader); /* Cell identity */
-            initial_size = gbinder_reader_bytes_read(reader);
-            mcc = gbinder_reader_read_string16(reader);
-            mnc = gbinder_reader_read_string16(reader);
-            gbinder_reader_read_int32(reader, NULL);
-            gbinder_reader_read_int32(reader, NULL);
-            gbinder_reader_read_int32(reader, NULL);
-            gbinder_reader_read_int32(reader, NULL);
-            binder_netreg_scan_op_copy_name_aidl(reader, dest);
-            data_read = gbinder_reader_bytes_read(reader) - initial_size;
-            while (data_read < parcel_size) {
-                gbinder_reader_read_uint32(reader, NULL);
-                data_read += sizeof(guint32);
-            }
-            gbinder_reader_read_parcelable(reader, NULL); /* Signal strength */
-            break;
-        case RADIO_CELL_INFO_1_5_NR:
-            dest->tech = OFONO_ACCESS_TECHNOLOGY_NG_RAN;
-            binder_read_parcelable_size(reader); /* Cell info */
-            parcel_size = binder_read_parcelable_size(reader); /* Cell identity */
-            initial_size = gbinder_reader_bytes_read(reader);
-            mcc = gbinder_reader_read_string16(reader);
-            mnc = gbinder_reader_read_string16(reader);
-            gbinder_reader_read_int64(reader, NULL);
-            gbinder_reader_read_int32(reader, NULL);
-            gbinder_reader_read_int32(reader, NULL);
-            gbinder_reader_read_int32(reader, NULL);
-            binder_netreg_scan_op_copy_name_aidl(reader, dest);
-            data_read = gbinder_reader_bytes_read(reader) - initial_size;
-            while (data_read < parcel_size) {
-                gbinder_reader_read_uint32(reader, NULL);
-                data_read += sizeof(guint32);
-            }
-            gbinder_reader_read_parcelable(reader, NULL); /* Signal strength */
-            break;
-        case RADIO_CELL_INFO_1_5_TD_SCDMA:
-        case RADIO_CELL_INFO_1_5_CDMA:
-        default:
-            continue;
-        }
-
-        g_strlcpy(dest->mcc, mcc, sizeof(dest->mcc));
-        g_strlcpy(dest->mnc, mnc, sizeof(dest->mnc));
-        g_free(mcc);
-        g_free(mnc);
-
-        DBG("[registered=%d, operator=%s, %s, %s, %s, %s]",
-            registered, dest->name, dest->mcc, dest->mnc,
-            binder_ofono_access_technology_string(dest->tech),
-            binder_radio_op_status_string(dest->status));
-    }
-}
-
-static
-void
-binder_netreg_scan_result_notify(
-    RadioClient* client,
+BinderOpList*
+binder_netreg_api_read_network_scan_hidl(
+    BinderNetReg* self,
     RADIO_IND code,
-    const GBinderReader* args,
-    gpointer user_data)
+    GBinderReader* reader,
+    RADIO_SCAN_STATUS* scan_status)
 {
-    BinderNetReg* self = user_data;
-    BinderNetRegScan* scan = self->scan;
+    /*
+     * Regardless of the interface version, it's always the same
+     * RadioNetworkScanResult structure with networkInfos pointing
+     * to different things.
+     */
+    BinderOpList* oplist = NULL;
+    const RadioNetworkScanResult* result =
+        gbinder_reader_read_hidl_struct(reader, RadioNetworkScanResult);
 
-    if (scan) {
-        GBinderReader reader;
+    if (result) {
+        guint i;
 
-        /*
-         * Regardless of the interface version, it's always the same
-         * RadioNetworkScanResult structure with networkInfos pointing
-         * to different things.
-         */
-        gbinder_reader_copy(&reader, args);
+        oplist = binder_oplist_sized_new(result->networkInfos.count);
+        DBG_(self, "status=%d, error=%d, %u networks",
+            result->status, result->error, result->networkInfos.count);
 
-        if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
-            const RadioNetworkScanResult* result;
-            result = gbinder_reader_read_hidl_struct(&reader,
-                RadioNetworkScanResult);
-            if (result) {
-                guint i;
-                const guint n = result->networkInfos.count;
+        if (code == RADIO_IND_NETWORK_SCAN_RESULT_1_2) {
+            const RadioCellInfo_1_2* cells = result->networkInfos.data.ptr;
 
-                DBG_(self, "status=%d, error=%d, %u networks", result->status,
-                    result->error, n);
-                if (code == RADIO_IND_NETWORK_SCAN_RESULT_1_2) {
-                    const RadioCellInfo_1_2* cells = result->networkInfos.data.ptr;
+            for (i = 0; i < result->networkInfos.count; i++) {
+                const RadioCellInfo_1_2* cell = cells + i;
+                const RadioCellInfoGsm_1_2* gsm = cell->gsm.data.ptr;
+                const RadioCellInfoWcdma_1_2* wcdma = cell->wcdma.data.ptr;
+                const RadioCellInfoLte_1_2* lte = cell->lte.data.ptr;
+                guint j;
 
-                    for (i = 0; i < n; i++) {
-                        const RadioCellInfo_1_2* cell = cells + i;
-                        const RadioCellInfoGsm_1_2* gsm = cell->gsm.data.ptr;
-                        const RadioCellInfoWcdma_1_2* wcdma = cell->wcdma.data.ptr;
-                        const RadioCellInfoLte_1_2* lte = cell->lte.data.ptr;
-                        guint j;
-
-                        for (j = 0; j < cell->gsm.count; j++) {
-                            binder_netreg_scan_op_convert_gsm(cell->registered,
-                                &gsm[j].cellIdentityGsm,
-                                binder_netreg_scan_op_append(scan));
-                        }
-                        for (j = 0; j < cell->wcdma.count; j++) {
-                            binder_netreg_scan_op_convert_wcdma(cell->registered,
-                                &wcdma[j].cellIdentityWcdma,
-                                binder_netreg_scan_op_append(scan));
-                        }
-                        for (j = 0; j < cell->lte.count; j++) {
-                            binder_netreg_scan_op_convert_lte(cell->registered,
-                                &lte[j].cellIdentityLte,
-                                binder_netreg_scan_op_append(scan));
-                        }
-                    }
-                } else if (code == RADIO_IND_NETWORK_SCAN_RESULT_1_4) {
-                    const RadioCellInfo_1_4* cells = result->networkInfos.data.ptr;
-
-                    for (i = 0; i < n; i++) {
-                        const RadioCellInfo_1_4* cell = cells + i;
-
-                        switch ((RADIO_CELL_INFO_TYPE_1_4)cell->cellInfoType) {
-                        case RADIO_CELL_INFO_1_4_GSM:
-                            binder_netreg_scan_op_convert_gsm(cell->registered,
-                                &cell->info.gsm.cellIdentityGsm,
-                                binder_netreg_scan_op_append(scan));
-                            break;
-                        case RADIO_CELL_INFO_1_4_WCDMA:
-                            binder_netreg_scan_op_convert_wcdma(cell->registered,
-                                &cell->info.wcdma.cellIdentityWcdma,
-                                binder_netreg_scan_op_append(scan));
-                            break;
-                        case RADIO_CELL_INFO_1_4_LTE:
-                            binder_netreg_scan_op_convert_lte(cell->registered,
-                                &cell->info.lte.base.cellIdentityLte,
-                                binder_netreg_scan_op_append(scan));
-                            break;
-                        case RADIO_CELL_INFO_1_4_NR:
-                            binder_netreg_scan_op_convert_nr(cell->registered,
-                                &cell->info.nr.cellIdentity,
-                                binder_netreg_scan_op_append(scan));
-                            break;
-                        case RADIO_CELL_INFO_1_4_CDMA:
-                        case RADIO_CELL_INFO_1_4_TD_SCDMA:
-                            break;
-                        }
-                    }
-                } else if (code == RADIO_IND_NETWORK_SCAN_RESULT_1_5) {
-                    const RadioCellInfo_1_5* cells = result->networkInfos.data.ptr;
-
-                    for (i = 0; i < n; i++) {
-                        const RadioCellInfo_1_5* cell = cells + i;
-
-                        switch ((RADIO_CELL_INFO_TYPE_1_5)cell->cellInfoType) {
-                        case RADIO_CELL_INFO_1_5_GSM:
-                            binder_netreg_scan_op_convert_gsm(cell->registered,
-                                &cell->info.gsm.cellIdentityGsm.base,
-                                binder_netreg_scan_op_append(scan));
-                            break;
-                        case RADIO_CELL_INFO_1_5_WCDMA:
-                            binder_netreg_scan_op_convert_wcdma(cell->registered,
-                                &cell->info.wcdma.cellIdentityWcdma.base,
-                                binder_netreg_scan_op_append(scan));
-                            break;
-                        case RADIO_CELL_INFO_1_5_LTE:
-                            binder_netreg_scan_op_convert_lte(cell->registered,
-                                &cell->info.lte.cellIdentityLte.base,
-                                binder_netreg_scan_op_append(scan));
-                            break;
-                        case RADIO_CELL_INFO_1_5_NR:
-                            binder_netreg_scan_op_convert_nr(cell->registered,
-                                &cell->info.nr.cellIdentityNr.base,
-                                binder_netreg_scan_op_append(scan));
-                            break;
-                        case RADIO_CELL_INFO_1_5_CDMA:
-                        case RADIO_CELL_INFO_1_5_TD_SCDMA:
-                            break;
-                        }
-                    }
+                for (j = 0; j < cell->gsm.count; j++) {
+                    binder_netreg_scan_op_convert_gsm(cell->registered,
+                        &gsm[j].cellIdentityGsm,
+                        binder_oplist_append_op(oplist));
                 }
-                if (result->status == RADIO_SCAN_COMPLETE) {
-                    DBG_(self, "scan completed");
-                    self->scan = NULL;
-                    scan->stop = FALSE;
-                    binder_netreg_scan_complete(self, scan);
-                } else {
-                    DBG_(self, "expecting more scan results");
+                for (j = 0; j < cell->wcdma.count; j++) {
+                    binder_netreg_scan_op_convert_wcdma(cell->registered,
+                        &wcdma[j].cellIdentityWcdma,
+                        binder_oplist_append_op(oplist));
                 }
-            } else {
-                DBG_(self, "failed to parse scan result");
-                self->scan = NULL;
-                binder_netreg_scan_free(self, scan);
+                for (j = 0; j < cell->lte.count; j++) {
+                    binder_netreg_scan_op_convert_lte(cell->registered,
+                        &lte[j].cellIdentityLte,
+                        binder_oplist_append_op(oplist));
+                }
             }
-        } else {
-            if (binder_read_parcelable_size(&reader)) {
-                gint32 count = 0, error = 0, status = 0;
-                gbinder_reader_read_int32(&reader, &status);
-                gbinder_reader_read_int32(&reader, &error);
-                gbinder_reader_read_int32(&reader, &count);
-                binder_netreg_scan_op_convert_aidl(count, &reader, scan);
-                DBG_(self, "status=%d, error=%d, %u networks", status, error, count);
+        } else if (code == RADIO_IND_NETWORK_SCAN_RESULT_1_4) {
+            const RadioCellInfo_1_4* cells = result->networkInfos.data.ptr;
 
-                if (status == RADIO_SCAN_COMPLETE) {
-                    DBG_(self, "scan completed");
-                    self->scan = NULL;
-                    scan->stop = FALSE;
-                    binder_netreg_scan_complete(self, scan);
-                } else {
-                    DBG_(self, "expecting more scan results");
+            for (i = 0; i < result->networkInfos.count; i++) {
+                const RadioCellInfo_1_4* cell = cells + i;
+
+                switch ((RADIO_CELL_INFO_TYPE_1_4)cell->cellInfoType) {
+                case RADIO_CELL_INFO_1_4_GSM:
+                    binder_netreg_scan_op_convert_gsm(cell->registered,
+                        &cell->info.gsm.cellIdentityGsm,
+                        binder_oplist_append_op(oplist));
+                    break;
+                case RADIO_CELL_INFO_1_4_WCDMA:
+                    binder_netreg_scan_op_convert_wcdma(cell->registered,
+                        &cell->info.wcdma.cellIdentityWcdma,
+                        binder_oplist_append_op(oplist));
+                    break;
+                case RADIO_CELL_INFO_1_4_LTE:
+                    binder_netreg_scan_op_convert_lte(cell->registered,
+                        &cell->info.lte.base.cellIdentityLte,
+                        binder_oplist_append_op(oplist));
+                    break;
+                case RADIO_CELL_INFO_1_4_NR:
+                    binder_netreg_scan_op_convert_nr(cell->registered,
+                        &cell->info.nr.cellIdentity,
+                        binder_oplist_append_op(oplist));
+                    break;
+                case RADIO_CELL_INFO_1_4_CDMA:
+                case RADIO_CELL_INFO_1_4_TD_SCDMA:
+                    break;
                 }
-            } else {
-                DBG_(self, "failed to parse scan result");
-                self->scan = NULL;
-                binder_netreg_scan_free(self, scan);
+            }
+        } else if (code == RADIO_IND_NETWORK_SCAN_RESULT_1_5) {
+            const RadioCellInfo_1_5* cells = result->networkInfos.data.ptr;
+
+            for (i = 0; i < result->networkInfos.count; i++) {
+                const RadioCellInfo_1_5* cell = cells + i;
+
+                switch ((RADIO_CELL_INFO_TYPE_1_5)cell->cellInfoType) {
+                case RADIO_CELL_INFO_1_5_GSM:
+                    binder_netreg_scan_op_convert_gsm(cell->registered,
+                        &cell->info.gsm.cellIdentityGsm.base,
+                        binder_oplist_append_op(oplist));
+                    break;
+                case RADIO_CELL_INFO_1_5_WCDMA:
+                    binder_netreg_scan_op_convert_wcdma(cell->registered,
+                        &cell->info.wcdma.cellIdentityWcdma.base,
+                        binder_oplist_append_op(oplist));
+                    break;
+                case RADIO_CELL_INFO_1_5_LTE:
+                    binder_netreg_scan_op_convert_lte(cell->registered,
+                        &cell->info.lte.cellIdentityLte.base,
+                        binder_oplist_append_op(oplist));
+                    break;
+                case RADIO_CELL_INFO_1_5_NR:
+                    binder_netreg_scan_op_convert_nr(cell->registered,
+                        &cell->info.nr.cellIdentityNr.base,
+                        binder_oplist_append_op(oplist));
+                    break;
+                case RADIO_CELL_INFO_1_5_CDMA:
+                case RADIO_CELL_INFO_1_5_TD_SCDMA:
+                    break;
+                }
             }
         }
-    } else {
-        DBG_(self, "got scan result without a scan");
     }
+    return oplist;
 }
 
 static
 void
-binder_netreg_register_cb(
-    RadioRequest* req,
-    RADIO_TX_STATUS status,
-    RADIO_RESP resp,
-    RADIO_ERROR error,
-    const GBinderReader* args,
-    gpointer user_data)
+binder_netreg_api_write_start_network_scan_args_hidl_1_2(
+    BinderNetReg* self,
+    GBinderWriter* writer)
 {
-    BinderNetRegCbData* cbd = user_data;
-    BinderNetReg* self = cbd->self;
-    ofono_netreg_register_cb_t cb = cbd->cb.reg;
-    struct ofono_error err;
-
-    GASSERT(self->register_req == req);
-    radio_request_unref(self->register_req);
-    self->register_req = NULL;
+    /*
+     * typedef struct radio_network_scan_specifier {
+     *     RADIO_ACCESS_NETWORKS radioAccessNetwork;
+     *     GBinderHidlVec geranBands; // vec<RADIO_GERAN_BAND>
+     *     GBinderHidlVec utranBands; // vec<RADIO_UTRAN_BAND>
+     *     GBinderHidlVec eutranBands; // vec<RADIO_EUTRAN_BAND>
+     *     GBinderHidlVec channels; // vec<int32_t>
+     * } RadioAccessSpecifier;
+     */
+    static const GBinderWriterField radio_network_scan_specifier_f[] = {
+        GBINDER_WRITER_FIELD_HIDL_VEC_INT32(RadioAccessSpecifier, geranBands),
+        GBINDER_WRITER_FIELD_HIDL_VEC_INT32(RadioAccessSpecifier, utranBands),
+        GBINDER_WRITER_FIELD_HIDL_VEC_INT32(RadioAccessSpecifier, eutranBands),
+        GBINDER_WRITER_FIELD_HIDL_VEC_INT32(RadioAccessSpecifier, channels),
+        GBINDER_WRITER_FIELD_END()
+    };
+    static const GBinderWriterType radio_network_scan_specifier_t = {
+        GBINDER_WRITER_STRUCT_NAME_AND_SIZE(RadioAccessSpecifier),
+        radio_network_scan_specifier_f
+    };
 
     /*
-     * Handles both:
-     * setNetworkSelectionModeAutomaticResponse(RadioResponseInfo);
-     * setNetworkSelectionModeManualResponse(RadioResponseInfo);
+     * typedef struct radio_network_scan_request {
+     *     RADIO_SCAN_TYPE type;
+     *     gint32 interval;           // [5..300] seconds
+     *     GBinderHidlVec specifiers; // vec <RadioAccessSpecifier>
+     *     gint32 maxSearchTime;      // [60..3600] seconds
+     *     guint8 incrementalResults; // TRUE/FALSE
+     *     gint32 incrementalResultsPeriodicity; // [1..10]
+     *     GBinderHidlVec mccMncs;    // vec<hidl_string>
+     * } RadioNetworkScanRequest_1_2;
      */
-    if (status == RADIO_TX_STATUS_OK) {
-        GASSERT(resp == RADIO_RESP_SET_NETWORK_SELECTION_MODE_AUTOMATIC ||
-                resp == RADIO_RESP_SET_NETWORK_SELECTION_MODE_MANUAL);
-        if (error == RADIO_ERROR_NONE) {
-            /* Success */
-            cb(binder_error_ok(&err), cbd->data);
-            return;
-        } else {
-            ofono_error("registration failed, error %s",
-                binder_radio_error_string(error));
+    static const GBinderWriterField radio_network_scan_request_f[] = {
+        GBINDER_WRITER_FIELD_HIDL_VEC(RadioNetworkScanRequest_1_2,
+            specifiers, &radio_network_scan_specifier_t),
+        GBINDER_WRITER_FIELD_HIDL_VEC_STRING(RadioNetworkScanRequest_1_2,
+            mccMncs),
+        GBINDER_WRITER_FIELD_END()
+    };
+    static const GBinderWriterType radio_network_scan_request_t = {
+        GBINDER_WRITER_STRUCT_NAME_AND_SIZE(RadioNetworkScanRequest_1_2),
+        radio_network_scan_request_f
+    };
+
+    RadioAccessSpecifier* specs;
+    RadioNetworkScanRequest_1_2* scan;
+    guint i, nspecs = 0;
+    const BinderNetRegRadioType* radio_types[N_RADIO_TYPES];
+
+    /* Which modes are supported and enabled */
+    for (i = 0; i < N_RADIO_TYPES; i++) {
+        if (self->techs & binder_netreg_radio_types[i].mode) {
+            radio_types[nspecs++] = binder_netreg_radio_types + i;
         }
     }
 
-    /* Error path */
-    cb(binder_error_failure(&err), cbd->data);
+    scan = gbinder_writer_new0(writer, RadioNetworkScanRequest_1_2);
+    specs = gbinder_writer_malloc0(writer, nspecs * sizeof(*specs));
+
+    for (i = 0; i < nspecs; i++) {
+        const BinderNetRegRadioType* radio_type = radio_types[i];
+        RadioAccessSpecifier* spec = specs + i;
+
+        spec->radioAccessNetwork = radio_type->ran;
+        /* The rest may (hopefully) remain zero-initialized */
+    }
+
+    scan->type = RADIO_SCAN_ONE_SHOT;
+    scan->interval = INCREMENTAL_RESULTS_PERIODICITY_RANGE_MAX;
+    scan->specifiers.owns_buffer = TRUE;
+    scan->specifiers.count = nspecs;
+    scan->specifiers.data.ptr = specs;
+    scan->maxSearchTime = NETWORK_SCAN_MAX_SEARCH_TIME_SEC;
+    scan->incrementalResults = TRUE;
+    scan->incrementalResultsPeriodicity = 3;
+    gbinder_writer_append_struct(writer, scan,
+        &radio_network_scan_request_t, NULL);
 }
+
+static const BinderNetRegApi binder_netreg_api_hidl_1_2 = {
+    "hidl_1_2",
+    binder_read_string_arg_hidl,
+    binder_netreg_api_read_oplist_hidl,
+    binder_netreg_api_read_signal_strength_resp_hidl,
+    binder_netreg_api_read_signal_strength_ind_hidl,
+    binder_netreg_api_read_network_scan_hidl,
+    binder_netreg_api_write_start_network_scan_args_hidl_1_2,
+    binder_netreg_api_write_set_network_selection_mode_manual_args_hidl,
+    RADIO_REQ_START_NETWORK_SCAN_1_2,
+    RADIO_REQ_STOP_NETWORK_SCAN,
+    RADIO_REQ_GET_AVAILABLE_NETWORKS,
+    RADIO_REQ_GET_SIGNAL_STRENGTH,
+    RADIO_REQ_GET_NETWORK_SELECTION_MODE,
+    RADIO_REQ_SET_NETWORK_SELECTION_MODE_AUTOMATIC,
+    RADIO_REQ_SET_NETWORK_SELECTION_MODE_MANUAL,
+    RADIO_IND_NITZ_TIME_RECEIVED,
+    RADIO_IND_CURRENT_SIGNAL_STRENGTH_1_2,
+    RADIO_IND_NETWORK_SCAN_RESULT_1_2,
+    RADIO_IND_MODEM_RESET,
+    RADIO_IND_NONE,
+};
+
+/*==========================================================================*
+ * HIDL 1.4 API flavor
+ *==========================================================================*/
+
+static const BinderNetRegApi binder_netreg_api_hidl_1_4 = {
+    "hidl_1_4",
+    binder_read_string_arg_hidl,
+    binder_netreg_api_read_oplist_hidl,
+    binder_netreg_api_read_signal_strength_resp_hidl,
+    binder_netreg_api_read_signal_strength_ind_hidl,
+    binder_netreg_api_read_network_scan_hidl,
+    binder_netreg_api_write_start_network_scan_args_hidl_1_2,
+    binder_netreg_api_write_set_network_selection_mode_manual_args_hidl,
+    RADIO_REQ_START_NETWORK_SCAN_1_2,
+    RADIO_REQ_STOP_NETWORK_SCAN,
+    RADIO_REQ_GET_SIGNAL_STRENGTH_1_4,
+    RADIO_REQ_GET_NETWORK_SELECTION_MODE,
+    RADIO_REQ_SET_NETWORK_SELECTION_MODE_AUTOMATIC,
+    RADIO_REQ_SET_NETWORK_SELECTION_MODE_MANUAL,
+    RADIO_IND_NITZ_TIME_RECEIVED,
+    RADIO_IND_CURRENT_SIGNAL_STRENGTH_1_4,
+    RADIO_IND_NETWORK_SCAN_RESULT_1_4,
+    RADIO_IND_MODEM_RESET,
+    RADIO_IND_NONE,
+};
+
+/*==========================================================================*
+ * HIDL 1.5 API flavor
+ *==========================================================================*/
 
 static
 void
-binder_netreg_query_register_auto_cb(
-    RadioRequest* req,
-    RADIO_TX_STATUS status,
-    RADIO_RESP resp,
-    RADIO_ERROR error,
-    const GBinderReader* args,
-    gpointer user_data)
+binder_netreg_api_write_start_network_scan_args_hidl_1_5(
+    BinderNetReg* self,
+    GBinderWriter* writer)
 {
-    BinderNetRegCbData* cbd = user_data;
-    BinderNetReg* self = cbd->self;
-    ofono_netreg_register_cb_t cb = cbd->cb.reg;
-    struct ofono_error err;
-    guint32 req_code = self->interface_aidl == RADIO_NETWORK_INTERFACE ?
-        RADIO_NETWORK_REQ_SET_NETWORK_SELECTION_MODE_AUTOMATIC :
-        RADIO_REQ_SET_NETWORK_SELECTION_MODE_AUTOMATIC;
-
-    GASSERT(self->register_req == req);
-    radio_request_unref(self->register_req);
-    self->register_req = NULL;
-
-    if (status == RADIO_TX_STATUS_OK) {
-        guint32 resp_code = self->interface_aidl == RADIO_NETWORK_INTERFACE ?
-            RADIO_NETWORK_RESP_GET_NETWORK_SELECTION_MODE :
-            RADIO_RESP_GET_NETWORK_SELECTION_MODE;
-        if (resp == resp_code) {
-            if (error == RADIO_ERROR_NONE) {
-                GBinderReader reader;
-                gboolean manual;
-
-                /*
-                 * getNetworkSelectionModeResponse(RadioResponseInfo,
-                 * bool manual);
-                 */
-                 gbinder_reader_copy(&reader, args);
-                 if (gbinder_reader_read_bool(&reader, &manual) && !manual) {
-                     ofono_info("nw selection is already auto");
-                     cb(binder_error_ok(&err), cbd->data);
-                     return;
-                 }
-            }
-        } else {
-            ofono_error("Unexpected getNetworkSelectionMode response %d", resp);
-        }
-    }
+    /*
+     * typedef struct radio_network_scan_specifier_1_5 {
+     *     RADIO_ACCESS_NETWORKS radioAccessNetwork;
+     *     guint8 type;
+     *     GBinderHidlVec bands;    // vec<enum>
+     *     GBinderHidlVec channels; // vec<int32_t>
+     * } RadioAccessSpecifier_1_5;
+     */
+    static const GBinderWriterField radio_network_scan_specifier_1_5_f[] = {
+        GBINDER_WRITER_FIELD_HIDL_VEC_INT32(RadioAccessSpecifier_1_5, bands),
+        GBINDER_WRITER_FIELD_HIDL_VEC_INT32(RadioAccessSpecifier_1_5, channels),
+        GBINDER_WRITER_FIELD_END()
+    };
+    static const GBinderWriterType radio_network_scan_specifier_1_5_t = {
+        GBINDER_WRITER_STRUCT_NAME_AND_SIZE(RadioAccessSpecifier_1_5),
+        radio_network_scan_specifier_1_5_f
+    };
 
     /*
-     * Either selection is set to manual, or the query failed.
-     * In either case, let's give it a try.
+     * typedef struct radio_network_scan_request {
+     *     RADIO_SCAN_TYPE type;
+     *     gint32 interval;           // [5..300] seconds
+     *     GBinderHidlVec specifiers; // vec <RadioAccessSpecifier>
+     *     gint32 maxSearchTime;      // [60..3600] seconds
+     *     guint8 incrementalResults; // TRUE/FALSE
+     *     gint32 incrementalResultsPeriodicity; // [1..10]
+     *     GBinderHidlVec mccMncs;    // vec<hidl_string>
+     * } RadioNetworkScanRequest_1_5;
      */
-    req = radio_request_new(self->client,
-        req_code, NULL,
-        binder_netreg_register_cb, binder_netreg_cbd_destroy,
-        binder_netreg_cbd_new(self, cbd->cb.f, cbd->data));
+    static const GBinderWriterField radio_network_scan_request_1_5_f[] = {
+        GBINDER_WRITER_FIELD_HIDL_VEC(RadioNetworkScanRequest_1_5, specifiers,
+            &radio_network_scan_specifier_1_5_t),
+        GBINDER_WRITER_FIELD_HIDL_VEC_STRING(RadioNetworkScanRequest_1_5,
+            mccMncs),
+        GBINDER_WRITER_FIELD_END()
+    };
+    static const GBinderWriterType radio_network_scan_request_1_5_t = {
+        GBINDER_WRITER_STRUCT_NAME_AND_SIZE(RadioNetworkScanRequest_1_5),
+        radio_network_scan_request_1_5_f
+    };
 
-    /* setNetworkSelectionModeAutomatic(int32 serial); */
-    radio_request_set_timeout(req, self->network_selection_timeout_ms);
-    radio_request_set_retry(req, 0, REGISTRATION_MAX_RETRIES);
-    if (radio_request_submit(req)) {
-        ofono_info("%snw select auto", self->log_prefix);
-        self->register_req = req; /* Keep the ref */
-    } else {
-        ofono_warn("%sfailed to select auto nw", self->log_prefix);
-        radio_request_unref(req);
-        cb(binder_error_failure(&err), cbd->data);
+    RadioAccessSpecifier_1_5* specs;
+    RadioNetworkScanRequest_1_5* scan;
+    guint i, nspecs = 0;
+    const BinderNetRegRadioType* radio_types[N_RADIO_TYPES_1_5];
+
+    /* Which modes are supported and enabled */
+    for (i = 0; i < N_RADIO_TYPES_1_5; i++) {
+        if (self->techs & binder_netreg_radio_types[i].mode) {
+            radio_types[nspecs++] = binder_netreg_radio_types + i;
+        }
     }
+
+    specs = gbinder_writer_malloc0(writer, nspecs * sizeof(*specs));
+    scan = gbinder_writer_new0(writer, RadioNetworkScanRequest_1_5);
+
+    for (i = 0; i < nspecs; i++) {
+        const BinderNetRegRadioType* radio_type = radio_types[i];
+        RadioAccessSpecifier_1_5* spec = specs + i;
+
+        specs[i].radioAccessNetwork = radio_type->ran;
+        spec->type = radio_type->hidl_type;
+        /* The rest may (hopefully) remain zero-initialized */
+    }
+
+    scan->type = RADIO_SCAN_ONE_SHOT;
+    scan->interval = INCREMENTAL_RESULTS_PERIODICITY_RANGE_MAX;
+    scan->specifiers.owns_buffer = TRUE;
+    scan->specifiers.count = nspecs;
+    scan->specifiers.data.ptr = specs;
+    scan->maxSearchTime = NETWORK_SCAN_MAX_SEARCH_TIME_SEC;
+    scan->incrementalResults = TRUE;
+    scan->incrementalResultsPeriodicity = 3;
+    gbinder_writer_append_struct(writer, scan,
+        &radio_network_scan_request_1_5_t, NULL);
 }
 
 static
 void
-binder_netreg_register_auto(
-    struct ofono_netreg* netreg,
-    ofono_netreg_register_cb_t cb,
-    void* data)
+binder_netreg_api_write_set_network_selection_mode_manual_args_hidl_1_5(
+    GBinderWriter* writer,
+    const char* numeric)
 {
-    BinderNetReg* self = binder_netreg_get_data(netreg);
-    guint32 code = self->interface_aidl == RADIO_NETWORK_INTERFACE ?
-        RADIO_NETWORK_REQ_GET_NETWORK_SELECTION_MODE :
-        RADIO_REQ_GET_NETWORK_SELECTION_MODE;
-    RadioRequest* req = radio_request_new(self->client,
-        code, NULL,
-        binder_netreg_query_register_auto_cb,
-        binder_netreg_cbd_destroy,
-        binder_netreg_cbd_new(self, BINDER_CB(cb), data));
-
-    /* getNetworkSelectionMode(int32 serial); */
-    radio_request_drop(self->register_req);
-    if (radio_request_submit(req)) {
-        self->register_req = req; /* Keep the ref */
-    } else {
-        struct ofono_error err;
-
-        DBG_(self, "failed to query bw selection mode");
-        radio_request_unref(req);
-        self->register_req = NULL;
-        cb(binder_error_failure(&err), data);
-    }
+    /*
+     * 1.5/IRadio.hal:
+     * oneway setNetworkSelectionModeManual_1_5(int32_t serial,
+     *     string operatorNumeric, RadioAccessNetworks ran);
+     */
+    gbinder_writer_append_hidl_string_copy(writer, numeric);
+    gbinder_writer_append_int32(writer, RADIO_ACCESS_NETWORKS_UNKNOWN);
 }
 
-static
-void
-binder_netreg_register_manual(
-    struct ofono_netreg* netreg,
-    const char* mcc,
-    const char* mnc,
-    ofono_netreg_register_cb_t cb,
-    void* data)
-{
-    BinderNetReg* self = binder_netreg_get_data(netreg);
-    char* numeric = g_strconcat(mcc, mnc, NULL);
-    GBinderWriter writer;
-    guint32 code = self->interface_aidl == RADIO_NETWORK_INTERFACE ?
-        RADIO_NETWORK_REQ_SET_NETWORK_SELECTION_MODE_MANUAL :
-        (radio_client_interface(self->client) >= RADIO_INTERFACE_1_5) ?
-            RADIO_REQ_SET_NETWORK_SELECTION_MODE_MANUAL_1_5 :
-            RADIO_REQ_SET_NETWORK_SELECTION_MODE_MANUAL;
-    RadioRequest* req = radio_request_new(self->client,
-        code, &writer,
-        binder_netreg_register_cb, binder_netreg_cbd_destroy,
-        binder_netreg_cbd_new(self, BINDER_CB(cb), data));
+static const BinderNetRegApi binder_netreg_api_hidl_1_5 = {
+    "hidl_1_5",
+    binder_read_string_arg_hidl,
+    binder_netreg_api_read_oplist_hidl,
+    binder_netreg_api_read_signal_strength_resp_hidl,
+    binder_netreg_api_read_signal_strength_ind_hidl,
+    binder_netreg_api_read_network_scan_hidl,
+    binder_netreg_api_write_start_network_scan_args_hidl_1_5,
+    binder_netreg_api_write_set_network_selection_mode_manual_args_hidl_1_5,
+    RADIO_REQ_START_NETWORK_SCAN_1_4,
+    RADIO_REQ_STOP_NETWORK_SCAN,
+    RADIO_REQ_GET_AVAILABLE_NETWORKS,
+    RADIO_REQ_GET_SIGNAL_STRENGTH_1_4,
+    RADIO_REQ_GET_NETWORK_SELECTION_MODE,
+    RADIO_REQ_SET_NETWORK_SELECTION_MODE_AUTOMATIC,
+    RADIO_REQ_SET_NETWORK_SELECTION_MODE_MANUAL_1_5,
+    RADIO_IND_NITZ_TIME_RECEIVED,
+    RADIO_IND_CURRENT_SIGNAL_STRENGTH_1_4,
+    RADIO_IND_NETWORK_SCAN_RESULT_1_5,
+    RADIO_IND_MODEM_RESET,
+    RADIO_IND_NONE,
+};
 
-    /* setNetworkSelectionModeManual(int32 serial, string operatorNumeric); */
-    gbinder_writer_add_cleanup(&writer, g_free, numeric);
-    if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
-        gbinder_writer_append_hidl_string(&writer, numeric);
-    } else {
-        gbinder_writer_append_string16(&writer, numeric);
-    }
-    /* setNetworkSelectionModeManual_1_5 adds also suggested radio access network */
-    if (self->interface_aidl == RADIO_NETWORK_INTERFACE ||
-            radio_client_interface(self->client) >= RADIO_INTERFACE_1_5) {
-        gbinder_writer_append_int32(&writer, RADIO_ACCESS_NETWORKS_UNKNOWN);
-    }
-
-    radio_request_set_timeout(req, self->network_selection_timeout_ms);
-
-    radio_request_drop(self->register_req);
-    if (radio_request_submit(req)) {
-        ofono_info("%snw select manual: %s", self->log_prefix, numeric);
-        self->register_req = req; /* Keep the ref */
-    } else {
-        struct ofono_error err;
-
-        DBG_(self, "failed to set nw select manual: %s", numeric);
-        radio_request_unref(req);
-        self->register_req = NULL;
-        cb(binder_error_failure(&err), data);
-    }
-}
-
-/*
- * RSSI
- * Received Signal Strength Indication
- *
- * Reference: 3GPP TS 27.007 section 8.5
- * Range: -51..-113 dBm
- * Valid values are (0-31, 99)
- *
- * 0       -113 dBm or less
- * 1       -111 dBm
- * 2...30  -109... -53 dBm
- * 31      -51 dBm or greater
- * 99      not known or not detectable
- *
- * INT_MAX denotes that the value is invalid/unreported.
- */
-
-#define RSSI_MIN 0
-#define RSSI_MAX 31
+/*==========================================================================*
+ * AIDL API flavor
+ *==========================================================================*/
 
 static
-int
-binder_netreg_dbm_from_rssi(
-    int rssi)
+gboolean
+binder_netreg_scan_op_read_info_aidl(
+    GBinderReader* reader,
+    struct ofono_network_operator* op)
 {
-    return (rssi >= RSSI_MIN && rssi <= RSSI_MAX) ?
-        (-113 + 2 * (rssi - RSSI_MIN)) : -140;
-}
+    gboolean ok = FALSE;
+    GBinderReader info;
 
-/*
- * RSRP
- * Reference Signal Received Power
- *
- * Reference: 3GPP TS 36.133 section 9.1.4
- * Range: -44..-140 dBm
- * Value is dBm multipled by -1
- *
- * INT_MAX denotes that the value is invalid/unreported.
- */
+    /*
+     * package android.hardware.radio.network;
+     * parcelable OperatorInfo {
+     *   String alphaLong;
+     *   String alphaShort;
+     *   String operatorNumeric;
+     *   int status;
+     * }
+     */
 
-#define RSRP_MIN 44
-#define RSRP_MAX 140
+    if (gbinder_reader_start_parcelable(reader, &info, NULL)) {
+        char* name = gbinder_reader_read_string16(&info); /* alphaLong */
+        gint32 status;
 
-static
-int
-binder_netreg_dbm_from_rsrp(
-    int rsrp)
-{
-    return (rsrp >= RSRP_MIN && rsrp <= RSRP_MAX) ? -rsrp : -140;
-}
-
-/*
- * RSCP
- * Received Signal Code Power
- *
- * Reference: 3GPP TS 27.007 section 8.69
- * Range: -24..-120 dBm
- * Valid values are (0-96, 255)
- *
- * 0       -120 dBm or less
- * 1       -119 dBm
- * 2...95  -118...-25 dBm
- * 96      -24 dBm or greater
- * 255     not known or not detectable
- *
- * INT_MAX denotes that the value is invalid/unreported.
- */
-
-#define RSCP_MIN 0
-#define RSCP_MAX 96
-
-static
-int
-binder_netreg_dbm_from_rscp(
-    int rscp)
-{
-    return (rscp >= RSCP_MIN && rscp <= RSCP_MAX) ?
-        (-120 + (rscp - RSCP_MIN)) : -140;
-}
-
-static
-int
-binder_netreg_get_signal_strength_dbm(
-    const RadioSignalStrengthGsm* gsm,
-    const RadioSignalStrengthLte* lte,
-    const RadioSignalStrengthWcdma_1_2* wcdma,
-    const RadioSignalStrengthTdScdma_1_2* tdscdma,
-    const RadioSignalStrengthNr* nr)
-{
-    int rssi = -1, rscp = -1, rsrp = -1;
-
-    if (gsm->signalStrength <= RSSI_MAX) {
-        rssi = gsm->signalStrength;
-    }
-
-    if (lte->signalStrength <= RSSI_MAX &&
-        (int)lte->signalStrength > rssi) {
-        rssi = lte->signalStrength;
-    }
-
-    if (lte->rsrp >= RSRP_MIN && lte->rsrp <= RSRP_MAX) {
-        rsrp = lte->rsrp;
-    }
-
-    if (wcdma) {
-        if (wcdma->base.signalStrength <= RSSI_MAX &&
-            (int)wcdma->base.signalStrength > rssi) {
-            rssi = wcdma->base.signalStrength;
+        /* Prefer long name, then short, fallback to numeric */
+        if (name) {
+            gbinder_reader_skip_string16(&info); /* alphaShort */
+            gbinder_reader_skip_string16(&info); /* operatorNumeric */
+        } else {
+            name = gbinder_reader_read_string16(&info); /* alphaShort */
+            /* operatorNumeric */
+            if (name) {
+                gbinder_reader_skip_string16(&info);
+            } else {
+                name = gbinder_reader_read_string16(&info);
+            }
         }
-        if (wcdma->rscp <= RSCP_MAX) {
-            rscp = wcdma->rscp;
-        }
-    }
 
-    if (tdscdma) {
-        if (tdscdma->signalStrength <= RSSI_MAX &&
-            (int)tdscdma->signalStrength > rssi) {
-            rssi = tdscdma->signalStrength;
-        }
-        if (tdscdma->rscp <= RSCP_MAX &&
-            (int)tdscdma->rscp > rscp) {
-            rscp = tdscdma->rscp;
-        }
-    }
+        if (name) {
+            g_strlcpy(op->name, name, sizeof(op->name));
+            g_free(name);
 
-    if (nr) {
-        if (nr->ssRsrp >= RSRP_MIN && nr->ssRsrp <= RSRP_MAX) {
-            rsrp = nr->ssRsrp;
+            if (gbinder_reader_read_int32(&info, &status)) {
+                op->status = status;
+                ok = TRUE;
+            }
         }
+        gbinder_reader_finish_parcelable(&info);
     }
-
-    if (rsrp >= RSRP_MIN) {
-        return binder_netreg_dbm_from_rsrp(rsrp);
-    } else if (rscp >= RSCP_MIN) {
-        return binder_netreg_dbm_from_rscp(rscp);
-    } else if (rssi >= RSSI_MIN) {
-        return binder_netreg_dbm_from_rssi(rssi);
-    } else {
-        return -140;
-    }
+    return ok;
 }
 
 static
-int
-binder_netreg_get_signal_strength_dbm_aidl(
+BinderOpList*
+binder_netreg_api_read_oplist_aidl(
+    BinderNetReg* self,
     GBinderReader* reader)
 {
-    int rssi = -1, rscp = -1, rsrp = -1;
-    const RadioSignalStrengthGsm* gsm;
-    const RadioSignalStrengthLte* lte;
-    const RadioSignalStrengthTdScdma_1_2* tdscdma;
-    const RadioSignalStrengthWcdma_1_2* wcdma;
-    const RadioSignalStrengthNr* nr;
+    guint32 count;
 
-    binder_read_parcelable_size(reader);
+    /* OperatorInfo[] */
+    if (gbinder_reader_read_uint32(reader, &count)) {
+        BinderOpList* oplist = binder_oplist_sized_new(count);
+        guint i;
 
-    gsm = gbinder_reader_read_parcelable(reader, NULL);
-    gbinder_reader_read_parcelable(reader, NULL); /* cdma */
-    gbinder_reader_read_parcelable(reader, NULL); /* evdo */
-    lte = gbinder_reader_read_parcelable(reader, NULL);
-    tdscdma = gbinder_reader_read_parcelable(reader, NULL);
-    wcdma = gbinder_reader_read_parcelable(reader, NULL);
-    nr = gbinder_reader_read_parcelable(reader, NULL);
-
-    if (gsm && gsm->signalStrength <= RSSI_MAX) {
-        rssi = gsm->signalStrength;
-    }
-
-    if (lte) {
-        if (lte->signalStrength <= RSSI_MAX &&
-            (int)lte->signalStrength > rssi) {
-            rssi = lte->signalStrength;
-        }
-
-        if (lte->rsrp >= RSRP_MIN && lte->rsrp <= RSRP_MAX) {
-            rsrp = lte->rsrp;
-        }
-    }
-
-    if (wcdma) {
-        if (wcdma->base.signalStrength <= RSSI_MAX &&
-            (int)wcdma->base.signalStrength > rssi) {
-            rssi = wcdma->base.signalStrength;
-        }
-        if (wcdma->rscp <= RSCP_MAX) {
-            rscp = wcdma->rscp;
-        }
-    }
-
-    if (tdscdma) {
-        if (tdscdma->signalStrength <= RSSI_MAX &&
-            (int)tdscdma->signalStrength > rssi) {
-            rssi = tdscdma->signalStrength;
-        }
-        if (tdscdma->rscp <= RSCP_MAX &&
-            (int)tdscdma->rscp > rscp) {
-            rscp = tdscdma->rscp;
-        }
-    }
-
-    if (nr) {
-        if (nr->ssRsrp >= RSRP_MIN && nr->ssRsrp <= RSRP_MAX) {
-            rsrp = nr->ssRsrp;
-        }
-    }
-
-    if (rsrp >= RSRP_MIN) {
-        return binder_netreg_dbm_from_rsrp(rsrp);
-    } else if (rscp >= RSCP_MIN) {
-        return binder_netreg_dbm_from_rscp(rscp);
-    } else if (rssi >= RSSI_MIN) {
-        return binder_netreg_dbm_from_rssi(rssi);
-    } else {
-        return -140;
-    }
-}
-
-static
-int
-binder_netreg_percent_from_dbm(
-    BinderNetReg* self,
-    int dbm)
-{
-    const int min_dbm = self->signal_strength_dbm_weak;    /* dBm */
-    const int max_dbm = self->signal_strength_dbm_strong;  /* dBm */
-
-    return (dbm <= min_dbm) ? 1 :
-        (dbm >= max_dbm) ? 100 :
-        (100 * (dbm - min_dbm) / (max_dbm - min_dbm));
-}
-
-static
-void
-binder_netreg_strength_notify(
-    RadioClient* client,
-    RADIO_IND code,
-    const GBinderReader* args,
-    gpointer user_data)
-{
-    BinderNetReg* self = user_data;
-    GBinderReader reader;
-    int dbm = 0;
-
-    gbinder_reader_copy(&reader, args);
-    if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
-        if (code == RADIO_IND_CURRENT_SIGNAL_STRENGTH) {
-            const RadioSignalStrength* ss = gbinder_reader_read_hidl_struct
-                (&reader, RadioSignalStrength);
-
-            if (ss) {
-                dbm = binder_netreg_get_signal_strength_dbm
-                    (&ss->gw, &ss->lte, NULL, NULL, NULL);
-            }
-        } else if (code == RADIO_IND_CURRENT_SIGNAL_STRENGTH_1_2) {
-            const RadioSignalStrength_1_2* ss = gbinder_reader_read_hidl_struct
-                (&reader, RadioSignalStrength_1_2);
-
-            if (ss) {
-                dbm = binder_netreg_get_signal_strength_dbm
-                    (&ss->gw, &ss->lte, &ss->wcdma, NULL, NULL);
-            }
-        } else if (code == RADIO_IND_CURRENT_SIGNAL_STRENGTH_1_4) {
-            const RadioSignalStrength_1_4* ss = gbinder_reader_read_hidl_struct
-                (&reader, RadioSignalStrength_1_4);
-
-            if (ss) {
-                dbm = binder_netreg_get_signal_strength_dbm
-                    (&ss->gsm, &ss->lte, &ss->wcdma, &ss->tdscdma, &ss->nr);
+        for (i = 0; i < count; i++) {
+            binder_oplist_set_count(oplist, oplist->count + 1);
+            if (!binder_netreg_scan_op_read_info_aidl(reader,
+                binder_oplist_last(oplist))) {
+                DBG("Failed to parse OperatorInfo[]");
+                binder_oplist_free(oplist);
+                return NULL;
             }
         }
-    } else {
-        dbm = binder_netreg_get_signal_strength_dbm_aidl(&reader);
+        return oplist;
     }
-
-    if (dbm) {
-        const int percent = binder_netreg_percent_from_dbm(self, dbm);
-
-        DBG_(self, "%d dBm (%d%%)", dbm, percent);
-        ofono_netreg_strength_notify(self->netreg, percent);
-    }
-}
-
-static void binder_netreg_strength_cb(
-    RadioRequest* req,
-    RADIO_TX_STATUS status,
-    RADIO_RESP resp,
-    RADIO_ERROR error,
-    const GBinderReader* args,
-    gpointer user_data)
-{
-    BinderNetRegCbData* cbd = user_data;
-    BinderNetReg* self = cbd->self;
-    ofono_netreg_strength_cb_t cb = cbd->cb.strength;
-    struct ofono_error err;
-
-    GASSERT(self->strength_req == req);
-    radio_request_unref(self->strength_req);
-    self->strength_req = NULL;
-
-    if (status == RADIO_TX_STATUS_OK) {
-        if (error == RADIO_ERROR_NONE) {
-            GBinderReader reader;
-            int dbm = 0;
-
-            gbinder_reader_copy(&reader, args);
-            if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
-                if (resp == RADIO_RESP_GET_SIGNAL_STRENGTH) {
-                    const RadioSignalStrength* ss =
-                        gbinder_reader_read_hidl_struct(&reader,
-                            RadioSignalStrength);
-
-                    if (ss) {
-                        dbm = binder_netreg_get_signal_strength_dbm
-                            (&ss->gw, &ss->lte, NULL, NULL, NULL);
-                    }
-                } else if (resp == RADIO_RESP_GET_SIGNAL_STRENGTH_1_2) {
-                    const RadioSignalStrength_1_2* ss =
-                        gbinder_reader_read_hidl_struct(&reader,
-                            RadioSignalStrength_1_2);
-
-                    if (ss) {
-                        dbm = binder_netreg_get_signal_strength_dbm
-                            (&ss->gw, &ss->lte, &ss->wcdma, NULL, NULL);
-                    }
-                } else if (resp == RADIO_RESP_GET_SIGNAL_STRENGTH_1_4) {
-                    const RadioSignalStrength_1_4* ss =
-                        gbinder_reader_read_hidl_struct(&reader,
-                            RadioSignalStrength_1_4);
-
-                    if (ss) {
-                        dbm = binder_netreg_get_signal_strength_dbm
-                            (&ss->gsm, &ss->lte, &ss->wcdma, &ss->tdscdma, &ss->nr);
-                    }
-                } else {
-                    ofono_error("Unexpected getSignalStrength response %d", resp);
-                }
-            } else {
-                dbm = binder_netreg_get_signal_strength_dbm_aidl(&reader);
-            }
-
-            if (dbm) {
-                const int percent = binder_netreg_percent_from_dbm(self, dbm);
-
-                /* Success */
-                DBG_(self, "%d dBm (%d%%)", dbm, percent);
-                cb(binder_error_ok(&err), percent, cbd->data);
-                return;
-            }
-        } else {
-            ofono_warn("Failed to retrive the signal strength: %s",
-                binder_radio_error_string(status));
-        }
-    }
-
-    /* Error path */
-    cb(binder_error_failure(&err), -1, cbd->data);
-}
-
-static
-void
-binder_netreg_strength(
-    struct ofono_netreg* netreg,
-    ofono_netreg_strength_cb_t cb,
-    void* data)
-{
-    BinderNetReg* self = binder_netreg_get_data(netreg);
-    RadioRequest* req = radio_request_new(self->client,
-        self->interface_aidl == RADIO_NETWORK_INTERFACE ?
-            RADIO_NETWORK_REQ_GET_SIGNAL_STRENGTH :
-            (radio_client_interface(self->client) >= RADIO_INTERFACE_1_4) ?
-                RADIO_REQ_GET_SIGNAL_STRENGTH_1_4 :
-                RADIO_REQ_GET_SIGNAL_STRENGTH,
-        NULL, binder_netreg_strength_cb, binder_netreg_cbd_destroy,
-        binder_netreg_cbd_new(self, BINDER_CB(cb), data));
-
-    radio_request_set_retry(req, BINDER_RETRY_MS, -1);
-    radio_request_drop(self->strength_req);
-    if (radio_request_submit(req)) {
-        self->strength_req = req; /* Keep the ref */
-    } else {
-        struct ofono_error err;
-
-        DBG_(self, "failed to query signal strength");
-        radio_request_unref(req);
-        self->strength_req = NULL;
-        cb(binder_error_failure(&err), -1, data);
-    }
-}
-
-static
-void
-binder_netreg_nitz_notify(
-    RadioClient* client,
-    RADIO_IND code,
-    const GBinderReader* args,
-    gpointer user_data)
-{
-    BinderNetReg* self = user_data;
-    GBinderReader reader;
-    int year, mon, mday, hour, min, sec, tzi, dst = 0;
-    char tzs;
-    char* nitz;
-    guint32 ind_code = self->interface_aidl == RADIO_NETWORK_INTERFACE ?
-        RADIO_NETWORK_IND_NITZ_TIME_RECEIVED : RADIO_IND_NITZ_TIME_RECEIVED;
-
-    /*
-     * nitzTimeReceived(RadioIndicationType, string nitzTime,
-     * uint64 receivedTime);
-     */
-    GASSERT(code == ind_code);
-    gbinder_reader_copy(&reader, args);
-    if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
-        nitz = gbinder_reader_read_hidl_string(&reader);
-    } else {
-        nitz = gbinder_reader_read_string16(&reader);
-    }
-
-    DBG_(self, "%s", nitz);
-
-    /*
-     * Format: yy/mm/dd,hh:mm:ss(+/-)tz[,ds]
-     * The ds part is considered optional, initialized to zero.
-     */
-    if (nitz && sscanf(nitz, "%u/%u/%u,%u:%u:%u%c%u,%u", &year, &mon, &mday,
-        &hour, &min, &sec, &tzs, &tzi, &dst) >= 8 &&
-        (tzs == '+' || tzs == '-')) {
-        struct ofono_network_time time;
-        char tz[4];
-
-        snprintf(tz, sizeof(tz), "%c%d", tzs, tzi);
-        time.sec = sec;
-        time.min = min;
-        time.hour = hour;
-        time.mday = mday;
-        time.mon = mon;
-        time.year = 2000 + year;
-        time.dst = dst;
-        time.utcoff = atoi(tz) * 15 * 60;
-
-        ofono_netreg_time_notify(self->netreg, &time);
-    } else {
-        ofono_warn("Failed to parse NITZ string \"%s\"", nitz);
-    }
-
-    g_free(nitz);
-}
-
-static
-void
-binder_netreg_modem_reset_notify(
-    RadioClient* client,
-    RADIO_IND code,
-    const GBinderReader* args,
-    gpointer user_data)
-{
-    BinderNetReg* self = user_data;
-
-    if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
-        DBG_(self, "%s", binder_read_hidl_string(args));
-    } else {
-        char* reason = binder_read_string16(args);
-        DBG_(self, "%s", reason);
-        g_free(reason);
-    }
-
-    /* Drop pending requests */
-    radio_request_drop(self->register_req);
-    radio_request_drop(self->strength_req);
-    self->register_req = NULL;
-    self->strength_req = NULL;
-
-    /* And complete the scan (successfully if there were any results) */
-    if (self->scan) {
-        BinderNetRegScan* scan = self->scan;
-
-        self->scan = NULL;
-        if (scan->oplist && scan->oplist->count) {
-            binder_netreg_scan_complete(self, scan);
-        } else {
-            binder_netreg_scan_free(self, scan);
-        }
-    }
+    return NULL;
 }
 
 static
 gboolean
-binder_netreg_register(
-    gpointer user_data)
+binder_netreg_op_cell_info_gsm_aidl(
+    GBinderReader* reader,
+    struct ofono_network_operator* op)
 {
-    BinderNetReg* self = user_data;
+    gboolean ok = FALSE;
+    GBinderReader ident;
 
-    GASSERT(self->init_id);
-    self->init_id = 0;
-    ofono_netreg_register(self->netreg);
+    /*
+     * package android.hardware.radio.network;
+     * parcelable CellInfoGsm {
+     *   // <== The reader points here
+     *   CellIdentityGsm cellIdentityGsm;
+     *   GsmSignalStrength signalStrengthGsm;
+     * }
+     */
 
-    /* Register for network state changes */
-    self->network_event_id[NETREG_NETWORK_EVENT_DATA_STATE_CHANGED] =
-        binder_network_add_property_handler(self->network,
-            BINDER_NETWORK_PROPERTY_DATA_STATE,
-            binder_netreg_status_notify, self);
-    self->network_event_id[NETREG_NETWORK_EVENT_VOICE_STATE_CHANGED] =
-        binder_network_add_property_handler(self->network,
-            BINDER_NETWORK_PROPERTY_VOICE_STATE,
-            binder_netreg_status_notify, self);
+    /* cellIdentityGsm */
+    if (gbinder_reader_start_parcelable(reader, &ident, NULL)) {
 
-    if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
-        /* Register for network time updates */
-        self->ind_id[IND_NITZ_TIME_RECEIVED] =
-            radio_client_add_indication_handler(self->client,
-                RADIO_IND_NITZ_TIME_RECEIVED,
-                binder_netreg_nitz_notify, self);
+        /*
+         * package android.hardware.radio.network;
+         * parcelable CellIdentityGsm {
+         *   String mcc;
+         *   String mnc;
+         *   int lac;
+         *   int cid;
+         *   int arfcn;
+         *   byte bsic;
+         *   OperatorInfo operatorNames;
+         *   String[] additionalPlmns;
+         * }
+         */
+        char* mcc = gbinder_reader_read_string16(&ident);
 
-        /* Register for signal strength changes */
-        self->ind_id[IND_SIGNAL_STRENGTH] =
-            radio_client_add_indication_handler(self->client,
-                RADIO_IND_CURRENT_SIGNAL_STRENGTH,
-                binder_netreg_strength_notify, self);
-        self->ind_id[IND_SIGNAL_STRENGTH_1_2] =
-            radio_client_add_indication_handler(self->client,
-                RADIO_IND_CURRENT_SIGNAL_STRENGTH_1_2,
-                binder_netreg_strength_notify, self);
-        self->ind_id[IND_SIGNAL_STRENGTH_1_4] =
-            radio_client_add_indication_handler(self->client,
-                RADIO_IND_CURRENT_SIGNAL_STRENGTH_1_4,
-                binder_netreg_strength_notify, self);
+        if (mcc) {
+            char* mnc = gbinder_reader_read_string16(&ident);
 
-        /* Incremental scan results */
-        self->ind_id[IND_NETWORK_SCAN_RESULT_1_2] =
-            radio_client_add_indication_handler(self->client,
-                RADIO_IND_NETWORK_SCAN_RESULT_1_2,
-                binder_netreg_scan_result_notify, self);
-        self->ind_id[IND_NETWORK_SCAN_RESULT_1_4] =
-            radio_client_add_indication_handler(self->client,
-                RADIO_IND_NETWORK_SCAN_RESULT_1_4,
-                binder_netreg_scan_result_notify, self);
-        self->ind_id[IND_NETWORK_SCAN_RESULT_1_5] =
-            radio_client_add_indication_handler(self->client,
-                RADIO_IND_NETWORK_SCAN_RESULT_1_5,
-                binder_netreg_scan_result_notify, self);
-
-        /* Miscellaneous */
-        self->ind_id[IND_MODEM_RESET] =
-            radio_client_add_indication_handler(self->client,
-                RADIO_IND_MODEM_RESET,
-                binder_netreg_modem_reset_notify, self);
-    } else {
-        /* Register for network time updates */
-        self->ind_id[IND_NITZ_TIME_RECEIVED] =
-            radio_client_add_indication_handler(self->client,
-                RADIO_NETWORK_IND_NITZ_TIME_RECEIVED,
-                binder_netreg_nitz_notify, self);
-
-        /* Register for signal strength changes */
-        self->ind_id[IND_SIGNAL_STRENGTH] =
-            radio_client_add_indication_handler(self->client,
-                RADIO_NETWORK_IND_CURRENT_SIGNAL_STRENGTH,
-                binder_netreg_strength_notify, self);
-
-        /* Incremental scan results */
-        self->ind_id[IND_NETWORK_SCAN_RESULT_1_5] =
-            radio_client_add_indication_handler(self->client,
-                RADIO_NETWORK_IND_NETWORK_SCAN_RESULT,
-                binder_netreg_scan_result_notify, self);
-
-        /* Miscellaneous */
-        self->modem_client_reset_ind =
-            radio_client_add_indication_handler(self->modem_client,
-                RADIO_MODEM_IND_MODEM_RESET,
-                binder_netreg_modem_reset_notify, self);
+            if (mnc) {
+                if (gbinder_reader_read_int32(&ident, NULL /* lac */) &&
+                    gbinder_reader_read_int32(&ident, NULL /* cid */) &&
+                    gbinder_reader_read_int32(&ident, NULL /* arfcn */) &&
+                    gbinder_reader_read_int8(&ident, NULL /* bsic */) &&
+                    binder_netreg_scan_op_read_info_aidl(&ident, op)) {
+                    /* That's enough info to call it a success */
+                    op->tech = OFONO_ACCESS_TECHNOLOGY_GSM;
+                    g_strlcpy(op->mcc, mcc, sizeof(op->mcc));
+                    g_strlcpy(op->mnc, mnc, sizeof(op->mnc));
+                    ok = TRUE;
+                }
+                g_free(mnc);
+            }
+            g_free(mcc);
+        }
+        gbinder_reader_finish_parcelable(&ident);
     }
-    return G_SOURCE_REMOVE;
+    return ok;
+}
+
+static
+gboolean
+binder_netreg_op_cell_info_wcdma_aidl(
+    GBinderReader* reader,
+    struct ofono_network_operator* op)
+{
+    gboolean ok = FALSE;
+    GBinderReader ident;
+
+    /*
+     * package android.hardware.radio.network;
+     * parcelable CellInfoWcdma {
+     *   // <== The reader points here
+     *   CellIdentityWcdma cellIdentityWcdma;
+     *   WcdmaSignalStrength signalStrengthWcdma;
+     */
+
+    /* cellIdentityWcdma */
+    if (gbinder_reader_start_parcelable(reader, &ident, NULL)) {
+        /*
+         * package android.hardware.radio.network;
+         * parcelable CellIdentityWcdma {
+         *   String mcc;
+         *   String mnc;
+         *   int lac;
+         *   int cid;
+         *   int psc;
+         *   int uarfcn;
+         *   OperatorInfo operatorNames;
+         *   String[] additionalPlmns;
+         *   ClosedSubscriberGroupInfo csgInfo;
+         * }
+         */
+        char* mcc = gbinder_reader_read_string16(&ident);
+
+        if (mcc) {
+            char* mnc = gbinder_reader_read_string16(&ident);
+
+            if (mnc) {
+                if (gbinder_reader_read_int32(&ident, NULL /* lac */) &&
+                    gbinder_reader_read_int32(&ident, NULL /* cid */) &&
+                    gbinder_reader_read_int32(&ident, NULL /* psc */) &&
+                    gbinder_reader_read_int32(&ident, NULL /* uarfcn */) &&
+                    binder_netreg_scan_op_read_info_aidl(&ident, op)) {
+                    /* That's enough info to call it a success */
+                    op->tech = OFONO_ACCESS_TECHNOLOGY_UTRAN;
+                    g_strlcpy(op->mcc, mcc, sizeof(op->mcc));
+                    g_strlcpy(op->mnc, mnc, sizeof(op->mnc));
+                    ok = TRUE;
+                }
+                g_free(mnc);
+            }
+            g_free(mcc);
+        }
+        gbinder_reader_finish_parcelable(&ident);
+    }
+    return ok;
+}
+
+static
+gboolean
+binder_netreg_op_cell_info_lte_aidl(
+    GBinderReader* reader,
+    struct ofono_network_operator* op)
+{
+    gboolean ok = FALSE;
+    GBinderReader ident;
+
+    /*
+     * package android.hardware.radio.network;
+     * parcelable CellInfoLte {
+     *   // <== The reader points here
+     *   CellIdentityLte cellIdentityLte;
+     *   LteSignalStrength signalStrengthLte;
+     * }
+     */
+
+    /* cellIdentityLte */
+    if (gbinder_reader_start_parcelable(reader, &ident, NULL)) {
+        /*
+         * package android.hardware.radio.network;
+         * parcelable CellIdentityLte {
+         *   String mcc;
+         *   String mnc;
+         *   int ci;
+         *   int pci;
+         *   int tac;
+         *   int earfcn;
+         *   OperatorInfo operatorNames;
+         *   int bandwidth;
+         *   String[] additionalPlmns;
+         *   @ClosedSubscriberGroupInfo csgInfo;
+         *   EutranBands[] bands;
+         * }
+         */
+        char* mcc = gbinder_reader_read_string16(&ident);
+
+        if (mcc) {
+            char* mnc = gbinder_reader_read_string16(&ident);
+
+            if (mnc) {
+                if (gbinder_reader_read_int32(&ident, NULL /* ci */) &&
+                    gbinder_reader_read_int32(&ident, NULL /* pci */) &&
+                    gbinder_reader_read_int32(&ident, NULL /* tac */) &&
+                    gbinder_reader_read_int32(&ident, NULL /* earfcn */) &&
+                    binder_netreg_scan_op_read_info_aidl(&ident, op)) {
+                    /* That's enough info to call it a success */
+                    op->tech = OFONO_ACCESS_TECHNOLOGY_EUTRAN;
+                    g_strlcpy(op->mcc, mcc, sizeof(op->mcc));
+                    g_strlcpy(op->mnc, mnc, sizeof(op->mnc));
+                    ok = TRUE;
+                }
+                g_free(mnc);
+            }
+            g_free(mcc);
+        }
+        gbinder_reader_finish_parcelable(&ident);
+    }
+    return ok;
+}
+
+static
+gboolean
+binder_netreg_op_cell_info_nr_aidl(
+    GBinderReader* reader,
+    struct ofono_network_operator* op)
+{
+    gboolean ok = FALSE;
+    GBinderReader ident;
+
+    /*
+     * package android.hardware.radio.network;
+     * parcelable CellInfoNr {
+     *   // <== The reader points here
+     *   CellIdentityNr cellIdentityNr;
+     *   NrSignalStrength signalStrengthNr;
+     * }
+     */
+
+    /* cellIdentityNr */
+    if (gbinder_reader_start_parcelable(reader, &ident, NULL)) {
+        /*
+         * package android.hardware.radio.network;
+         * parcelable CellIdentityNr {
+         *   String mcc;
+         *   String mnc;
+         *   long nci;
+         *   int pci;
+         *   int tac;
+         *   int nrarfcn;
+         *   OperatorInfo operatorNames;
+         *   String[] additionalPlmns;
+         *   NgranBands[] bands;
+         * }
+         */
+        char* mcc = gbinder_reader_read_string16(&ident);
+
+        if (mcc) {
+            char* mnc = gbinder_reader_read_string16(&ident);
+
+            if (mnc) {
+                if (gbinder_reader_read_int64(&ident, NULL /* nci */) &&
+                    gbinder_reader_read_int32(&ident, NULL /* pci */) &&
+                    gbinder_reader_read_int32(&ident, NULL /* tac */) &&
+                    gbinder_reader_read_int32(&ident, NULL /* nrarfcn */) &&
+                    binder_netreg_scan_op_read_info_aidl(&ident, op)) {
+                    /* That's enough info to call it a success */
+                    op->tech = OFONO_ACCESS_TECHNOLOGY_NG_RAN;
+                    g_strlcpy(op->mcc, mcc, sizeof(op->mcc));
+                    g_strlcpy(op->mnc, mnc, sizeof(op->mnc));
+                    ok = TRUE;
+                }
+                g_free(mnc);
+            }
+            g_free(mcc);
+        }
+        gbinder_reader_finish_parcelable(&ident);
+    }
+    return ok;
+}
+
+static
+gboolean
+binder_netreg_api_read_signal_strength_aidl(
+    BinderNetReg* self,
+    GBinderReader* reader,
+    BinderSs* out)
+{
+    GBinderReader parcel;
+    gboolean ok = TRUE;
+
+    /*
+     * package android.hardware.radio.network;
+     * parcelable SignalStrength {
+     *   GsmSignalStrength gsm;
+     *   CdmaSignalStrength cdma;
+     *   EvdoSignalStrength evdo;
+     *   LteSignalStrength lte;
+     *   TdscdmaSignalStrength tdscdma;
+     *   WcdmaSignalStrength wcdma;
+     *   NrSignalStrength nr;
+     * }
+     */
+    if (gbinder_reader_start_parcelable(reader, &parcel, NULL)) {
+        GBinderReader gsm, lte, tdscdma, wcdma, nr;
+
+        /* gsm */
+        if (gbinder_reader_start_parcelable(&parcel, &gsm, NULL)) {
+            gint32 signalStrength;
+
+            /*
+             * package android.hardware.radio.network;
+             * parcelable GsmSignalStrength {
+             *   int signalStrength;
+             *   int bitErrorRate;
+             *   int timingAdvance;
+             * }
+             */
+            if (gbinder_reader_read_int32(&gsm, &signalStrength)) {
+                if (RXLEV_VALID(signalStrength)) {
+                    out->m[BINDER_SS_RXLEV] = signalStrength;
+                }
+            } else {
+                ok = FALSE;
+            }
+
+            gbinder_reader_finish_parcelable(&gsm);
+        } else {
+            ok = FALSE;
+        }
+
+        if (ok && gbinder_reader_skip_parcelable(&parcel) /* cdma */ &&
+            gbinder_reader_skip_parcelable(&parcel) /* evdo */ &&
+            gbinder_reader_start_parcelable(&parcel, &lte, NULL)) {
+            gint32 signalStrength, rsrp, rsrq, rssnr;
+
+            /*
+             * package android.hardware.radio.network;
+             * parcelable LteSignalStrength {
+             *   int signalStrength;
+             *   int rsrp;
+             *   int rsrq;
+             *   int rssnr;
+             *   int cqi;
+             *   int timingAdvance;
+             *   int cqiTableIndex;
+             * }
+             */
+            if (gbinder_reader_read_int32(&lte, &signalStrength) &&
+                gbinder_reader_read_int32(&lte, &rsrp) &&
+                gbinder_reader_read_int32(&lte, &rsrq) &&
+                gbinder_reader_read_int32(&lte, &rssnr)) {
+                if (RSSI_VALID(signalStrength)) {
+                    out->m[BINDER_SS_RSSI] = signalStrength;
+                }
+
+                if (RSRP_VALID(rsrp)) {
+                    /* Value is dB multipled by -1 */
+                    out->m[BINDER_SS_RSRP] = -rsrp;
+                }
+
+                if (RSRQ_VALID(rsrq)) {
+                    /* Value is dB multipled by -1 */
+                    out->m[BINDER_SS_RSRQ] = -rsrq;
+                }
+
+                if (RSSNR_VALID(rssnr)) {
+                    out->m[BINDER_SS_RSSNR] = rssnr;
+                }
+            } else {
+                ok = FALSE;
+            }
+
+            gbinder_reader_finish_parcelable(&lte);
+        } else {
+            ok = FALSE;
+        }
+
+        /* tdscdma */
+        if (ok && gbinder_reader_start_parcelable(&parcel, &tdscdma, NULL)) {
+            gint32 signalStrength, rscp;
+
+            /*
+             * package android.hardware.radio.network;
+             * parcelable TdscdmaSignalStrength {
+             *   int signalStrength;
+             *   int bitErrorRate;
+             *   int rscp;
+             * }
+             */
+            if (gbinder_reader_read_int32(&tdscdma, &signalStrength) &&
+                gbinder_reader_read_int32(&tdscdma, NULL /* bitErrorRate */) &&
+                gbinder_reader_read_int32(&tdscdma, &rscp)) {
+                if (RSSI_VALID(signalStrength)) {
+                    const int prev = out->m[BINDER_SS_RSSI];
+
+                    if (prev == NO_MEASUREMENT || prev > signalStrength) {
+                        DBG_(self, "RSSI %d => %d", prev, signalStrength);
+                        out->m[BINDER_SS_RSSI] = signalStrength;
+                    }
+                }
+
+                if (RSCP_VALID(rscp)) {
+                    out->m[BINDER_SS_RSCP] = rscp;
+                }
+            } else {
+                ok = FALSE;
+            }
+
+            gbinder_reader_finish_parcelable(&tdscdma);
+        } else {
+            ok =  FALSE;
+        }
+
+        /* wcdma */
+        if (ok && gbinder_reader_start_parcelable(&parcel, &wcdma, NULL)) {
+            gint32 signalStrength, rscp;
+
+            /*
+             * package android.hardware.radio.network;
+             * parcelable WcdmaSignalStrength {
+             *   int signalStrength;
+             *   int bitErrorRate;
+             *   int rscp;
+             *   int ecno;
+             * }
+             */
+            if (gbinder_reader_read_int32(&wcdma, &signalStrength) &&
+                gbinder_reader_read_int32(&wcdma, NULL /* bitErrorRate */) &&
+                gbinder_reader_read_int32(&wcdma, &rscp)) {
+                if (RSSI_VALID(signalStrength)) {
+                    const int prev = out->m[BINDER_SS_RSSI];
+
+                    if (prev == NO_MEASUREMENT || prev > signalStrength) {
+                        DBG_(self, "RSSI %d => %d", prev, signalStrength);
+                        out->m[BINDER_SS_RSSI] = signalStrength;
+                    }
+                }
+
+                if (RSCP_VALID(rscp)) {
+                    const int prev = out->m[BINDER_SS_RSCP];
+
+                    if (prev == NO_MEASUREMENT || prev > rscp) {
+                        DBG_(self, "RSCP %d => %d", prev, rscp);
+                        out->m[BINDER_SS_RSCP] = rscp;
+                    }
+                }
+            } else {
+                ok = FALSE;
+            }
+
+            gbinder_reader_finish_parcelable(&wcdma);
+        } else {
+            ok = FALSE;
+        }
+
+        /* nr */
+        if (ok && gbinder_reader_start_parcelable(&parcel, &nr, NULL)) {
+            gint32 ssRsrp, ssRsrq, ssSinr;
+
+            /*
+             * package android.hardware.radio.network;
+             * parcelable NrSignalStrength {
+             *   int ssRsrp;
+             *   int ssRsrq;
+             *   int ssSinr;
+             *   int csiRsrp;
+             *   int csiRsrq;
+             *   int csiSinr;
+             *   int csiCqiTableIndex;
+             *   byte[] csiCqiReport;
+             *   int timingAdvance; // Since NrSignalStrength v3
+             * }
+             */
+            if (gbinder_reader_read_int32(&nr, &ssRsrp) &&
+                gbinder_reader_read_int32(&nr, &ssRsrq) &&
+                gbinder_reader_read_int32(&nr, &ssSinr)) {
+
+                if (SSRSRP_VALID(ssRsrp)) {
+                    /* Value is dBm multipled by -1 */
+                    out->m[BINDER_SS_SSRSRP] = -ssRsrp;
+                }
+
+                if (SSRSRQ_VALID(ssRsrq)) {
+                    /* Value is dB multipled by -1 */
+                    out->m[BINDER_SS_SSRSRQ] = -ssRsrq;
+                }
+
+                if (SSSINR_VALID(ssSinr)) {
+                    out->m[BINDER_SS_SSSINR] = ssSinr;
+                }
+            } else {
+                ok = FALSE;
+            }
+
+            gbinder_reader_finish_parcelable(&nr);
+        } else {
+            ok = FALSE;
+        }
+
+        gbinder_reader_finish_parcelable(&parcel);
+    } else {
+        ok = FALSE;
+    }
+    return ok;
 }
 
 static
 int
-binder_netreg_probe(
-    struct ofono_netreg* netreg,
-    unsigned int vendor,
-    void* data)
+binder_netreg_api_read_signal_strength_resp_aidl(
+    BinderNetReg* self,
+    RADIO_RESP resp,
+    GBinderReader* reader,
+    BinderSs* ss)
 {
-    BinderModem* modem = binder_modem_get_data(data);
-    BinderNetReg* self = g_new0(BinderNetReg, 1);
-    const BinderSlotConfig* config = &modem->config;
+    return binder_netreg_api_read_signal_strength_aidl(self, reader, ss);
+}
 
-    self->log_prefix = binder_dup_prefix(modem->log_prefix);
+static
+int
+binder_netreg_api_read_signal_strength_ind_aidl(
+    BinderNetReg* self,
+    RADIO_IND ind,
+    GBinderReader* reader,
+    BinderSs* ss)
+{
+    return binder_netreg_api_read_signal_strength_aidl(self, reader, ss);
+}
 
-    DBG_(self, "%p", netreg);
-    self->client = radio_client_ref(modem->network_client);
-    self->modem_client = radio_client_ref(modem->client);
-    self->interface_aidl = radio_client_aidl_interface(modem->network_client);
-    self->watch = ofono_watch_new(binder_modem_get_path(modem));
-    self->network = binder_network_ref(modem->network);
-    self->netreg = netreg;
-    self->techs = config->techs;
-    self->use_network_scan = config->use_network_scan;
-    self->replace_strange_oper = config->replace_strange_oper;
-    self->signal_strength_dbm_weak = config->signal_strength_dbm_weak;
-    self->signal_strength_dbm_strong = config->signal_strength_dbm_strong;
-    self->network_selection_timeout_ms = config->network_selection_timeout_ms;
+static
+BinderOpList*
+binder_netreg_api_read_network_scan_aidl(
+    BinderNetReg* self,
+    RADIO_IND code,
+    GBinderReader* reader,
+    RADIO_SCAN_STATUS* scan_status)
+{
+    BinderOpList* oplist = NULL;
+    GBinderReader parcel;
 
-    ofono_netreg_set_data(netreg, self);
-    self->init_id = g_idle_add(binder_netreg_register, self);
-    return 0;
+    /*
+     * package android.hardware.radio.network;
+     * parcelable NetworkScanResult {
+     *   int status;
+     *   RadioError error;
+     *   CellInfo[] networkInfos;
+     * }
+     *
+     * parcelable CellInfo {
+     *   boolean registered;
+     *   CellConnectionStatus connectionStatus;
+     *   CellInfoRatSpecificInfo ratSpecificInfo;
+     * }
+     *
+     * union CellInfoRatSpecificInfo {
+     *   CellInfoGsm gsm;
+     *   CellInfoWcdma wcdma;
+     *   CellInfoTdscdma tdscdma;
+     *   CellInfoLte lte;
+     *   CellInfoNr nr;
+     *   CellInfoCdma cdma;
+     * }
+     */
+    if (gbinder_reader_start_parcelable(reader, &parcel, NULL)) {
+        gint32 status, error, count;
+
+        if (gbinder_reader_read_int32(&parcel, &status) &&
+            gbinder_reader_read_int32(&parcel, &error) &&
+            gbinder_reader_read_int32(&parcel, &count)) {
+            int i;
+
+            oplist = binder_oplist_sized_new(count);
+            DBG_(self, "status=%d, error=%d, %u networks",
+                status, error, count);
+
+            /* networkInfos */
+            for (i = 0; i < count; i++) {
+                GBinderReader info;
+
+                if (gbinder_reader_start_parcelable(&parcel, &info, NULL)) {
+                    gboolean registered;
+                    gint32 type;
+                    gboolean (*parse)(
+                        GBinderReader* reader,
+                        struct ofono_network_operator* op) = NULL;
+
+                    if (gbinder_reader_read_bool(&info, &registered) &&
+                        gbinder_reader_read_int32(&info, NULL) &&
+                        binder_read_aidl_union_tag(&info, &type)) {
+                        switch ((NETWORK_CELL_INFO_TYPE)type) {
+                        case NETWORK_CELL_INFO_GSM:
+                            parse = binder_netreg_op_cell_info_gsm_aidl;
+                            break;
+                        case NETWORK_CELL_INFO_WCDMA:
+                            parse = binder_netreg_op_cell_info_wcdma_aidl;
+                            break;
+                        case NETWORK_CELL_INFO_LTE:
+                            parse = binder_netreg_op_cell_info_lte_aidl;
+                            break;
+                        case NETWORK_CELL_INFO_NR:
+                            parse = binder_netreg_op_cell_info_nr_aidl;
+                            break;
+                        case NETWORK_CELL_INFO_TDSCDMA:
+                        case NETWORK_CELL_INFO_CDMA:
+                            break;
+                        }
+
+                        if (parse) {
+                            GBinderReader data;
+
+                            if (gbinder_reader_start_parcelable(&info,
+                                &data, NULL)) {
+                                struct ofono_network_operator* op =
+                                    binder_oplist_last(oplist =
+                                        binder_oplist_append(oplist, NULL));
+
+                                if (parse(&data, op)) {
+                                    DBG_(self, "[registered=%d, operator=%s, "
+                                        "%s, %s, %s, %s]", registered,
+                                        op->name, op->mcc, op->mnc,
+                                        binder_ofono_access_technology_string
+                                        (op->tech),
+                                        binder_radio_op_status_string
+                                        (op->status));
+                                } else {
+                                    /* Drop the last added operator */
+                                    DBG_(self, "error parsing cell type %d",
+                                        type);
+                                    binder_oplist_set_count(oplist,
+                                        oplist->count - 1);
+                                }
+                                gbinder_reader_finish_parcelable(&data);
+                            }
+                        } else {
+                            DBG("unsupported cell type %d", type);
+                            gbinder_reader_skip_parcelable(&info);
+                        }
+                    }
+                    gbinder_reader_finish_parcelable(&info);
+                }
+            }
+            *scan_status = status;
+        }
+        gbinder_reader_finish_parcelable(&parcel);
+    }
+    return oplist;
 }
 
 static
 void
-binder_netreg_remove(
-    struct ofono_netreg* netreg)
+binder_netreg_api_write_start_network_scan_args_aidl(
+    BinderNetReg* self,
+    GBinderWriter* writer)
 {
-    BinderNetReg* self = binder_netreg_get_data(netreg);
+    GBinderWriter parcel;
+    guint i, nspecs = 0;
+    const BinderNetRegRadioType* radio_types[N_RADIO_TYPES_AIDL];
 
-    DBG_(self, "%p", netreg);
-
-    if (self->init_id) {
-        g_source_remove(self->init_id);
+    /* Which modes are supported and enabled */
+    for (i = 0; i < N_RADIO_TYPES_AIDL; i++) {
+        if (self->techs & binder_netreg_radio_types[i].mode) {
+            radio_types[nspecs++] = binder_netreg_radio_types + i;
+        }
     }
 
-    if (self->notify_id) {
-        g_source_remove(self->notify_id);
+    /*
+     * package android.hardware.radio.network;
+     * parcelable NetworkScanRequest {
+     *   int type;
+     *   int interval;
+     *   RadioAccessSpecifier[] specifiers;
+     *   int maxSearchTime;
+     *   boolean incrementalResults;
+     *   int incrementalResultsPeriodicity;
+     *   String[] mccMncs;
+     * }
+     */
+
+    gbinder_writer_start_parcelable(writer, &parcel);
+
+    gbinder_writer_append_int32(&parcel, RADIO_SCAN_ONE_SHOT); /* type */
+    gbinder_writer_append_int32(&parcel, /* interval */
+        INCREMENTAL_RESULTS_PERIODICITY_RANGE_MAX);
+
+    /* specifiers */
+    gbinder_writer_append_int32(&parcel, nspecs);
+    for (i = 0; i < nspecs; i++) {
+        const BinderNetRegRadioType* radio_type = radio_types[i];
+        GBinderWriter spec;
+
+        /*
+         * parcelable RadioAccessSpecifier {
+         *   AccessNetwork accessNetwork;
+         *   RadioAccessSpecifierBands bands;
+         *   int[] channels;
+         * }
+         *
+         * union RadioAccessSpecifierBands {
+         *   boolean noinit;
+         *   GeranBands[] geranBands;
+         *   UtranBands[] utranBands;
+         *   EutranBands[] eutranBands;
+         *   NgranBands[] ngranBands;
+         * }
+         */
+        gbinder_writer_start_parcelable(&parcel, &spec);
+        gbinder_writer_append_int32(&spec, radio_type->ran); /* accessNetwork */
+        binder_append_aidl_union_tag(&spec, radio_type->aidl_type);
+        gbinder_writer_append_int32(&spec, 0); /* bands (empty) */
+        gbinder_writer_append_int32(&spec, 0); /* channels (empty)*/
+        gbinder_writer_finish_parcelable(&spec);
     }
 
-    if (self->current_operator_id) {
-        g_source_remove(self->current_operator_id);
-    }
-
-    radio_request_drop(self->register_req);
-    radio_request_drop(self->strength_req);
-
-    ofono_watch_unref(self->watch);
-    binder_network_remove_all_handlers(self->network, self->network_event_id);
-    binder_network_unref(self->network);
-
-    radio_client_remove_all_handlers(self->client, self->ind_id);
-    radio_client_unref(self->client);
-
-    radio_client_remove_handler(self->modem_client,
-        self->modem_client_reset_ind);
-    radio_client_unref(self->modem_client);
-
-    binder_netreg_scan_drop(self, self->scan);
-    g_free(self->log_prefix);
-    g_free(self);
-
-    ofono_netreg_set_data(netreg, NULL);
+    gbinder_writer_append_int32(&parcel, /* maxSearchTime */
+        NETWORK_SCAN_MAX_SEARCH_TIME_SEC);
+    gbinder_writer_append_bool(&parcel, TRUE); /* incrementalResults */
+    gbinder_writer_append_int32(&parcel, 3); /* incrementalResultsPeriodicity */
+    gbinder_writer_append_int32(&parcel, 0); /* mccMncs (empty) */
+    gbinder_writer_finish_parcelable(&parcel);
 }
+
+static
+void
+binder_netreg_api_write_set_network_selection_mode_manual_args_aidl(
+    GBinderWriter* writer,
+    const char* numeric)
+{
+    /*
+     * IRadioNetwork.aidl:
+     * void setNetworkSelectionModeManual(in int serial,
+     *     in String operatorNumeric, in AccessNetwork ran);
+     */
+    gbinder_writer_append_string16(writer, numeric);
+    gbinder_writer_append_int32(writer, RADIO_ACCESS_NETWORKS_UNKNOWN);
+}
+
+static const BinderNetRegApi binder_netreg_api_aidl = {
+    "aidl",
+    binder_read_string_arg_aidl,
+    binder_netreg_api_read_oplist_aidl,
+    binder_netreg_api_read_signal_strength_resp_aidl,
+    binder_netreg_api_read_signal_strength_ind_aidl,
+    binder_netreg_api_read_network_scan_aidl,
+    binder_netreg_api_write_start_network_scan_args_aidl,
+    binder_netreg_api_write_set_network_selection_mode_manual_args_aidl,
+    RADIO_NETWORK_REQ_START_NETWORK_SCAN,
+    RADIO_NETWORK_REQ_STOP_NETWORK_SCAN,
+    RADIO_NETWORK_REQ_GET_AVAILABLE_NETWORKS,
+    RADIO_NETWORK_REQ_GET_SIGNAL_STRENGTH,
+    RADIO_NETWORK_REQ_GET_NETWORK_SELECTION_MODE,
+    RADIO_NETWORK_REQ_SET_NETWORK_SELECTION_MODE_AUTOMATIC,
+    RADIO_NETWORK_REQ_SET_NETWORK_SELECTION_MODE_MANUAL,
+    RADIO_NETWORK_IND_NITZ_TIME_RECEIVED,
+    RADIO_NETWORK_IND_CURRENT_SIGNAL_STRENGTH,
+    RADIO_NETWORK_IND_NETWORK_SCAN_RESULT,
+    RADIO_IND_NONE,
+    RADIO_MODEM_IND_MODEM_RESET,
+};
 
 /*==========================================================================*
  * API

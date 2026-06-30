@@ -7,9 +7,9 @@ License: GPLv2
 URL: https://github.com/mer-hybris/ofono-binder-plugin
 Source: %{name}-%{version}.tar.bz2
 
-%define libglibutil_version 1.0.61
-%define libgbinder_version 1.1.47
-%define libgbinder_radio_version 1.6.2
+%define libglibutil_version 1.0.78
+%define libgbinder_version 1.1.49
+%define libgbinder_radio_version 1.6.5
 %define libmce_version 1.0.6
 %define libofonobinderpluginext_version 1.1.22
 %define glib_version 2.32
