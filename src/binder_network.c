@@ -1,6 +1,7 @@
 /*
  *  oFono - Open Source Telephony - binder based adaptation
  *
+ *  Copyright (C) 2026 Jolla Mobile Ltd
  *  Copyright (C) 2021-2022 Jolla Ltd.
  *  Copyright (C) 2025 Slava Monich <slava@monich.com>
  *
@@ -1630,8 +1631,10 @@ binder_network_can_set_initial_attach_apn(
 {
     struct ofono_watch* watch = self->watch;
     BinderRadio* radio = self->radio;
+    const BinderSimCardStatus* sim_status = self->simcard->status;
 
     return binder_network_need_initial_attach_apn(self) &&
+        sim_status && sim_status->card_state == RADIO_CARD_STATE_PRESENT &&
         watch->gprs && radio->state == RADIO_STATE_ON &&
         !self->set_data_profiles_req;
 }
