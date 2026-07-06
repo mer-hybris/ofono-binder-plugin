@@ -1,6 +1,7 @@
 /*
  *  oFono - Open Source Telephony - binder based adaptation
  *
+ *  Copyright (C) 2026 Jolla Mobile Ltd
  *  Copyright (C) 2024 Slava Monich <slava@monich.com>
  *  Copyright (C) 2021-2022 Jolla Ltd.
  *
@@ -61,24 +62,11 @@ enum binder_sms_ext_events {
     SMS_EXT_EVENT_COUNT
 };
 
-/*
- * Note: use_standard_ims_sms_api is initialized to zero (FALSE) and stays
- * that way. It's a leftover from the experiments with IRadio.sendImsSms
- * API which doesn't seem to work (returns REQUEST_NOT_SUPPORTED), at
- * least on the device where I tried it. Besides, even if it worked,
- * that would only cover SMS over IMS, and VoLTE would still require
- * use of proprietary vendor specific API, there isn't really much
- * to fight for.
- *
- * In other words, the IRadio.sendImsSms stuff is likely to be deleted
- * at some point, don't pay too much attention to it.
- */
 typedef struct binder_sms {
     struct ofono_sms* sms;
     struct ofono_watch* watch;
     struct ofono_sim_context* sim_context;
     char* log_prefix;
-    gboolean use_standard_ims_sms_api;
     guint ext_send_id;
     BinderExtSms* sms_ext;
     BinderImsReg* ims_reg;
@@ -602,32 +590,6 @@ binder_sms_gsm_message(
 
 static
 void
-binder_sms_ims_message(
-    BinderSms* self,
-    GBinderWriter* writer,
-    const unsigned char* pdu,
-    int pdu_len,
-    int tpdu_len)
-{
-    RadioImsSmsMessage* ims = gbinder_writer_new0(writer, RadioImsSmsMessage);
-    RadioGsmSmsMessage* gsm = gbinder_writer_new0(writer, RadioGsmSmsMessage);
-    GBinderParent p;
-
-    ims->tech = RADIO_TECH_FAMILY_3GPP2;
-    ims->gsmMessage.count = 1;
-    ims->gsmMessage.data.ptr = gsm;
-    ims->gsmMessage.owns_buffer = TRUE;
-
-    p.index = gbinder_writer_append_buffer_object(writer, ims, sizeof(*ims));
-    p.offset = G_STRUCT_OFFSET(RadioImsSmsMessage, cdmaMessage.data.ptr);
-    gbinder_writer_append_buffer_object_with_parent(writer, NULL, 0, &p);
-
-    p.offset = G_STRUCT_OFFSET(RadioImsSmsMessage, gsmMessage.data.ptr);
-    binder_sms_gsm_message(self, writer, gsm, pdu, pdu_len, tpdu_len, &p);
-}
-
-static
-void
 binder_sms_gsm_message_aidl(
     BinderSms* self,
     GBinderWriter* writer,
@@ -658,35 +620,6 @@ binder_sms_gsm_message_aidl(
     gbinder_writer_finish_parcelable(&parcelable);
 
     g_free(tpdu);
-}
-
-static
-void
-binder_sms_ims_message_aidl(
-    BinderSms* self,
-    GBinderWriter* writer,
-    const unsigned char* pdu,
-    int pdu_len,
-    int tpdu_len)
-{
-    GBinderWriter parcelable;
-
-    gbinder_writer_start_parcelable(writer, &parcelable);
-
-    /* Writing 3GPP message, 3GPP2 is obsolete in most of the world */
-    gbinder_writer_append_int32(writer, RADIO_TECH_FAMILY_3GPP);
-    gbinder_writer_append_bool(writer, FALSE);
-    gbinder_writer_append_int32(writer, 0);
-
-    /* CDMA message count */
-    gbinder_writer_append_int32(writer, 0);
-
-    /* GSM message count */
-    gbinder_writer_append_int32(writer, 1);
-
-    binder_sms_gsm_message_aidl(self, writer, pdu, pdu_len, tpdu_len);
-
-    gbinder_writer_finish_parcelable(&parcelable);
 }
 
 static
@@ -752,29 +685,6 @@ binder_sms_send(
         } else {
             binder_sms_gsm_message_aidl(self, &writer,
                 pdu, pdu_len, tpdu_len);
-        }
-        if (radio_request_submit(req)) {
-            radio_request_unref(req);
-            /* Request submitted */
-            return;
-        }
-    } else if (self->use_standard_ims_sms_api) {
-        /* sendImsSms(serial, ImsSmsMessage message); */
-        GBinderWriter writer;
-        guint32 code = self->interface_aidl == RADIO_MESSAGING_INTERFACE ?
-            RADIO_MESSAGING_REQ_SEND_IMS_SMS : RADIO_REQ_SEND_IMS_SMS;
-        RadioRequest* req = radio_request_new2(self->g,
-            code, &writer,
-            binder_sms_submit_cb, binder_sms_submit_cbd_free,
-            cbd ? cbd :  /* Copy the PDU for GSM SMS fallback */
-            binder_sms_submit_cbd_new(self, pdu, pdu_len, tpdu_len, cb, data));
-
-        DBG("sending ims message");
-
-        if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
-            binder_sms_ims_message(self, &writer, pdu, pdu_len, tpdu_len);
-        } else {
-            binder_sms_ims_message_aidl(self, &writer, pdu, pdu_len, tpdu_len);
         }
         if (radio_request_submit(req)) {
             radio_request_unref(req);
