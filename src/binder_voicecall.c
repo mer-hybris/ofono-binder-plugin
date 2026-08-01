@@ -1286,8 +1286,8 @@ binder_voicecall_hangup(
             if (call->ext) {
                 DBG_(self, "hanging up ext call id %u", id);
                 if (binder_ext_call_hangup(call->ext, id,
-                    BINDER_EXT_CALL_HANGUP_NO_FLAGS,
                     binder_voicecall_ext_disconnect_reason(call),
+                    BINDER_EXT_CALL_HANGUP_NO_FLAGS,
                     binder_voicecall_cbd_ext_complete,
                     binder_voicecall_cbd_destroy, cbd)) {
                     binder_voicecall_request_submitted(cbd);
@@ -1350,10 +1350,10 @@ binder_voicecall_release_specific(
         if (call->ext) {
             DBG_(self, "hanging up ext call with id %u", id);
             if (binder_ext_call_hangup(call->ext, id,
-                BINDER_EXT_CALL_HANGUP_NO_FLAGS,
                 binder_voicecall_hangup_filter_incoming_waiting(call) ?
                 BINDER_EXT_CALL_HANGUP_REJECT :
                 BINDER_EXT_CALL_HANGUP_TERMINATE,
+                BINDER_EXT_CALL_HANGUP_NO_FLAGS,
                 binder_voicecall_cbd_ext_complete,
                 binder_voicecall_cbd_destroy, cbd)) {
                 binder_voicecall_request_submitted(cbd);
