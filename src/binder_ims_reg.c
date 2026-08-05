@@ -1,6 +1,7 @@
 /*
  *  oFono - Open Source Telephony - binder based adaptation
  *
+ *  Copyright (C) 2026 Jolla Mobile Ltd
  *  Copyright (C) 2024 Slava Monich <slava@monich.com>
  *  Copyright (C) 2022 Jolla Ltd.
  *
@@ -46,10 +47,13 @@ enum binder_ims_events {
     EVENT_COUNT
 };
 
+typedef struct binder_ims_reg_api BinderImsRegApi;
+
 typedef struct binder_ims_reg_object {
     BinderBase base;
     BinderImsReg pub;
     BinderExtIms* ext;
+    const BinderImsRegApi* api;
     RadioRequestGroup* g;
     char* log_prefix;
     gulong ext_event_id[EVENT_EXT_COUNT];
@@ -68,12 +72,26 @@ G_DEFINE_TYPE(BinderImsRegObject, binder_ims_reg_object, BINDER_TYPE_BASE)
 /* Assumptions */
 BINDER_BASE_ASSERT_COUNT(BINDER_IMS_REG_PROPERTY_COUNT);
 
+/* Binder API flavors */
+struct binder_ims_reg_api {
+    const char* name;
+    RADIO_REQ get_ims_registration_state_req;
+    RADIO_IND ims_network_state_changed_ind;
+};
+
+static const BinderImsRegApi binder_ims_reg_api_hidl = {
+    "hidl",
+    RADIO_REQ_GET_IMS_REGISTRATION_STATE,
+    RADIO_IND_IMS_NETWORK_STATE_CHANGED
+};
+static const BinderImsRegApi binder_ims_reg_api_aidl = {
+    "aidl",
+    RADIO_NETWORK_REQ_GET_IMS_REGISTRATION_STATE,
+    RADIO_NETWORK_IND_IMS_NETWORK_STATE_CHANGED
+};
+
 static inline BinderImsRegObject* binder_ims_reg_cast(BinderImsReg* ims)
     { return ims ? THIS(G_CAST(ims, BinderImsRegObject, pub)) : NULL; }
-static inline void binder_ims_reg_object_ref(BinderImsRegObject* self)
-    { g_object_ref(self); }
-static inline void binder_ims_reg_object_unref(BinderImsRegObject* self)
-    { g_object_unref(self); }
 
 static
 void
@@ -92,9 +110,6 @@ binder_ims_reg_query_done(
 
     if (status != RADIO_TX_STATUS_OK) {
         ofono_error("getImsRegistrationState failed");
-    } else if (resp != RADIO_RESP_GET_IMS_REGISTRATION_STATE &&
-        resp != RADIO_NETWORK_RESP_GET_IMS_REGISTRATION_STATE) {
-        ofono_error("Unexpected getImsRegistrationState response %d", resp);
     } else if (error != RADIO_ERROR_NONE) {
         DBG_(self, "%s", binder_radio_error_string(error));
     } else {
@@ -102,8 +117,13 @@ binder_ims_reg_query_done(
         gint32 rat;
 
         /*
-         * getImsRegistrationStateResponse(RadioResponseInfo info,
-         * bool isRegistered, RadioTechnologyFamily ratFamily)
+         * IRadioResponse.hal:
+         * oneway getImsRegistrationStateResponse(RadioResponseInfo info,
+         *     bool isRegistered, RadioTechnologyFamily ratFamily);
+         *
+         * IRadioNetworkResponse.aidl:
+         * void getImsRegistrationStateResponse(in RadioResponseInfo info,
+         *     in boolean isRegistered, in RadioTechnologyFamily ratFamily);
          */
         gbinder_reader_copy(&reader, args);
         if (gbinder_reader_read_bool(&reader, &registered) &&
@@ -128,15 +148,8 @@ void
 binder_ims_reg_query(
     BinderImsRegObject* self)
 {
-    RadioRequestGroup* g = self->g;
-    RadioRequest* req = radio_request_new2(g,
-        radio_client_aidl_interface(g->client) == RADIO_NETWORK_INTERFACE ?
-            RADIO_NETWORK_REQ_GET_IMS_REGISTRATION_STATE :
-            RADIO_REQ_GET_IMS_REGISTRATION_STATE,
-            NULL, binder_ims_reg_query_done, NULL, self);
-
-    radio_request_submit(req);
-    radio_request_unref(req);
+    binder_submit_request2(self->g, self->api->get_ims_registration_state_req,
+        binder_ims_reg_query_done, NULL, self);
 }
 
 static
@@ -188,79 +201,76 @@ binder_ims_ext_state_changed(
 
 BinderImsReg*
 binder_ims_reg_new(
-    RadioClient* client,
+    RadioClient* network_client,
     BinderExtSlot* ext_slot,
     const char* log_prefix)
 {
     BinderImsReg* ims = NULL;
+    BinderImsRegObject* self = g_object_new(THIS_TYPE, NULL);
+    const BinderImsRegApi* api = radio_client_aidl_interface(network_client) ==
+        RADIO_NETWORK_INTERFACE ? &binder_ims_reg_api_aidl :
+        &binder_ims_reg_api_hidl;
 
-    if (client) {
-        BinderImsRegObject* self = g_object_new(THIS_TYPE, NULL);
+    ims = &self->pub;
+    self->api = api;
+    self->log_prefix = binder_dup_prefix(log_prefix);
+    self->ext = binder_ext_slot_get_interface(ext_slot, BINDER_EXT_TYPE_IMS);
 
-        ims = &self->pub;
-        self->log_prefix = binder_dup_prefix(log_prefix);
-        self->ext = binder_ext_slot_get_interface(ext_slot,
-            BINDER_EXT_TYPE_IMS);
+    if (self->ext) {
+        BINDER_EXT_IMS_INTERFACE_FLAGS flags =
+            binder_ext_ims_get_interface_flags(self->ext);
 
-        if (self->ext) {
-            BINDER_EXT_IMS_INTERFACE_FLAGS flags =
-                binder_ext_ims_get_interface_flags(self->ext);
+        DBG_(self, "using ims ext");
+        binder_ext_ims_ref(self->ext);
 
-            DBG_(self, "using ims ext");
-            binder_ext_ims_ref(self->ext);
-
-            /* Query flags from the extension */
-            if (flags & BINDER_EXT_IMS_INTERFACE_FLAG_SMS_SUPPORT) {
-                DBG_(self, "ims sms support is detected");
-                ims->caps |= OFONO_IMS_SMS_CAPABLE;
-            }
-            if (flags & BINDER_EXT_IMS_INTERFACE_FLAG_VOICE_SUPPORT) {
-                DBG_(self, "ims call support is detected");
-                ims->caps |= OFONO_IMS_VOICE_CAPABLE;
-            }
-
-            binder_ims_reg_update_state(self);
-
-            /* Register event handler */
-            self->ext_event_id[EVENT_EXT_IMS_STATE_CHANGED] =
-                binder_ext_ims_add_state_handler(self->ext,
-                    binder_ims_ext_state_changed, self);
-        } else {
-            DBG_(self, "using ims radio api");
-            self->g = radio_request_group_new(client); /* Keeps ref to client */
-
-            /* Initialize the flags based on which interfaces are supported */
-            if (binder_ext_sms_get_interface_flags
-               (binder_ext_slot_get_interface(ext_slot,
-                BINDER_EXT_TYPE_SMS)) &
-                BINDER_EXT_SMS_INTERFACE_FLAG_IMS_SUPPORT) {
-                DBG_(self, "ims sms support is detected");
-                ims->caps |= OFONO_IMS_SMS_CAPABLE;
-            }
-            if (binder_ext_call_get_interface_flags
-               (binder_ext_slot_get_interface(ext_slot,
-                BINDER_EXT_TYPE_CALL)) &
-                BINDER_EXT_CALL_INTERFACE_FLAG_IMS_SUPPORT) {
-                DBG_(self, "ims call support is detected");
-                ims->caps |= OFONO_IMS_VOICE_CAPABLE;
-            }
-
-            /* Register event handler */
-            self->event_id[EVENT_IMS_NETWORK_STATE_CHANGED] =
-                radio_client_add_indication_handler(client,
-                    radio_client_aidl_interface(client) ==
-                        RADIO_NETWORK_INTERFACE ?
-                    RADIO_NETWORK_IND_IMS_NETWORK_STATE_CHANGED :
-                    RADIO_IND_IMS_NETWORK_STATE_CHANGED,
-                    binder_ims_reg_state_changed, self);
-
-            /* Query the initial state */
-            binder_ims_reg_query(self);
+        /* Query flags from the extension */
+        if (flags & BINDER_EXT_IMS_INTERFACE_FLAG_SMS_SUPPORT) {
+            DBG_(self, "ims sms support is detected");
+            ims->caps |= OFONO_IMS_SMS_CAPABLE;
+        }
+        if (flags & BINDER_EXT_IMS_INTERFACE_FLAG_VOICE_SUPPORT) {
+            DBG_(self, "ims call support is detected");
+            ims->caps |= OFONO_IMS_VOICE_CAPABLE;
         }
 
-        /* Clear queued signals */
-        self->base.queued_signals = 0;
+        binder_ims_reg_update_state(self);
+
+        /* Register event handler */
+        self->ext_event_id[EVENT_EXT_IMS_STATE_CHANGED] =
+            binder_ext_ims_add_state_handler(self->ext,
+                binder_ims_ext_state_changed, self);
+    } else {
+        DBG_(self, "using %s ims api", api->name);
+        self->g = radio_request_group_new(network_client);
+
+        /* Initialize the flags based on which interfaces are supported */
+        if (binder_ext_sms_get_interface_flags
+           (binder_ext_slot_get_interface(ext_slot,
+            BINDER_EXT_TYPE_SMS)) &
+            BINDER_EXT_SMS_INTERFACE_FLAG_IMS_SUPPORT) {
+            DBG_(self, "ims sms support is detected");
+            ims->caps |= OFONO_IMS_SMS_CAPABLE;
+        }
+        if (binder_ext_call_get_interface_flags
+           (binder_ext_slot_get_interface(ext_slot,
+            BINDER_EXT_TYPE_CALL)) &
+            BINDER_EXT_CALL_INTERFACE_FLAG_IMS_SUPPORT) {
+            DBG_(self, "ims call support is detected");
+            ims->caps |= OFONO_IMS_VOICE_CAPABLE;
+        }
+
+        /* Register event handler */
+        self->event_id[EVENT_IMS_NETWORK_STATE_CHANGED] =
+            radio_client_add_indication_handler(network_client,
+                api->ims_network_state_changed_ind,
+                binder_ims_reg_state_changed, self);
+
+        /* Query the initial state */
+        binder_ims_reg_query(self);
     }
+
+    /* Clear queued signals */
+    self->base.queued_signals = 0;
     return ims;
 }
 
@@ -271,7 +281,7 @@ binder_ims_reg_ref(
     BinderImsRegObject* self = binder_ims_reg_cast(ims);
 
     if (G_LIKELY(self)) {
-        binder_ims_reg_object_ref(self);
+        g_object_ref(self);
         return ims;
     } else {
         return NULL;
@@ -282,11 +292,7 @@ void
 binder_ims_reg_unref(
     BinderImsReg* ims)
 {
-    BinderImsRegObject* self = binder_ims_reg_cast(ims);
-
-    if (G_LIKELY(self)) {
-        binder_ims_reg_object_unref(self);
-    }
+    gutil_object_unref(binder_ims_reg_cast(ims));
 }
 
 gulong
@@ -334,6 +340,7 @@ void
 binder_ims_reg_object_init(
     BinderImsRegObject* self)
 {
+    self->api = &binder_ims_reg_api_hidl;
 }
 
 static

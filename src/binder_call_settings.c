@@ -1,6 +1,7 @@
 /*
  *  oFono - Open Source Telephony - binder based adaptation
  *
+ *  Copyright (C) 2026 Jolla Mobile Ltd
  *  Copyright (C) 2021-2022 Jolla Ltd.
  *
  *  This program is free software; you can redistribute it and/or modify
@@ -29,10 +30,14 @@
 #include <gbinder_reader.h>
 #include <gbinder_writer.h>
 
+#include <gutil_misc.h>
+
+typedef struct binder_call_settings_api BinderCallSettingsApi;
+
 typedef struct binder_call_settings {
     struct ofono_call_settings* s;
+    const BinderCallSettingsApi* api;
     RadioRequestGroup* g;
-    RADIO_AIDL_INTERFACE interface_aidl;
     char* log_prefix;
     guint register_id;
 } BinderCallSettings;
@@ -49,6 +54,19 @@ typedef struct binder_call_settings_cbd {
 } BinderCallSettingsCbData;
 
 #define DBG_(self,fmt,args...) DBG("%s" fmt, (self)->log_prefix, ##args)
+
+/* Binder API flavors */
+struct binder_call_settings_api {
+    const char* name;
+    RADIO_REQ get_call_waiting_req;
+    RADIO_REQ set_call_waiting_req;
+    RADIO_REQ get_clip_req;
+    RADIO_REQ get_clir_req;
+    RADIO_REQ set_clir_req;
+};
+
+static const BinderCallSettingsApi binder_call_settings_api_hidl;
+static const BinderCallSettingsApi binder_call_settings_api_aidl;
 
 static inline BinderCallSettings*
 binder_call_settings_get_data(struct ofono_call_settings* s)
@@ -86,12 +104,9 @@ binder_call_settings_call(
     BinderCallback cb,
     void* data)
 {
-    RadioRequest* req = radio_request_new2(self->g, code, NULL, complete,
+    binder_submit_request2(self->g, code, complete,
         binder_call_settings_callback_data_free,
         binder_call_settings_callback_data_new(self, cb, data));
-
-    radio_request_submit(req);
-    radio_request_unref(req);
 }
 
 static
@@ -108,11 +123,16 @@ binder_call_settings_set_cb(
     const BinderCallSettingsCbData* cbd = user_data;
     ofono_call_settings_set_cb_t cb = cbd->cb.set;
 
-    if (status == RADIO_TX_STATUS_OK && error == RADIO_ERROR_NONE) {
-        cb(binder_error_ok(&err), cbd->data);
+    if (status != RADIO_TX_STATUS_OK) {
+        DBG_(cbd->self, "setCallWaiting tx failed");
+    } else if (error != RADIO_ERROR_NONE) {
+        ofono_warn("CW seting error %s",
+            binder_radio_error_string(error));
     } else {
-        cb(binder_error_failure(&err), cbd->data);
+        cb(binder_error_ok(&err), cbd->data);
+        return;
     }
+    cb(binder_error_failure(&err), cbd->data);
 }
 
 static
@@ -125,6 +145,8 @@ binder_call_settings_cw_set(
     void* data)
 {
     BinderCallSettings* self = binder_call_settings_get_data(s);
+    GBinderWriter args;
+    RadioRequest* req;
 
     /*
      * Modem seems to respond with error to all queries
@@ -137,18 +159,22 @@ binder_call_settings_cw_set(
     if (cls == BEARER_CLASS_DEFAULT)
         cls = BEARER_CLASS_VOICE;
 
-    /* setCallWaiting(int32_t serial, bool enable, int32_t serviceClass); */
-    GBinderWriter writer;
-    guint32 code = self->interface_aidl == RADIO_VOICE_INTERFACE ?
-        RADIO_VOICE_REQ_SET_CALL_WAITING : RADIO_REQ_SET_CALL_WAITING;
-    RadioRequest* req = radio_request_new2(self->g,
-        code, &writer,
+    req = radio_request_new2(self->g, self->api->set_call_waiting_req, &args,
         binder_call_settings_set_cb,
         binder_call_settings_callback_data_free,
         binder_call_settings_callback_data_new(self, BINDER_CB(cb), data));
 
-    gbinder_writer_append_bool(&writer, mode);  /* enable */
-    gbinder_writer_append_int32(&writer, cls);  /* serviceClass */
+    /*
+     * IRadio.hal:
+     * oneway setCallWaiting(int32_t serial,
+     *     bool enable, int32_t serviceClass);
+     *
+     * IRadioVoice.aidl:
+     * void setCallWaiting(in int serial,
+     *     in boolean enable, in int serviceClass);
+     */
+    gbinder_writer_append_bool(&args, mode);  /* enable */
+    gbinder_writer_append_int32(&args, cls);  /* serviceClass */
 
     radio_request_submit(req);
     radio_request_unref(req);
@@ -199,20 +225,13 @@ binder_call_settings_cw_query_cb(
     struct ofono_error err;
     const BinderCallSettingsCbData* cbd = user_data;
 
-    if (status == RADIO_TX_STATUS_OK) {
-        guint32 code = cbd->self->interface_aidl == RADIO_VOICE_INTERFACE ?
-            RADIO_VOICE_RESP_GET_CALL_WAITING : RADIO_RESP_GET_CALL_WAITING;
-        if (resp == code) {
-            if (error == RADIO_ERROR_NONE) {
-                if (binder_call_settings_cw_query_ok(cbd, args)) {
-                    return;
-                }
-            } else {
-                ofono_warn("CW query error %d", error);
-            }
-        } else {
-            ofono_error("Unexpected getCallWaiting response %d", resp);
-        }
+    if (status != RADIO_TX_STATUS_OK) {
+        DBG_(cbd->self, "getCallWaiting tx failed");
+    } else if (error != RADIO_ERROR_NONE) {
+        ofono_warn("CW query error %s",
+            binder_radio_error_string(error));
+    } else if (binder_call_settings_cw_query_ok(cbd, args)) {
+        return;
     }
     cbd->cb.status(binder_error_failure(&err), -1, cbd->data);
 }
@@ -225,6 +244,8 @@ void binder_call_settings_cw_query(
     void* data)
 {
     BinderCallSettings* self = binder_call_settings_get_data(s);
+    GBinderWriter args;
+    RadioRequest* req;
 
     /*
      * Modem seems to respond with error to all queries
@@ -237,17 +258,19 @@ void binder_call_settings_cw_query(
     if (cls == BEARER_CLASS_DEFAULT)
         cls = BEARER_CLASS_VOICE;
 
-    /* getCallWaiting(int32_t serial, int32_t serviceClass); */
-    GBinderWriter writer;
-    guint32 code = self->interface_aidl == RADIO_VOICE_INTERFACE ?
-        RADIO_VOICE_REQ_GET_CALL_WAITING : RADIO_REQ_GET_CALL_WAITING;
-    RadioRequest* req = radio_request_new2(self->g,
-        code, &writer,
+    req = radio_request_new2(self->g, self->api->get_call_waiting_req, &args,
         binder_call_settings_cw_query_cb,
         binder_call_settings_callback_data_free,
         binder_call_settings_callback_data_new(self, BINDER_CB(cb), data));
 
-    gbinder_writer_append_int32(&writer, cls);  /* serviceClass */
+    /*
+     * IRadio.hal:
+     * oneway getCallWaiting(int32_t serial, int32_t serviceClass);
+     *
+     * IRadioVoice.aidl:
+     * void getCallWaiting(in int serial, in int serviceClass);
+     */
+    gbinder_writer_append_int32(&args, cls); /* serviceClass */
 
     radio_request_submit(req);
     radio_request_unref(req);
@@ -285,20 +308,13 @@ binder_call_settings_clip_query_cb(
     struct ofono_error err;
     const BinderCallSettingsCbData* cbd = user_data;
 
-    if (status == RADIO_TX_STATUS_OK) {
-        guint32 code = cbd->self->interface_aidl == RADIO_VOICE_INTERFACE ?
-            RADIO_VOICE_RESP_GET_CLIP : RADIO_RESP_GET_CLIP;
-        if (resp == code) {
-            if (error == RADIO_ERROR_NONE) {
-                if (binder_call_settings_clip_query_ok(cbd, args)) {
-                    return;
-                }
-            } else {
-                ofono_warn("CLIP query error %d", error);
-            }
-        } else {
-            ofono_error("Unexpected getClip response %d", resp);
-        }
+    if (status != RADIO_TX_STATUS_OK) {
+        DBG_(cbd->self, "getClip tx failed");
+    } else if (error != RADIO_ERROR_NONE) {
+        ofono_warn("CLIP query error %s",
+            binder_radio_error_string(error));
+    } else if (binder_call_settings_clip_query_ok(cbd, args)) {
+        return;
     }
     cbd->cb.status(binder_error_failure(&err), -1, cbd->data);
 }
@@ -311,12 +327,10 @@ binder_call_settings_clip_query(
     void* data)
 {
     BinderCallSettings* self = binder_call_settings_get_data(s);
-    guint32 code = self->interface_aidl == RADIO_VOICE_INTERFACE ?
-        RADIO_VOICE_REQ_GET_CLIP : RADIO_REQ_GET_CLIP;
 
     DBG_(self, "");
     /* getClip(int32_t serial); */
-    binder_call_settings_call(self, code,
+    binder_call_settings_call(self, self->api->get_clip_req,
         binder_call_settings_clip_query_cb, BINDER_CB(cb), data);
 }
 
@@ -354,20 +368,13 @@ binder_call_settings_clir_cb(
     struct ofono_error err;
     const BinderCallSettingsCbData* cbd = user_data;
 
-    if (status == RADIO_TX_STATUS_OK) {
-        guint32 code = cbd->self->interface_aidl == RADIO_VOICE_INTERFACE ?
-            RADIO_VOICE_RESP_GET_CLIR : RADIO_RESP_GET_CLIR;
-        if (resp == code) {
-            if (error == RADIO_ERROR_NONE) {
-                if (binder_call_settings_clir_ok(cbd, args)) {
-                    return;
-                }
-            } else {
-                ofono_warn("CW query error %d", error);
-            }
-        } else {
-            ofono_error("Unexpected getClir response %d", resp);
-        }
+    if (status != RADIO_TX_STATUS_OK) {
+        DBG_(cbd->self, "getClir tx failed");
+    } else if (error != RADIO_ERROR_NONE) {
+        ofono_warn("CW query error %s",
+            binder_radio_error_string(error));
+    } else if (binder_call_settings_clir_ok(cbd, args)) {
+        return;
     }
     cbd->cb.clir(binder_error_failure(&err), -1, -1, cbd->data);
 }
@@ -380,12 +387,10 @@ binder_call_settings_clir_query(
     void* data)
 {
     BinderCallSettings* self = binder_call_settings_get_data(s);
-    guint32 code = self->interface_aidl == RADIO_VOICE_INTERFACE ?
-        RADIO_VOICE_REQ_GET_CLIR : RADIO_REQ_GET_CLIR;
 
     DBG_(self, "");
     /* getClir(int32_t serial); */
-    binder_call_settings_call(self, code,
+    binder_call_settings_call(self, self->api->get_clir_req,
        binder_call_settings_clir_cb , BINDER_CB(cb), data);
 }
 
@@ -398,19 +403,23 @@ binder_call_settings_clir_set(
     void* data)
 {
     BinderCallSettings* self = binder_call_settings_get_data(s);
-    guint32 code = self->interface_aidl == RADIO_VOICE_INTERFACE ?
-        RADIO_VOICE_REQ_SET_CLIR : RADIO_REQ_SET_CLIR;
-
-    /* setClir(int32_t serial, int32_t status); */
-    GBinderWriter writer;
+    GBinderWriter args;
     RadioRequest* req = radio_request_new2(self->g,
-        code, &writer,
+        self->api->set_clir_req, &args,
         binder_call_settings_set_cb,
         binder_call_settings_callback_data_free,
         binder_call_settings_callback_data_new(self, BINDER_CB(cb), data));
 
     DBG_(self, "%d", mode);
-    gbinder_writer_append_int32(&writer, mode);  /* status */
+
+    /*
+     * IRadio.hal:
+     * oneway setClir(int32_t serial, int32_t status);
+     *
+     * IRadioVoice.aidl:
+     * void setClir(in int serial, in int status);
+     */
+    gbinder_writer_append_int32(&args, mode); /* status */
 
     radio_request_submit(req);
     radio_request_unref(req);
@@ -439,10 +448,14 @@ binder_call_settings_probe(
 {
     BinderModem* modem = binder_modem_get_data(data);
     BinderCallSettings* self = g_new0(BinderCallSettings, 1);
+    RadioClient* voice_client = modem->clients.voice_client;
+    const BinderCallSettingsApi* api =
+        radio_client_aidl_interface(voice_client) == RADIO_VOICE_INTERFACE ?
+        &binder_call_settings_api_aidl : &binder_call_settings_api_hidl;
 
     self->s = s;
-    self->g = radio_request_group_new(modem->voice_client);
-    self->interface_aidl = radio_client_aidl_interface(modem->voice_client);
+    self->api = api;
+    self->g = radio_request_group_new(voice_client);
     self->log_prefix = binder_dup_prefix(modem->log_prefix);
     self->register_id = g_idle_add(binder_call_settings_register, self);
 
@@ -459,9 +472,7 @@ binder_call_settings_remove(
     BinderCallSettings* self = binder_call_settings_get_data(s);
 
     DBG_(self, "");
-    if (self->register_id) {
-        g_source_remove(self->register_id);
-    }
+    gutil_source_remove(self->register_id);
     radio_request_group_cancel(self->g);
     radio_request_group_unref(self->g);
     g_free(self->log_prefix);
@@ -469,6 +480,32 @@ binder_call_settings_remove(
 
     ofono_call_settings_set_data(s, NULL);
 }
+
+/*==========================================================================*
+ * HIDL API flavor
+ *==========================================================================*/
+
+static const BinderCallSettingsApi binder_call_settings_api_hidl = {
+    "hidl",
+    RADIO_REQ_GET_CALL_WAITING,
+    RADIO_REQ_SET_CALL_WAITING,
+    RADIO_REQ_GET_CLIP,
+    RADIO_REQ_GET_CLIR,
+    RADIO_REQ_SET_CLIR
+};
+
+/*==========================================================================*
+ * AIDL API flavor
+ *==========================================================================*/
+
+static const BinderCallSettingsApi binder_call_settings_api_aidl = {
+    "aidl",
+    RADIO_VOICE_REQ_GET_CALL_WAITING,
+    RADIO_VOICE_REQ_SET_CALL_WAITING,
+    RADIO_VOICE_REQ_GET_CLIP,
+    RADIO_VOICE_REQ_GET_CLIR,
+    RADIO_VOICE_REQ_SET_CLIR
+};
 
 /*==========================================================================*
  * API

@@ -1,6 +1,7 @@
 /*
  *  oFono - Open Source Telephony - binder based adaptation
  *
+ *  Copyright (C) 2026 Jolla Mobile Ltd
  *  Copyright (C) 2021-2022 Jolla Ltd.
  *
  *  This program is free software; you can redistribute it and/or modify
@@ -82,6 +83,38 @@
 #include <pwd.h>
 #include <grp.h>
 
+/*
+ * Object hierarhy:
+ *
+ * BinderPlugin
+ * ============
+ *       |
+ *       +--> BinderSlot ---> BinderSlotIo
+ *       |    ==========
+ *       |          |
+ *       |          +--> BinderService
+ *       |          |
+ *       |         ...
+ *       |          |
+ *       |          +--> BinderService
+ *       |
+ *       +--- BinderSlot ---> BinderSlotIo
+ *       |    ==========
+ *       |          |
+ *      ...        ...
+ *
+ * With HIDL backend there's only one BinderService per slot and
+ * all services in BinderServices structure actually point to the
+ * same IRadio service.
+ *
+ * When AIDL backend is in use, there are multiple BinderServices
+ * per slot, and the services in BinderServices actually point to
+ * different remote objects implemented different AIDL interfaces
+ * e.g. IRadioSim, IRadioVoice and so on.
+ *
+ * BinderSlotIo gets created for each slot after all required
+ * services have been connected.
+ */
 #define BINDER_SLOT_NUMBER_AUTOMATIC (0xffffffff)
 #define BINDER_GET_DEVICE_IDENTITY_RETRIES_LAST 2
 
@@ -102,6 +135,17 @@ static const char* const binder_radio_ifaces[] = {
     RADIO_1_4, /* android.hardware.radio@1.4::IRadio */
     RADIO_1_5  /* android.hardware.radio@1.5::IRadio */
 };
+
+static const char* binder_aidl_interfaces[] = {
+    RADIO_DATA,
+    RADIO_IMS,
+    RADIO_MESSAGING,
+    RADIO_MODEM,
+    RADIO_NETWORK,
+    RADIO_SIM,
+    RADIO_VOICE
+};
+G_STATIC_ASSERT(G_N_ELEMENTS(binder_aidl_interfaces) == RADIO_AIDL_INTERFACE_COUNT);
 
 /*
  * The convention is that the keys which can only appear in the [Settings]
@@ -138,7 +182,7 @@ static const char* const binder_radio_ifaces[] = {
 #define BINDER_CONF_SLOT_ALLOW_DATA_REQ       "allowDataReq"
 #define BINDER_CONF_SLOT_USE_NETWORK_SCAN     "useNetworkScan"
 #define BINDER_CONF_SLOT_REPLACE_STRANGE_OPER "replaceStrangeOperatorNames"
-#define BINDER_CONF_SLOT_SIGNAL_STRENGTH_RANGE "signalStrengthRange"
+#define BINDER_CONF_SLOT_PREFER_LTE_SIGNAL_STRENGTH "preferLteSignalStrength"
 #define BINDER_CONF_SLOT_LTE_MODE             "lteNetworkMode"
 #define BINDER_CONF_SLOT_UMTS_MODE            "umtsNetworkMode"
 #define BINDER_CONF_SLOT_TECHNOLOGIES         "technologies"
@@ -156,8 +200,6 @@ static const char* const binder_radio_ifaces[] = {
 #define BINDER_DEFAULT_SLOT_UMTS_MODE         RADIO_PREF_NET_GSM_WCDMA_AUTO
 #define BINDER_DEFAULT_SLOT_NETWORK_MODE_TIMEOUT_MS (20*1000) /* ms */
 #define BINDER_DEFAULT_SLOT_NETWORK_SELECTION_TIMEOUT_MS (100*1000) /* ms */
-#define BINDER_DEFAULT_SLOT_DBM_WEAK          (-100) /* 0.0000000001 mW */
-#define BINDER_DEFAULT_SLOT_DBM_STRONG        (-60)  /* 0.000001 mW */
 #define BINDER_DEFAULT_SLOT_FEATURES          BINDER_FEATURE_ALL
 #define BINDER_DEFAULT_SLOT_EMPTY_PIN_QUERY   TRUE
 #define BINDER_DEFAULT_SLOT_RADIO_POWER_CYCLE FALSE
@@ -177,6 +219,7 @@ static const char* const binder_radio_ifaces[] = {
 #define BINDER_DEFAULT_SLOT_ALLOW_DATA        BINDER_ALLOW_DATA_ENABLED
 #define BINDER_DEFAULT_SLOT_DATA_CALL_RETRY_LIMIT 4
 #define BINDER_DEFAULT_SLOT_DATA_CALL_RETRY_DELAY_MS 200 /* ms */
+#define BINDER_DEFAULT_SLOT_PREFER_LTE_SIGNAL_STRENGTH TRUE
 
 /* The overall start timeout is the longest slot timeout plus this */
 #define BINDER_SLOT_REGISTRATION_TIMEOUT_MS         (10*1000) /* 10 sec */
@@ -188,7 +231,6 @@ static const char* const binder_radio_ifaces[] = {
 enum binder_plugin_client_events {
     CLIENT_EVENT_CONNECTED,
     CLIENT_EVENT_DEATH,
-    CLIENT_EVENT_RADIO_STATE_CHANGED,
     CLIENT_EVENT_COUNT
 };
 
@@ -218,14 +260,13 @@ typedef enum binder_devmon_opt {
 
 typedef enum binder_plugin_flags {
     BINDER_PLUGIN_NO_FLAGS = 0x00,
-    BINDER_PLUGIN_HAVE_CONFIG_SERVICE = 0x01,
+    BINDER_PLUGIN_SEEN_CONFIG_SERVICE = 0x01,
     BINDER_PLUGIN_NEED_CONFIG_SERVICE = 0x02
 } BINDER_PLUGIN_FLAGS;
 
-typedef enum binder_plugin_slot_flags {
-    BINDER_PLUGIN_SLOT_NO_FLAGS = 0x00,
-    BINDER_PLUGIN_SLOT_HAVE_RADIO_SERVICE = 0x01
-} BINDER_PLUGIN_SLOT_FLAGS;
+typedef enum binder_slot_flags {
+    BINDER_SLOT_NO_FLAGS = 0x00,
+} BINDER_SLOT_FLAGS;
 
 typedef struct binder_plugin_identity {
     uid_t uid;
@@ -240,8 +281,13 @@ typedef struct binder_plugin_settings {
     RADIO_INTERFACE_TYPE interface_type;
 } BinderPluginSettings;
 
+typedef struct binder_api BinderApi;
+typedef struct binder_slot_io BinderSlotIo;
+typedef struct binder_service BinderService;
+
 typedef struct ofono_slot_driver_data {
     struct ofono_slot_manager* slot_manager;
+    const BinderApi* api;
     BINDER_PLUGIN_FLAGS flags;
     GBinderServiceManager* svcmgr;
     GDBusConnection* system_bus;
@@ -253,51 +299,33 @@ typedef struct ofono_slot_driver_data {
     BinderPluginSettings settings;
     gulong caps_manager_event_id;
     gulong radio_config_watch_id;
-    gulong list_call_id;
+    gulong radio_config_death_id;
     guint start_timeout_id;
     char* dev;
     GSList* slots;
 } BinderPlugin;
 
 typedef struct binder_slot {
-    BINDER_PLUGIN_SLOT_FLAGS flags;
-    GBinderServiceManager* svcmgr;
-    RADIO_INTERFACE_TYPE interface_type;
+    BINDER_SLOT_FLAGS flags;
     RADIO_INTERFACE version;
-    RadioInstance* instance[RADIO_AIDL_INTERFACE_COUNT];
-    RadioClient* client[RADIO_AIDL_INTERFACE_COUNT];
+    BinderClients clients;
+    BinderService* services;
+    guint n_services;
+    BinderSlotIo* io;
     GHashTable* ext_params;
     BinderExtPlugin* ext_plugin;
     BinderExtSlot* ext_slot;
     BinderPlugin* plugin;
-    BinderLogger* log_trace[RADIO_AIDL_INTERFACE_COUNT];
-    BinderLogger* log_dump[RADIO_AIDL_INTERFACE_COUNT];
-    BinderData* data;
     BinderDevmon* devmon;
-    BinderDevmonIo* devmon_io;
-    BinderRadio* radio;
     BinderModem* modem;
-    BinderNetwork* network;
-    BinderRadioCaps* caps;
-    BinderRadioCapsRequest* caps_req;
-    BinderSimCard* sim_card;
     BinderSimSettings* sim_settings;
     BinderSlotConfig config;
     BinderDataOptions data_opt;
     struct ofono_slot* handle;
-    struct ofono_cell_info* cell_info;
     struct ofono_watch* watch;
     enum ofono_slot_flags slot_flags;
-    RadioRequest* imei_req;
-    RadioRequest* caps_check_req;
-    gulong radio_watch_id;
-    gulong list_call_id;
-    gulong connected_id;
-    gulong client_event_id[CLIENT_EVENT_COUNT];
     gulong watch_event_id[WATCH_EVENT_COUNT];
     gulong slot_event_id[SLOT_EVENT_COUNT];
-    gulong sim_card_state_event_id;
-    gboolean received_sim_status;
     char* name;
     char* path;
     char* imei;
@@ -305,7 +333,46 @@ typedef struct binder_slot {
     int req_timeout_ms; /* Request timeout, in milliseconds */
     guint start_timeout_ms;
     guint start_timeout_id;
+    RadioRequest* imei_req;
 } BinderSlot;
+
+struct binder_slot_io {
+    struct ofono_cell_info* cell_info;
+    BinderDevmonIo* devmon_io;
+    BinderData* data;
+    BinderNetwork* network;
+    BinderRadio* radio;
+    BinderRadioCaps* caps;
+    BinderRadioCapsRequest* caps_req;
+    BinderSimCard* sim_card;
+    RadioRequest* caps_check_req;
+    gulong modem_radio_state_changed_id;
+    gulong sim_card_state_changed_id;
+    gboolean received_sim_status;
+};
+
+struct binder_service {
+    const char* name;
+    BinderSlot* slot;
+    RADIO_AIDL_INTERFACE aidl_interface;
+    RadioInstance* instance;
+    RadioClient* client;
+    BinderLogger* log_trace;
+    BinderLogger* log_dump;
+    gulong client_event_id[CLIENT_EVENT_COUNT];
+    gulong watch_id;
+    char* watch_name;
+    char* fqname;
+};
+
+struct binder_api {
+    const char* name;
+    BinderReadStringArg read_string_arg;
+    RADIO_REQ modem_get_device_identity_req;
+    RADIO_IND modem_radio_state_changed_ind;
+    const char* radio_config_watch_name;
+    RADIO_CONFIG_INTERFACE radio_config_interface;
+};
 
 typedef struct binder_plugin_module {
     void (*init)(void);
@@ -334,6 +401,24 @@ static const BinderPluginModule binder_plugin_modules[] = {
 
 GLOG_MODULE_DEFINE("binderplugin");
 
+static const BinderApi binder_api_hidl = {
+    "hidl",
+    binder_read_string_arg_hidl,
+    RADIO_REQ_GET_DEVICE_IDENTITY,
+    RADIO_IND_RADIO_STATE_CHANGED,
+    RADIO_CONFIG_1_1,
+    RADIO_CONFIG_INTERFACE_1_1
+};
+
+static const BinderApi binder_api_aidl = {
+    "aidl",
+    binder_read_string_arg_aidl,
+    RADIO_MODEM_REQ_GET_DEVICE_IDENTITY,
+    RADIO_MODEM_IND_RADIO_STATE_CHANGED,
+    RADIO_CONFIG_AIDL_FQNAME,
+    RADIO_CONFIG_INTERFACE_NONE
+};
+
 typedef
 void
 (*BinderPluginSlotFunc)(
@@ -341,24 +426,40 @@ void
 
 typedef
 void
-(*BinderPluginSlotParamFunc)(
+(*BinderSlotParamFunc)(
     BinderSlot* slot,
     void* param);
 
+typedef
+void
+(*BinderServiceFunc)(
+    BinderService* service);
+
 static
 void
-binder_plugin_slot_check(
+binder_service_connect(
+    BinderService* service);
+
+static
+void
+binder_service_disconnect(
+    BinderService* service);
+
+static
+void
+binder_slot_check(
     BinderSlot* slot);
 
 static
 void
-binder_plugin_slot_check_radio_client(
+binder_slot_free(
     BinderSlot* slot);
 
 static
 void
-binder_plugin_check_config_client(
-    BinderPlugin* plugin);
+binder_slot_shutdown(
+    BinderSlot* slot,
+    gboolean kill_io);
 
 static
 void
@@ -396,7 +497,8 @@ binder_radio_config_trace_update(
     BinderPlugin* plugin)
 {
     if (plugin) {
-        if (binder_logger_trace.flags & OFONO_DEBUG_FLAG_PRINT) {
+        if (plugin->radio_config &&
+           (binder_logger_trace.flags & OFONO_DEBUG_FLAG_PRINT)) {
             if (!plugin->radio_config_trace) {
                 plugin->radio_config_trace =
                     binder_logger_new_config_trace(plugin->radio_config);
@@ -414,7 +516,8 @@ binder_radio_config_dump_update(
     BinderPlugin* plugin)
 {
     if (plugin) {
-        if (binder_logger_dump.flags & OFONO_DEBUG_FLAG_PRINT) {
+        if (plugin->radio_config &&
+           (binder_logger_dump.flags & OFONO_DEBUG_FLAG_PRINT)) {
             if (!plugin->radio_config_dump) {
                 plugin->radio_config_dump =
                     binder_logger_new_config_dump(plugin->radio_config);
@@ -430,7 +533,7 @@ static
 void
 binder_plugin_foreach_slot_param(
     BinderPlugin* plugin,
-    BinderPluginSlotParamFunc fn,
+    BinderSlotParamFunc fn,
     void* param)
 {
     if (plugin) {
@@ -465,47 +568,75 @@ binder_plugin_foreach_slot(
 
 static
 void
-binder_logger_dump_update_slot(
-    BinderSlot* slot)
+binder_slot_foreach_service(
+    BinderSlot* slot,
+    BinderServiceFunc fn)
 {
-    RADIO_AIDL_INTERFACE i;
+    guint i;
 
-    for (i = 0; i < RADIO_AIDL_INTERFACE_COUNT; i++) {
-        if (binder_logger_dump.flags & OFONO_DEBUG_FLAG_PRINT) {
-            if (!slot->log_dump[i] && slot->instance[i]) {
-                slot->log_dump[i] = binder_logger_new_radio_dump(slot->instance[i],
-                    slot->name);
-            }
-        } else if (slot->log_dump[i]) {
-            binder_logger_free(slot->log_dump[i]);
-            slot->log_dump[i] = NULL;
-        }
+    for (i = 0; i < slot->n_services; i++) {
+        fn(slot->services + i);
     }
 }
 
 static
 void
-binder_logger_trace_update_slot(
-    BinderSlot* slot)
+binder_plugin_foreach_service(
+    BinderPlugin* plugin,
+    BinderServiceFunc fn)
 {
-    RADIO_AIDL_INTERFACE i;
+    binder_plugin_foreach_slot_param(plugin, (BinderSlotParamFunc)
+        binder_slot_foreach_service, fn);
+}
 
-    for (i = 0; i < RADIO_AIDL_INTERFACE_COUNT; i++) {
-        if (binder_logger_trace.flags & OFONO_DEBUG_FLAG_PRINT) {
-            if (!slot->log_trace[i] && slot->instance[i]) {
-                slot->log_trace[i] = binder_logger_new_radio_trace(slot->instance[i],
-                    slot->name);
-            }
-        } else if (slot->log_trace[i]) {
-            binder_logger_free(slot->log_trace[i]);
-            slot->log_trace[i] = NULL;
+static
+void
+binder_service_update_dump_logger(
+    BinderService* service)
+{
+    if (service->instance &&
+       (binder_logger_dump.flags & OFONO_DEBUG_FLAG_PRINT)) {
+        if (!service->log_dump) {
+            service->log_dump =
+                binder_logger_new_radio_dump(service->instance,
+                    service->slot->name);
         }
+    } else if (service->log_dump) {
+        binder_logger_free(service->log_dump);
+        service->log_dump = NULL;
     }
 }
 
 static
 void
-binder_plugin_check_if_started(
+binder_service_update_trace_logger(
+    BinderService* service)
+{
+    if (service->instance &&
+       (binder_logger_trace.flags & OFONO_DEBUG_FLAG_PRINT)) {
+        if (!service->log_trace) {
+            service->log_trace =
+                binder_logger_new_radio_trace(service->instance,
+                    service->slot->name);
+        }
+    } else if (service->log_trace) {
+        binder_logger_free(service->log_trace);
+        service->log_trace = NULL;
+    }
+}
+
+static
+void
+binder_service_update_logger(
+    BinderService* service)
+{
+    binder_service_update_dump_logger(service);
+    binder_service_update_trace_logger(service);
+}
+
+static
+void
+binder_plugin_check(
     BinderPlugin* plugin)
 {
     if (plugin->start_timeout_id) {
@@ -529,114 +660,6 @@ binder_plugin_check_if_started(
     }
 }
 
-static
-gboolean
-binder_plugin_is_slot_client_connected(
-    BinderSlot* slot)
-{
-    RADIO_AIDL_INTERFACE i;
-
-    for (i = 0; i < RADIO_AIDL_INTERFACE_COUNT; i++) {
-        if (slot->client[i]) return TRUE;
-    }
-    return FALSE;
-}
-
-static
-void
-binder_plugin_slot_shutdown(
-    BinderSlot* slot,
-    gboolean kill_io)
-{
-    if (slot->modem) {
-        binder_data_allow(slot->data, OFONO_SLOT_DATA_NONE);
-        ofono_modem_remove(slot->modem->ofono);
-
-        /*
-         * The above call is expected to result in
-         * binder_plugin_slot_modem_changed getting
-         * called which will set slot->modem to NULL.
-         */
-        GASSERT(!slot->modem);
-    }
-
-    if (kill_io) {
-        if (slot->devmon_io) {
-            binder_devmon_io_free(slot->devmon_io);
-            slot->devmon_io = NULL;
-        }
-
-        if (slot->cell_info) {
-            ofono_slot_set_cell_info(slot->handle, NULL);
-            ofono_cell_info_unref(slot->cell_info);
-            slot->cell_info = NULL;
-        }
-
-        if (slot->caps) {
-            binder_network_set_radio_caps(slot->network, NULL);
-            binder_radio_caps_request_free(slot->caps_req);
-            binder_radio_caps_drop(slot->caps);
-            slot->caps_req = NULL;
-            slot->caps = NULL;
-        }
-
-        if (slot->data) {
-            binder_data_allow(slot->data, OFONO_SLOT_DATA_NONE);
-            binder_data_unref(slot->data);
-            slot->data = NULL;
-        }
-
-        if (slot->radio) {
-            binder_radio_unref(slot->radio);
-            slot->radio = NULL;
-        }
-
-        if (slot->network) {
-            binder_network_unref(slot->network);
-            slot->network = NULL;
-        }
-
-        if (slot->sim_card) {
-            binder_sim_card_remove_handler(slot->sim_card,
-                slot->sim_card_state_event_id);
-            binder_sim_card_unref(slot->sim_card);
-            slot->sim_card_state_event_id = 0;
-            slot->sim_card = NULL;
-            slot->received_sim_status = FALSE;
-        }
-
-        if (binder_plugin_is_slot_client_connected(slot)) {
-            RADIO_AIDL_INTERFACE i;
-
-            radio_request_drop(slot->caps_check_req);
-            radio_request_drop(slot->imei_req);
-            slot->caps_check_req = NULL;
-            slot->imei_req = NULL;
-
-            for (i = 0; i < RADIO_AIDL_INTERFACE_COUNT; i++) {
-                if (!slot->client[i])
-                    continue;
-
-                binder_logger_free(slot->log_trace[i]);
-                binder_logger_free(slot->log_dump[i]);
-                slot->log_trace[i] = NULL;
-                slot->log_dump[i] = NULL;
-
-                radio_client_remove_all_handlers(slot->client[i],
-                    slot->client_event_id);
-
-                radio_instance_unref(slot->instance[i]);
-                radio_client_unref(slot->client[i]);
-                slot->instance[i] = NULL;
-                slot->client[i] = NULL;
-            }
-
-            binder_ext_slot_drop(slot->ext_slot);
-            slot->ext_slot = NULL;
-        }
-    }
-}
-
 /*
  * It seems to be necessary to kick (with RADIO_REQ_SET_RADIO_POWER)
  * the modems with power on after one of the modems has been powered
@@ -646,10 +669,12 @@ binder_plugin_slot_shutdown(
  */
 static
 void
-binder_plugin_power_check(
+binder_slot_power_check(
     BinderSlot* slot)
 {
-    binder_radio_confirm_power_on(slot->radio);
+    if (slot->io) {
+        binder_radio_confirm_power_on(slot->io->radio);
+    }
 }
 
 static
@@ -660,222 +685,37 @@ binder_plugin_radio_state_changed(
     const GBinderReader* args,
     gpointer user_data)
 {
-    GBinderReader reader;
-    RADIO_STATE radio_state = RADIO_STATE_UNAVAILABLE;
+    gint32 rs;
 
-    /* radioStateChanged(RadioIndicationType, RadioState radioState); */
-    gbinder_reader_copy(&reader, args);
-    if (gbinder_reader_read_int32(&reader, (gint32*) &radio_state) &&
-        radio_state == RADIO_STATE_OFF) {
+    /*
+     * IRadioIndication.hal:
+     * oneway radioStateChanged(RadioIndicationType type,
+     *     RadioState radioState);
+     *
+     * IRadioModemIndication.aidl:
+     * void radioStateChanged(in RadioIndicationType type,
+     *     in RadioState radioState);
+     */
+    if (binder_read_int32(args, &rs) && rs == RADIO_STATE_OFF) {
         BinderSlot* slot = user_data;
 
         DBG("power off for slot %u", slot->config.slot);
-        binder_plugin_foreach_slot(slot->plugin, binder_plugin_power_check);
-    }
-}
-
-static
-enum ofono_slot_sim_presence
-binder_plugin_sim_presence(BinderSlot *slot)
-{
-    const BinderSimCardStatus* status = slot->sim_card->status;
-
-    if (status) {
-        switch (status->card_state) {
-        case RADIO_CARD_STATE_ABSENT:
-            return OFONO_SLOT_SIM_ABSENT;
-        case RADIO_CARD_STATE_PRESENT:
-            return OFONO_SLOT_SIM_PRESENT;
-        case RADIO_CARD_STATE_ERROR:
-        case RADIO_CARD_STATE_RESTRICTED:
-            break;
-        }
-    }
-
-    return OFONO_SLOT_SIM_UNKNOWN;
-}
-
-static
-void
-binder_plugin_slot_data_role_changed(
-    struct ofono_slot* ofono_slot,
-    enum ofono_slot_property property,
-    void* user_data)
-{
-    BinderSlot* slot = user_data;
-    const enum ofono_slot_data_role role = ofono_slot->data_role;
-
-    binder_data_allow(slot->data, role);
-    binder_radio_caps_request_free(slot->caps_req);
-    if (role == OFONO_SLOT_DATA_NONE) {
-        slot->caps_req = NULL;
-    } else {
-        /* Full speed connectivity isn't required for MMS. */
-        slot->caps_req = binder_radio_caps_request_new(slot->caps,
-            (role == OFONO_SLOT_DATA_MMS) ? OFONO_RADIO_ACCESS_MODE_GSM :
-                slot->sim_settings->techs, role);
-    }
-}
-
-static
-RADIO_AIDL_INTERFACE
-binder_plugin_modem_interface(
-    BinderSlot* slot)
-{
-    if (slot->plugin->settings.interface_type == RADIO_INTERFACE_TYPE_AIDL) {
-        return RADIO_MODEM_INTERFACE;
-    }
-    return RADIO_AIDL_INTERFACE_NONE;
-}
-
-static
-guint
-binder_plugin_interface_index(
-    BinderSlot* slot,
-    RADIO_AIDL_INTERFACE interface)
-{
-    if (slot->plugin->settings.interface_type == RADIO_INTERFACE_TYPE_AIDL) {
-        return interface;
-    }
-    // Use index 0 for HIDL because RADIO_AIDL_INTERFACE_NONE is -1
-    return 0;
-}
-
-static
-void
-binder_plugin_modem_check(
-    BinderSlot* slot)
-{
-    guint modem_interface =
-        binder_plugin_interface_index(slot, RADIO_MODEM_INTERFACE);
-    guint data_interface =
-        binder_plugin_interface_index(slot, RADIO_DATA_INTERFACE);
-    guint messaging_interface =
-        binder_plugin_interface_index(slot, RADIO_MESSAGING_INTERFACE);
-    guint network_interface =
-        binder_plugin_interface_index(slot, RADIO_NETWORK_INTERFACE);
-    guint sim_interface =
-        binder_plugin_interface_index(slot, RADIO_SIM_INTERFACE);
-    guint voice_interface =
-        binder_plugin_interface_index(slot, RADIO_VOICE_INTERFACE);
-
-    if (!slot->modem && slot->handle && slot->handle->enabled &&
-        radio_client_connected(slot->client[modem_interface])) {
-        BinderModem* modem;
-
-        DBG("%s registering modem", slot->name);
-        modem = binder_modem_create(slot->instance[modem_interface],
-            slot->client[modem_interface],
-            slot->client[data_interface],
-            slot->client[messaging_interface],
-            slot->client[network_interface],
-            slot->client[sim_interface],
-            slot->client[voice_interface],
-            slot->name, slot->path, slot->imei, slot->imeisv, &slot->config,
-            slot->ext_slot, slot->radio, slot->network, slot->sim_card,
-            slot->data, slot->sim_settings, slot->cell_info);
-
-        if (modem) {
-            slot->modem = modem;
-        } else {
-            binder_plugin_slot_shutdown(slot, TRUE);
-        }
+        binder_plugin_foreach_slot(slot->plugin, binder_slot_power_check);
     }
 }
 
 static
 void
-binder_plugin_slot_enabled_changed(
-    struct ofono_slot* ofono_slot,
-    enum ofono_slot_property property,
-    void* user_data)
-{
-    BinderSlot* slot = user_data;
-    RADIO_AIDL_INTERFACE i;
-
-    for (i = 0; i < RADIO_AIDL_INTERFACE_COUNT; i++) {
-        if (!slot->instance[i]) continue;
-
-        if (ofono_slot->enabled) {
-            binder_plugin_modem_check(slot);
-            radio_instance_set_enabled(slot->instance[i], TRUE);
-        } else {
-            radio_instance_set_enabled(slot->instance[i], FALSE);
-        }
-    }
-
-    if (!ofono_slot->enabled) {
-        binder_plugin_slot_shutdown(slot, FALSE);
-    }
-}
-
-static
-void
-binder_plugin_slot_startup_check(
-    BinderSlot* slot)
-{
-    BinderPlugin* plugin = slot->plugin;
-    guint modem_interface =
-        binder_plugin_interface_index(slot, RADIO_MODEM_INTERFACE);
-
-    if (!slot->handle && radio_client_connected(slot->client[modem_interface]) &&
-        !slot->imei_req && slot->imei) {
-        struct ofono_slot* ofono_slot;
-
-        if (slot->start_timeout_id) {
-            /* We have made it before the slot timeout has expired */
-            g_source_remove(slot->start_timeout_id);
-            slot->start_timeout_id = 0;
-        }
-
-        /* Register this slot with the sailfish manager plugin */
-        DBG("registering slot %s", slot->path);
-        ofono_slot = slot->handle = ofono_slot_add(plugin->slot_manager,
-            slot->path, slot->config.techs, slot->imei,
-            slot->imeisv, binder_plugin_sim_presence(slot),
-            slot->slot_flags);
-
-        if (ofono_slot) {
-            binder_plugin_slot_enabled_changed(ofono_slot,
-                                               OFONO_SLOT_PROPERTY_ENABLED, slot);
-
-            ofono_slot_set_cell_info(ofono_slot, slot->cell_info);
-            slot->slot_event_id[SLOT_EVENT_DATA_ROLE] =
-                ofono_slot_add_property_handler(ofono_slot,
-                    OFONO_SLOT_PROPERTY_DATA_ROLE,
-                    binder_plugin_slot_data_role_changed, slot);
-            slot->slot_event_id[SLOT_EVENT_ENABLED] =
-                ofono_slot_add_property_handler(ofono_slot,
-                    OFONO_SLOT_PROPERTY_ENABLED,
-                    binder_plugin_slot_enabled_changed, slot);
-        }
-    }
-
-    binder_plugin_modem_check(slot);
-    binder_plugin_check_if_started(plugin);
-}
-
-static
-void
-binder_plugin_handle_error(
+binder_slot_handle_error(
     BinderSlot* slot,
     const char* message)
 {
     ofono_error("%s %s", slot->name, message);
     ofono_slot_error(slot->handle, BINDER_ERROR_ID_DEATH, message);
-    binder_plugin_slot_shutdown(slot, TRUE);
+    binder_slot_shutdown(slot, TRUE);
 
     DBG("%s retrying", slot->name);
-    binder_plugin_slot_check(slot);
-}
-
-static
-void
-binder_plugin_slot_death(
-    RadioClient* client,
-    void* user_data)
-{
-    binder_plugin_handle_error((BinderSlot*)user_data, "binder service died");
+    binder_slot_check(slot);
 }
 
 static
@@ -894,7 +734,312 @@ binder_plugin_caps_switch_aborted(
 
 static
 void
-binder_plugin_device_identity_cb(
+binder_plugin_drop_radio_config(
+    BinderPlugin* plugin)
+{
+    binder_data_manager_set_radio_config(plugin->data_manager, NULL);
+    binder_logger_free(plugin->radio_config_trace);
+    binder_logger_free(plugin->radio_config_dump);
+    radio_config_remove_handler(plugin->radio_config,
+        plugin->radio_config_death_id);
+    radio_config_unref(plugin->radio_config);
+    plugin->radio_config_death_id = 0;
+    plugin->radio_config_trace = NULL;
+    plugin->radio_config_dump = NULL;
+    plugin->radio_config = NULL;
+}
+
+static
+void
+binder_plugin_config_client_died(
+    RadioConfig* config,
+    gpointer user_data)
+{
+    DBG("");
+    binder_plugin_drop_radio_config((BinderPlugin*)user_data);
+}
+
+static
+void
+binder_plugin_check_config_client(
+    BinderPlugin* plugin)
+{
+    if (!plugin->radio_config) {
+        plugin->radio_config =
+            radio_config_new_with_version_and_interface_type
+                (plugin->api->radio_config_interface,
+                 plugin->settings.interface_type);
+
+        if (plugin->radio_config) {
+            /* Once we have seen it, we need it */
+            plugin->flags |= (BINDER_PLUGIN_SEEN_CONFIG_SERVICE |
+                              BINDER_PLUGIN_NEED_CONFIG_SERVICE);
+            binder_radio_config_trace_update(plugin);
+            binder_radio_config_dump_update(plugin);
+            plugin->radio_config_death_id =
+                radio_config_add_death_handler(plugin->radio_config,
+                    binder_plugin_config_client_died, plugin);
+            if (plugin->data_manager) {
+                /* Pass new RadioConfig to BinderDataManager */
+                binder_data_manager_set_radio_config(plugin->data_manager,
+                    plugin->radio_config);
+            } else {
+                const BinderPluginSettings* ps = &plugin->settings;
+
+                plugin->data_manager = binder_data_manager_new(plugin->
+                    radio_config, ps->dm_flags, ps->non_data_mode);
+            }
+
+            binder_plugin_foreach_slot(plugin, binder_slot_check);
+        }
+    }
+}
+
+static
+void
+binder_plugin_config_registration_proc(
+    GBinderServiceManager* sm,
+    const char* name,
+    void* plugin)
+{
+    DBG("%s is there", name);
+    binder_plugin_check_config_client((BinderPlugin*)plugin);
+}
+
+/*==========================================================================*
+ * BinderService
+ *==========================================================================*/
+
+static
+void
+binder_service_connected_cb(
+    RadioClient* client,
+    void* user_data)
+{
+    BinderService* service = user_data;
+
+    radio_client_remove_handlers(client, service->client_event_id +
+        CLIENT_EVENT_CONNECTED, 1); /* Zeros the id */
+    binder_slot_check(service->slot);
+}
+
+static
+void
+binder_service_died_cb(
+    RadioClient* client,
+    void* user_data)
+{
+    BinderService* service = user_data;
+
+    binder_service_disconnect(service);
+    binder_slot_handle_error(service->slot, "binder service died");
+}
+
+static
+void
+binder_service_init(
+    BinderService* service,
+    BinderSlot* slot,
+    const char* name,
+    RADIO_AIDL_INTERFACE aidl_interface)
+{
+    service->slot = slot;
+    service->name = name;
+    service->aidl_interface = aidl_interface;
+
+    if (aidl_interface == RADIO_AIDL_INTERFACE_NONE) {
+        /* HIDL */
+        service->fqname = g_strconcat(service->watch_name =
+            g_strdup(binder_radio_ifaces[slot->version]), "/",
+                slot->name, NULL);
+    } else {
+        /* AIDL */
+        service->fqname = g_strdup(service->watch_name =
+            g_strconcat(binder_aidl_interfaces[aidl_interface], "/",
+                slot->name, NULL));
+    }
+}
+
+static
+void
+binder_service_update_enabled(
+    BinderService* service)
+{
+    struct ofono_slot* ofono_slot = service->slot->handle;
+
+    radio_instance_set_enabled(service->instance,
+        ofono_slot && ofono_slot->enabled);
+}
+
+static
+void
+binder_service_registration_cb(
+    GBinderServiceManager* sm,
+    const char* name,
+    void* user_data)
+{
+    BinderService* service = user_data;
+
+    DBG("%s is there", name);
+    binder_service_connect(service);
+    binder_slot_check(service->slot);
+}
+
+static
+void
+binder_service_start(
+    BinderService* service)
+{
+    BinderSlot* slot = service->slot;
+    GBinderServiceManager* sm = slot->plugin->svcmgr;
+
+    GASSERT(!service->watch_id);
+    service->watch_id = gbinder_servicemanager_add_registration_handler(sm,
+        service->watch_name, binder_service_registration_cb, service);
+}
+
+static
+void
+binder_service_connect(
+    BinderService* service)
+{
+    BinderSlot* slot = service->slot;
+
+    if (!service->instance) {
+        GBinderServiceManager* sm = slot->plugin->svcmgr;
+        const char* dev = gbinder_servicemanager_device(sm);
+
+        service->instance =
+            radio_instance_new_with_modem_slot_version_and_interface(dev,
+                slot->name, slot->path, slot->config.slot, slot->version,
+                service->aidl_interface);
+        binder_service_update_logger(service);
+    }
+
+    if (!service->client) {
+        DBG("Bringing up %s %s", slot->name, service->name);
+        service->client = radio_client_new(service->instance);
+        if (service->client) {
+            radio_client_set_default_timeout(service->client,
+                slot->req_timeout_ms);
+
+            if (!radio_client_connected(service->client)) {
+                service->client_event_id[CLIENT_EVENT_CONNECTED] =
+                    radio_client_add_connected_handler(service->client,
+                        binder_service_connected_cb, service);
+            }
+
+            service->client_event_id[CLIENT_EVENT_DEATH] =
+                radio_client_add_death_handler(service->client,
+                    binder_service_died_cb, service);
+        }
+    }
+}
+
+static
+void
+binder_service_disconnect(
+    BinderService* service)
+{
+    if (service->client) {
+        if (radio_client_dead(service->client)) {
+            DBG("%s %s is has died", service->slot->name, service->name);
+        } else {
+            DBG("Shutting down %s %s", service->slot->name, service->name);
+        }
+        radio_client_remove_all_handlers(service->client,
+            service->client_event_id);
+        radio_client_unref(service->client);
+        service->client = NULL;
+    }
+    if (service->instance) {
+        radio_instance_unref(service->instance);
+        service->instance = NULL;
+    }
+    binder_service_update_logger(service);
+}
+
+static
+void
+binder_service_destroy(
+    BinderService* service,
+    GBinderServiceManager* sm)
+{
+    binder_service_disconnect(service);
+    gbinder_servicemanager_remove_handler(sm, service->watch_id);
+    g_free(service->watch_name);
+    g_free(service->fqname);
+}
+
+/*==========================================================================*
+ * BinderSlot
+ *==========================================================================*/
+
+static
+BinderService*
+binder_slot_find_service(
+    BinderSlot* slot,
+    RADIO_AIDL_INTERFACE aidl_interface)
+{
+    guint i;
+
+    for (i = 0; i < slot->n_services; i++) {
+        BinderService* service = slot->services + i;
+
+        /* RADIO_AIDL_INTERFACE_NONE is HIDL and matches anything */
+        if (service->aidl_interface == RADIO_AIDL_INTERFACE_NONE ||
+            service->aidl_interface == aidl_interface) {
+            return service;
+        }
+    }
+    return NULL;
+}
+
+static
+RadioClient*
+binder_slot_find_connected_client(
+    BinderSlot* slot,
+    RADIO_AIDL_INTERFACE aidl_interface)
+{
+    BinderService* service = binder_slot_find_service(slot, aidl_interface);
+
+    return (service && radio_client_connected(service->client)) ?
+        service->client : NULL;
+}
+
+static
+void
+binder_slot_publish_clients(
+    BinderSlot* slot)
+{
+    /* Fill in BinderServices */
+    #define BINDER_CLIENT(TYPE,type) \
+    slot->clients.type##_client = \
+    binder_slot_find_connected_client(slot, RADIO_##TYPE##_INTERFACE);
+    BINDER_FOREACH_CLIENT(BINDER_CLIENT)
+    #undef BINDER_CLIENT
+}
+
+static
+gboolean
+binder_slot_all_clients_connected(
+    BinderSlot* slot)
+{
+    if (slot->n_services > 0) {
+        uint i;
+
+        for (i = 0; i < slot->n_services; i++) {
+            if (!radio_client_connected(slot->services[i].client)) {
+                return FALSE;
+            }
+        }
+    }
+    return TRUE;
+}
+
+static
+void
+binder_slot_device_identity_cb(
     RadioRequest* req,
     RADIO_TX_STATUS status,
     RADIO_RESP resp,
@@ -902,116 +1047,129 @@ binder_plugin_device_identity_cb(
     const GBinderReader* args,
     gpointer user_data)
 {
-    BinderSlot *slot = user_data;
+    BinderSlot* slot = user_data;
 
     GASSERT(slot->imei_req == req);
     radio_request_unref(slot->imei_req);
     slot->imei_req = NULL;
 
-    guint resp_code = RADIO_RESP_GET_DEVICE_IDENTITY;
-    if (slot->interface_type == RADIO_INTERFACE_TYPE_AIDL) {
-        resp_code = RADIO_MODEM_RESP_GET_DEVICE_IDENTITY;
-    }
-
-    if (status == RADIO_TX_STATUS_OK) {
-        if (resp == resp_code) {
-            /*
-             * getDeviceIdentityResponse(RadioResponseInfo, string imei,
-             *   string imeisv, string esn, string meid)
-             */
-            if (error == RADIO_ERROR_NONE) {
-                GBinderReader reader;
-                char* imei;
-                char* imeisv;
-
-                gbinder_reader_copy(&reader, args);
-
-                if (slot->interface_type == RADIO_INTERFACE_TYPE_HIDL) {
-                    imei = gbinder_reader_read_hidl_string(&reader);
-                    imeisv = gbinder_reader_read_hidl_string(&reader);
-                } else {
-                    imei = gbinder_reader_read_string16(&reader);
-                    imeisv = gbinder_reader_read_string16(&reader);
-                }
-
-                /*
-                 * slot->imei should be either NULL (when we get connected
-                 * to the radio service the very first time) or match the
-                 * already known IMEI (if radio service has crashed and we
-                 * have reconnected)
-                 */
-                DBG("%s %s %s", slot->name, imei, imeisv);
-                if (slot->imei && imei && strcmp(slot->imei, imei)) {
-                    ofono_warn("IMEI has changed \"%s\" -> \"%s\"",
-                        slot->imei, imei);
-                }
-
-                /* We assume that IMEI never changes */
-                if (!slot->imei) {
-                    slot->imei = imei ? g_strdup(imei) :
-                        g_strdup_printf("%d", slot->config.slot);
-                }
-
-                if (!slot->imeisv) {
-                    slot->imeisv = g_strdup(imeisv ? imeisv : "");
-                }
-
-                g_free(imei);
-                g_free(imeisv);
-            } else {
-                ofono_warn("getDeviceIdentity error %s",
-                    binder_radio_error_string(error));
-            }
-        } else {
-            ofono_error("Unexpected getDeviceIdentity response %d", resp);
-        }
+    if (status != RADIO_TX_STATUS_OK) {
+        DBG("%s getDeviceIdentity tx failed", slot->name);
+    } else if (error != RADIO_ERROR_NONE) {
+        ofono_error("getDeviceIdentity error %s",
+            binder_radio_error_string(error));
     } else {
-        ofono_error("getDeviceIdentity error %d", status);
+        const BinderApi* api = slot->plugin->api;
+        GBinderReader reader;
+        char* tmp_imei;
+        char* tmp_imeisv;
+        const char* imei;
+        const char* imeisv;
+
+        /*
+         * IRadioResponse.hal:
+         * oneway getDeviceIdentityResponse(RadioResponseInfo info,
+         *     string imei, string imeisv, string esn, string meid);
+         *
+         * IRadioModemResponse.aidl:
+         * void getDeviceIdentityResponse(in RadioResponseInfo info,
+         *     in String imei, in String imeisv, in String esn, in String meid);
+         */
+        gbinder_reader_copy(&reader, args);
+        imei = api->read_string_arg(&reader, &tmp_imei);
+        imeisv = api->read_string_arg(&reader, &tmp_imeisv);
+
+        /*
+         * slot->imei should be either NULL (when we get connected
+         * to the radio service the very first time) or match the
+         * already known IMEI (if radio service has crashed and we
+         * have reconnected)
+         */
+        DBG("%s %s %s", slot->name, imei, imeisv);
+        if (slot->imei && imei && strcmp(slot->imei, imei)) {
+            ofono_warn("IMEI has changed \"%s\" -> \"%s\"", slot->imei, imei);
+        }
+
+        /* We assume that IMEI never changes */
+        if (!slot->imei) {
+            slot->imei = imei ? g_strdup(imei) :
+                g_strdup_printf("%d", slot->config.slot);
+        }
+
+        if (!slot->imeisv) {
+            slot->imeisv = g_strdup(imeisv ? imeisv : "");
+        }
+
+        g_free(tmp_imei);
+        g_free(tmp_imeisv);
     }
 
-    binder_plugin_slot_startup_check(slot);
+    binder_slot_check(slot);
 }
 
 static
 void
-binder_plugin_slot_get_device_identity(
+binder_slot_get_device_identity(
     BinderSlot* slot,
     gboolean blocking,
     int retries)
 {
-    RADIO_AIDL_INTERFACE modem_interface = binder_plugin_modem_interface(slot);
-    guint req_code = RADIO_REQ_GET_DEVICE_IDENTITY;
-    if (modem_interface == RADIO_MODEM_INTERFACE) {
-        req_code = RADIO_MODEM_REQ_GET_DEVICE_IDENTITY;
-    }
-
-    /* getDeviceIdentity(int32 serial) */
-    RadioRequest* req = radio_request_new(
-        slot->client[binder_plugin_interface_index(slot, modem_interface)],
-        req_code, NULL,
-        binder_plugin_device_identity_cb, NULL, slot);
+    /*
+     * IRadio.hal:
+     * oneway getDeviceIdentity(int32_t serial);
+     *
+     * IRadioModem.aidl:
+     * void getDeviceIdentity(in int serial);
+     */
+    RadioRequest* req = radio_request_new(slot->clients.modem_client,
+        slot->plugin->api->modem_get_device_identity_req, NULL,
+        binder_slot_device_identity_cb, NULL, slot);
 
     radio_request_set_blocking(req, TRUE);
     radio_request_set_retry(req, BINDER_RETRY_MS, retries);
+
+    DBG("%s requesting IMEI", slot->name);
     radio_request_drop(slot->imei_req);
-    if (radio_request_submit(req)) {
-        DBG("%s submitted getDeviceIdentity", slot->name);
-        slot->imei_req = req; /* Keep the ref */
-    } else {
+    if (!(slot->imei_req = radio_request_try_submit(req))) {
         ofono_error("Failed to submit getDeviceIdentity for %s", slot->name);
-        slot->imei_req = NULL;
-        radio_request_unref(req);
     }
 }
 
 static
+enum ofono_slot_sim_presence
+binder_slot_sim_presence(
+    BinderSlot* slot)
+{
+    BinderSlotIo* io = slot->io;
+
+    if (io) {
+        const BinderSimCardStatus* status = io->sim_card->status;
+
+        if (status) {
+            switch (status->card_state) {
+            case RADIO_CARD_STATE_ABSENT:
+                return OFONO_SLOT_SIM_ABSENT;
+            case RADIO_CARD_STATE_PRESENT:
+                return OFONO_SLOT_SIM_PRESENT;
+            case RADIO_CARD_STATE_ERROR:
+            case RADIO_CARD_STATE_RESTRICTED:
+                break;
+            }
+        }
+    }
+
+    return OFONO_SLOT_SIM_UNKNOWN;
+}
+
+static
 void
-binder_plugin_slot_sim_state_changed(
+binder_slot_sim_state_changed(
     BinderSimCard* card,
     void* data)
 {
     BinderSlot* slot = data;
-    enum ofono_slot_sim_presence presence = binder_plugin_sim_presence(slot);
+    BinderSlotIo* io = slot->io;
+    enum ofono_slot_sim_presence presence = binder_slot_sim_presence(slot);
 
     if (card->status) {
         switch (presence) {
@@ -1025,7 +1183,7 @@ binder_plugin_slot_sim_state_changed(
             break;
         }
 
-        if (!slot->received_sim_status && slot->imei_req) {
+        if (!io->received_sim_status && !slot->imei) {
             /*
              * We have received the SIM status but haven't yet got IMEI
              * from the modem. Some modems behave this way if they don't
@@ -1037,10 +1195,10 @@ binder_plugin_slot_sim_state_changed(
              * the modem has been properly initialized.
              */
             DBG("giving slot %u last chance", slot->config.slot);
-            binder_plugin_slot_get_device_identity(slot, FALSE,
+            binder_slot_get_device_identity(slot, FALSE,
                 BINDER_GET_DEVICE_IDENTITY_RETRIES_LAST);
         }
-        slot->received_sim_status = TRUE;
+        io->received_sim_status = TRUE;
     }
 
     ofono_slot_set_sim_presence(slot->handle, presence);
@@ -1048,18 +1206,35 @@ binder_plugin_slot_sim_state_changed(
 
 static
 void
-binder_plugin_slot_radio_caps_cb(
+binder_slot_io_set_data_role(
+    BinderSlotIo* io,
+    enum ofono_slot_data_role role,
+    enum ofono_radio_access_mode techs)
+{
+    binder_data_allow(io->data, role);
+    binder_radio_caps_request_free(io->caps_req);
+    if (role == OFONO_SLOT_DATA_NONE) {
+        io->caps_req = NULL;
+    } else {
+        /* Full speed connectivity isn't required for MMS. */
+        io->caps_req = binder_radio_caps_request_new(io->caps,
+            (role == OFONO_SLOT_DATA_MMS) ? OFONO_RADIO_ACCESS_MODE_GSM :
+            techs, role);
+    }
+}
+
+static
+void
+binder_slot_radio_caps_cb(
     const RadioCapability* cap,
     void *user_data)
 {
     BinderSlot* slot = user_data;
-    guint modem_interface =
-        binder_plugin_interface_index(slot, RADIO_MODEM_INTERFACE);
+    BinderSlotIo* io = slot->io;
 
     DBG("radio caps %s", cap ? "ok" : "NOT supported");
-    GASSERT(slot->caps_check_req);
-    radio_request_drop(slot->caps_check_req);
-    slot->caps_check_req = NULL;
+    radio_request_drop(io->caps_check_req);
+    io->caps_check_req = NULL;
 
     if (cap) {
         BinderPlugin* plugin = slot->plugin;
@@ -1073,423 +1248,394 @@ binder_plugin_slot_radio_caps_cb(
                         plugin);
         }
 
-        GASSERT(!slot->caps);
-        slot->caps = binder_radio_caps_new(plugin->caps_manager, slot->name,
-            slot->client[modem_interface], slot->watch, slot->data, slot->radio,
-            slot->sim_card, slot->sim_settings, &slot->config, cap);
-        binder_network_set_radio_caps(slot->network, slot->caps);
+        io->caps = binder_radio_caps_new(plugin->caps_manager, slot->name,
+            slot->clients.modem_client, slot->watch, io->data, io->radio,
+            io->sim_card, slot->sim_settings, &slot->config, cap);
+        binder_network_set_radio_caps(io->network, io->caps);
+        binder_slot_io_set_data_role(slot->io, slot->handle->data_role,
+            slot->sim_settings->techs);
     }
 }
 
 static
 void
-binder_plugin_slot_connected(
+binder_slot_data_role_changed(
+    struct ofono_slot* ofono_slot,
+    enum ofono_slot_property property,
+    void* user_data)
+{
+    BinderSlot* slot = user_data;
+
+    if (slot->io) {
+        binder_slot_io_set_data_role(slot->io, ofono_slot->data_role,
+            slot->sim_settings->techs);
+    }
+}
+
+static
+void
+binder_slot_enabled_changed(
+    struct ofono_slot* ofono_slot,
+    enum ofono_slot_property property,
+    void* slot)
+{
+    binder_slot_foreach_service((BinderSlot*)slot,
+        binder_service_update_enabled);
+}
+
+static
+struct ofono_slot*
+binder_slot_register(
+    BinderSlot* slot)
+{
+    /* Register this slot with the sailfish manager plugin */
+    DBG("registering slot %s", slot->path);
+    slot->handle = ofono_slot_add(slot->plugin->slot_manager,
+        slot->path, slot->config.techs, slot->imei, slot->imeisv,
+        OFONO_SLOT_SIM_UNKNOWN, slot->slot_flags);
+
+    if (slot->handle) {
+        /* We have made it before the slot timeout has expired */
+        gutil_source_clear(&slot->start_timeout_id);
+
+        slot->slot_event_id[SLOT_EVENT_DATA_ROLE] =
+            ofono_slot_add_property_handler(slot->handle,
+                OFONO_SLOT_PROPERTY_DATA_ROLE,
+                binder_slot_data_role_changed, slot);
+        slot->slot_event_id[SLOT_EVENT_ENABLED] =
+            ofono_slot_add_property_handler(slot->handle,
+                OFONO_SLOT_PROPERTY_ENABLED,
+                binder_slot_enabled_changed, slot);
+
+        /* Sync the current state */
+        binder_slot_foreach_service(slot, binder_service_update_enabled);
+    }
+    return slot->handle;
+}
+
+static
+BinderSlotIo*
+binder_slot_create_io(
     BinderSlot* slot)
 {
     BinderPlugin* plugin = slot->plugin;
-    const BinderPluginSettings* ps = &plugin->settings;
-    guint modem_interface =
-        binder_plugin_interface_index(slot, RADIO_MODEM_INTERFACE);
-    guint data_interface =
-        binder_plugin_interface_index(slot, RADIO_DATA_INTERFACE);
-    guint network_interface =
-        binder_plugin_interface_index(slot, RADIO_NETWORK_INTERFACE);
-    guint sim_interface =
-        binder_plugin_interface_index(slot, RADIO_SIM_INTERFACE);
+    BinderClients* clients = &slot->clients;
+    BinderSlotIo* io = g_new0(BinderSlotIo, 1);
+    const BinderApi* api = plugin->api;
 
-    GASSERT(radio_client_connected(slot->client[modem_interface]));
-    GASSERT(!slot->client_event_id[CLIENT_EVENT_CONNECTED]);
-    DBG("%s", slot->name);
+    io->radio = binder_radio_new(clients->modem_client, slot->name);
 
-    /*
-     * Ofono modem will be registered after getDeviceIdentity() call
-     * successfully completes. By the time ofono starts, modem may
-     * not be completely functional. Waiting until it responds to
-     * getDeviceIdentity() and retrying the request on failure
-     * (hopefully) gives modem and/or adaptation enough time to
-     * finish whatever is happening during initialization.
-     */
-    binder_plugin_slot_get_device_identity(slot, TRUE, -1);
-
-    GASSERT(!slot->radio);
-    slot->radio = binder_radio_new(slot->client[modem_interface], slot->name);
-
-    /* Register RADIO_IND_RADIO_STATE_CHANGED handler only if we need one */
-    GASSERT(!slot->client_event_id[CLIENT_EVENT_RADIO_STATE_CHANGED]);
+    /* Register RADIO_STATE_CHANGED handler only if we need one */
     if (slot->config.confirm_radio_power_on) {
-        slot->client_event_id[CLIENT_EVENT_RADIO_STATE_CHANGED] =
-            radio_client_add_indication_handler(slot->client[modem_interface],
-                RADIO_IND_RADIO_STATE_CHANGED,
+        io->modem_radio_state_changed_id =
+            radio_client_add_indication_handler(clients->modem_client,
+                api->modem_radio_state_changed_ind,
                 binder_plugin_radio_state_changed, slot);
     }
-
-    GASSERT(!slot->sim_card);
-    slot->sim_card = binder_sim_card_new(slot->client[sim_interface],
-        slot->config.slot);
-    slot->sim_card_state_event_id =
-        binder_sim_card_add_state_changed_handler(slot->sim_card,
-            binder_plugin_slot_sim_state_changed, slot);
 
     /*
      * BinderSimCard is expected to perform getIccCardStatus()
      * asynchronously and report back when request has completed:
      */
-    GASSERT(!slot->sim_card->status);
-    GASSERT(!slot->received_sim_status);
+    io->sim_card = binder_sim_card_new(clients->sim_client, slot->config.slot);
+    io->sim_card_state_changed_id =
+        binder_sim_card_add_state_changed_handler(io->sim_card,
+            binder_slot_sim_state_changed, slot);
 
-    GASSERT(!slot->network);
-    slot->network = binder_network_new(slot->path,
-        slot->client[network_interface], slot->client[data_interface],
-        slot->client[modem_interface], slot->name, slot->radio, slot->sim_card,
-        slot->sim_settings, &slot->config);
+    io->network = binder_network_new(slot->path, clients, slot->name,
+        io->radio, io->sim_card, slot->sim_settings, &slot->config);
 
-    GASSERT(!slot->data);
-    slot->data = binder_data_new(plugin->data_manager,
-        slot->client[data_interface], slot->client[network_interface],
-        slot->name, slot->radio, slot->network, &slot->data_opt,
-        &slot->config);
+    io->data = binder_data_new(plugin->data_manager, clients, slot->name,
+        io->radio, io->network, &slot->data_opt, &slot->config, slot->handle);
 
-    GASSERT(!slot->cell_info);
-    slot->cell_info = binder_cell_info_new(slot->instance[network_interface],
-        slot->client[network_interface],
-        slot->name, slot->radio, slot->sim_card);
+    io->cell_info = binder_cell_info_new(clients->network_client,
+        slot->name, io->radio, io->network, io->sim_card);
+    ofono_slot_set_cell_info(slot->handle, io->cell_info);
 
-    GASSERT(!slot->caps);
-    GASSERT(!slot->caps_check_req);
-    if (binder_plugin_multisim(plugin) &&
-        (ps->set_radio_cap == BINDER_SET_RADIO_CAP_ENABLED ||
-         ps->set_radio_cap == BINDER_SET_RADIO_CAP_AUTO)) {
-        /* Check if the device really supports radio capability management */
-        slot->caps_check_req = binder_radio_caps_check(
-            slot->client[modem_interface], binder_plugin_slot_radio_caps_cb,
-            slot);
+    if (binder_plugin_multisim(plugin)) {
+        const BinderPluginSettings* ps = &plugin->settings;
+
+        if (ps->set_radio_cap == BINDER_SET_RADIO_CAP_ENABLED ||
+            ps->set_radio_cap == BINDER_SET_RADIO_CAP_AUTO) {
+            /* Check if the device really supports radio caps management */
+            io->caps_check_req = binder_radio_caps_check(
+                clients->modem_client, binder_slot_radio_caps_cb, slot);
+        }
     }
 
-    GASSERT(!slot->devmon_io);
     if (slot->devmon) {
-        slot->devmon_io = binder_devmon_start_io(slot->devmon,
-            slot->client[modem_interface], slot->client[network_interface],
+        io->devmon_io = binder_devmon_start_io(slot->devmon, &slot->clients,
             slot->handle);
     }
 
-    binder_plugin_slot_startup_check(slot);
-}
-
-static
-gboolean
-binder_plugin_service_list_proc(
-    GBinderServiceManager* sm,
-    char** services,
-    void* data)
-{
-    BinderPlugin* plugin = data;
-
-    plugin->list_call_id = 0;
-
-    /* IRadioConfig 1.0 is of no use to us */
-    if (gutil_strv_contains(services, RADIO_CONFIG_1_2_FQNAME) ||
-            gutil_strv_contains(services, RADIO_CONFIG_1_1_FQNAME) ||
-            gutil_strv_contains(services, RADIO_CONFIG_AIDL_FQNAME)) {
-        /* If it's there then we definitely need it */
-        plugin->flags |= (BINDER_PLUGIN_HAVE_CONFIG_SERVICE |
-                          BINDER_PLUGIN_NEED_CONFIG_SERVICE);
-    } else {
-        plugin->flags &= ~BINDER_PLUGIN_HAVE_CONFIG_SERVICE;
-        if (gutil_strv_contains(services, RADIO_CONFIG_1_0_FQNAME)) {
-            /*
-             * If 1.0 has appeared but 1.1 has not, assume that 1.1
-             * is not supported.
-             */
-            plugin->flags &= ~BINDER_PLUGIN_NEED_CONFIG_SERVICE;
-        }
-    }
-
-    binder_plugin_check_config_client(plugin);
-
-    /* Return FALSE to free the service list */
-    return FALSE;
-}
-
-static
-gboolean
-binder_plugin_slot_service_list_proc(
-    GBinderServiceManager* sm,
-    char** services,
-    void* data)
-{
-    BinderSlot* slot = data;
-    char* fqname = NULL;
-
-    if (slot->plugin->settings.interface_type == RADIO_INTERFACE_TYPE_HIDL) {
-        fqname = g_strconcat(binder_radio_ifaces[slot->version], "/",
-                             slot->name, NULL);
-    } else if (slot->plugin->settings.interface_type == RADIO_INTERFACE_TYPE_AIDL) {
-        fqname = g_strconcat(RADIO_MODEM, "/", slot->name, NULL);
-    }
-
-    slot->list_call_id = 0;
-    if (gutil_strv_contains(services, fqname)) {
-        DBG("found %s", fqname);
-        slot->flags |= BINDER_PLUGIN_SLOT_HAVE_RADIO_SERVICE;
-    } else {
-        DBG("not found %s", fqname);
-        slot->flags &= ~BINDER_PLUGIN_SLOT_HAVE_RADIO_SERVICE;
-    }
-
-    binder_plugin_slot_check_radio_client(slot);
-    g_free(fqname);
-
-    /* Return FALSE to free the service list */
-    return FALSE;
+    return slot->io = io;
 }
 
 static
 void
-binder_plugin_service_check(
-    BinderPlugin* plugin)
-{
-    gbinder_servicemanager_cancel(plugin->svcmgr, plugin->list_call_id);
-    plugin->list_call_id = gbinder_servicemanager_list(plugin->svcmgr,
-        binder_plugin_service_list_proc, plugin);
-}
-
-static
-void
-binder_plugin_slot_check(
-    BinderSlot* slot)
-{
-    gbinder_servicemanager_cancel(slot->svcmgr, slot->list_call_id);
-    slot->list_call_id = gbinder_servicemanager_list(slot->svcmgr,
-        binder_plugin_slot_service_list_proc, slot);
-}
-
-static
-void
-binder_plugin_service_registration_proc(
-    GBinderServiceManager* sm,
-    const char* name,
-    void* plugin)
-{
-    DBG("%s is there", name);
-    binder_plugin_service_check((BinderPlugin*) plugin);
-}
-
-static
-void
-binder_plugin_slot_service_registration_proc(
-    GBinderServiceManager* sm,
-    const char* name,
-    void* slot)
-{
-    DBG("%s is there", name);
-    binder_plugin_slot_check((BinderSlot*) slot);
-}
-
-static
-void
-binder_plugin_drop_radio_config(
-    BinderPlugin* plugin)
-{
-    binder_data_manager_set_radio_config(plugin->data_manager, NULL);
-    binder_logger_free(plugin->radio_config_trace);
-    binder_logger_free(plugin->radio_config_dump);
-    radio_config_unref(plugin->radio_config);
-    plugin->radio_config_trace = NULL;
-    plugin->radio_config_dump = NULL;
-    plugin->radio_config = NULL;
-}
-
-static
-void
-binder_plugin_check_config_client(
-    BinderPlugin* plugin)
-{
-    if (plugin->flags & BINDER_PLUGIN_HAVE_CONFIG_SERVICE) {
-        if (!plugin->radio_config) {
-            plugin->radio_config =
-                radio_config_new_with_version_and_interface_type
-                    (RADIO_CONFIG_INTERFACE_1_1,
-                     plugin->settings.interface_type);
-            binder_radio_config_trace_update(plugin);
-            binder_radio_config_dump_update(plugin);
-            if (plugin->data_manager) {
-                /* Pass new RadioConfig to BinderDataManager */
-                binder_data_manager_set_radio_config(plugin->data_manager,
-                    plugin->radio_config);
-            } else {
-                const BinderPluginSettings* ps = &plugin->settings;
-
-                /* Once we have seen it, we need it */
-                plugin->flags |= BINDER_PLUGIN_NEED_CONFIG_SERVICE;
-                plugin->data_manager = binder_data_manager_new(plugin->
-                    radio_config, ps->dm_flags, ps->non_data_mode);
-            }
-        }
-    } else {
-        binder_plugin_drop_radio_config(plugin);
-    }
-    binder_plugin_foreach_slot(plugin, binder_plugin_slot_check_radio_client);
-}
-
-static
-void
-binder_plugin_check_data_manager(
-    BinderPlugin* plugin)
-{
-    /*
-     * If we haven't found any IRadioConfig (even 1.0) then still create
-     * the data manager.
-     */
-    if (!plugin->data_manager) {
-        const BinderPluginSettings* ps = &plugin->settings;
-
-        plugin->data_manager = binder_data_manager_new(NULL, ps->dm_flags,
-            ps->non_data_mode);
-    }
-}
-
-static
-void
-binder_plugin_slot_connected_cb(
-    RadioClient* client,
-    void* user_data)
-{
-    BinderSlot* slot = user_data;
-
-    radio_client_remove_handlers(client, slot->client_event_id +
-        CLIENT_EVENT_CONNECTED, 1); /* Zeros the id */
-    binder_plugin_slot_connected(slot);
-}
-
-static
-void
-binder_plugin_connect_to_interface(
-    BinderSlot* slot,
-    const char* dev,
-    RADIO_AIDL_INTERFACE aidl_interface) {
-
-    guint index = binder_plugin_interface_index(slot, aidl_interface);
-    slot->instance[index] =
-        radio_instance_new_with_modem_slot_version_and_interface(
-            dev, slot->name, slot->path, slot->config.slot, slot->version,
-            aidl_interface);
-    slot->client[index] =
-        radio_client_new(slot->instance[index]);
-
-    if (slot->client[index]) {
-        RadioClient* client = slot->client[index];
-        RADIO_AIDL_INTERFACE modem_interface =
-            binder_plugin_modem_interface(slot);
-
-        radio_client_set_default_timeout(client,
-            slot->req_timeout_ms);
-
-        binder_logger_dump_update_slot(slot);
-        binder_logger_trace_update_slot(slot);
-
-        if (aidl_interface == modem_interface) {
-            slot->client_event_id[CLIENT_EVENT_DEATH] =
-                radio_client_add_death_handler(client,
-                    binder_plugin_slot_death, slot);
-        } else {
-            /* No rilConnected indication on other interfaces,
-             * so force-set connected state */
-            slot->instance[index]->connected = TRUE;
-        }
-    } else {
-        radio_instance_unref(slot->instance[index]);
-        slot->instance[index] = NULL;
-    }
-}
-
-static
-void
-binder_plugin_slot_check_radio_client(
+binder_slot_check(
     BinderSlot* slot)
 {
     BinderPlugin* plugin = slot->plugin;
-    const gboolean need_client =
-        (slot->flags & BINDER_PLUGIN_SLOT_HAVE_RADIO_SERVICE) &&
-        ((plugin->flags & BINDER_PLUGIN_HAVE_CONFIG_SERVICE) ||
-         !(plugin->flags & BINDER_PLUGIN_NEED_CONFIG_SERVICE));
+    struct ofono_slot* ofono_slot = slot->handle;
+    const gboolean connected = binder_slot_all_clients_connected(slot) &&
+        (plugin->radio_config || !(plugin->flags &
+            BINDER_PLUGIN_NEED_CONFIG_SERVICE));
 
-    if (!binder_plugin_is_slot_client_connected(slot) && need_client) {
-        RADIO_AIDL_INTERFACE modem_interface =
-            binder_plugin_modem_interface(slot);
-        guint modem_index = binder_plugin_interface_index(slot, modem_interface);
-        const char* dev = gbinder_servicemanager_device(slot->svcmgr);
+    binder_slot_publish_clients(slot);
 
-        DBG("Bringing up %s", slot->name);
+    /* IMEI related logic */
+    if (slot->imei) {
+        if (!ofono_slot && slot->imei) {
+            ofono_slot = binder_slot_register(slot);
+        }
+    } else if (connected) {
+        if (!slot->imei_req) {
+            /*
+             * Ofono modem gets registered after getDeviceIdentity()
+             * call successfully completes. By the time ofono starts,
+             * modem may not be completely functional. Waiting until
+             * it responds to getDeviceIdentity() and retrying the
+             * request on failure (hopefully) gives modem and/or
+             * adaptation enough time to finish whatever is happening
+             * during initialization.
+             */
+            binder_slot_get_device_identity(slot, TRUE, -1);
+        }
+    } else if (slot->imei_req) {
+        radio_request_drop(slot->imei_req);
+        slot->imei_req = NULL;
+    }
 
-        binder_plugin_connect_to_interface(slot, dev, modem_interface);
+    if (slot->handle && connected) {
+        BinderSlotIo* io = slot->io;
 
-        if (modem_interface == RADIO_MODEM_INTERFACE) {
-            // AIDL, need to connect to the other interfaces as well
-            binder_plugin_connect_to_interface(slot, dev, RADIO_DATA_INTERFACE);
-            binder_plugin_connect_to_interface(slot, dev, RADIO_IMS_INTERFACE);
-            binder_plugin_connect_to_interface(slot, dev, RADIO_MESSAGING_INTERFACE);
-            binder_plugin_connect_to_interface(slot, dev, RADIO_NETWORK_INTERFACE);
-            binder_plugin_connect_to_interface(slot, dev, RADIO_SIM_INTERFACE);
-            binder_plugin_connect_to_interface(slot, dev, RADIO_VOICE_INTERFACE);
+        if (!io) {
+            io = binder_slot_create_io(slot);
         }
 
-        binder_plugin_check_data_manager(plugin);
-
-        if (radio_client_connected(slot->client[modem_index])) {
-            binder_plugin_slot_connected(slot);
-        } else {
-            slot->client_event_id[CLIENT_EVENT_CONNECTED] =
-                radio_client_add_connected_handler(
-                    slot->client[modem_index],
-                    binder_plugin_slot_connected_cb, slot);
+        if (!slot->ext_slot) {
+            /*
+             * Unfortunately extension API requires passing RadioInstance to
+             * the extension. It was done before the single IRadio interface
+             * was split into multiple AIDL interfaces. And now it's unclear
+             * which instance to pass to the extension... Hopefully, the
+             * extention wouldn't need anything from the RadioInstance
+             * other than the binder device and the slot number.
+             */
+            slot->ext_slot = binder_ext_slot_new(slot->ext_plugin,
+                binder_slot_find_service(slot, RADIO_MODEM_INTERFACE)->
+                instance, slot->ext_params);
         }
 
-        /* binder_ext_slot_new just returns NULL if plugin is NULL */
-        slot->ext_slot = binder_ext_slot_new(slot->ext_plugin,
-            slot->instance[modem_index], slot->ext_params);
+        if (!slot->modem) {
+            BinderModem* modem;
 
-    } else if (binder_plugin_is_slot_client_connected(slot) && !need_client) {
-        DBG("Shutting down %s", slot->name);
-        binder_plugin_slot_shutdown(slot, TRUE);
+            DBG("%s registering modem", slot->name);
+            modem = binder_modem_create(&slot->clients, slot->name,
+                slot->path, slot->imei, slot->imeisv, &slot->config,
+                slot->ext_slot, io->radio, io->network, io->sim_card,
+                io->data, slot->sim_settings, io->cell_info);
+
+            if (modem) {
+                slot->modem = modem;
+            } else {
+                binder_slot_shutdown(slot, TRUE);
+            }
+        }
+    }
+
+    binder_plugin_check(slot->plugin);
+}
+
+static
+void
+binder_slot_shutdown(
+    BinderSlot* slot,
+    gboolean kill_io)
+{
+    if (slot->modem) {
+        DBG("%s unregistering modem", slot->name);
+        ofono_modem_remove(slot->modem->ofono);
+
+        /*
+         * The above call is expected to result in
+         * binder_plugin_slot_modem_changed getting
+         * called which will set slot->modem to NULL.
+         */
+        GASSERT(!slot->modem);
+    }
+
+    if (kill_io) {
+        if (slot->io) {
+            BinderSlotIo* io = slot->io;
+
+            slot->io = NULL;
+
+            ofono_slot_set_cell_info(slot->handle, NULL);
+            binder_network_set_radio_caps(io->network, NULL);
+            binder_data_allow(io->data, OFONO_SLOT_DATA_NONE);
+            binder_sim_card_remove_handler(io->sim_card,
+                io->sim_card_state_changed_id);
+            radio_client_remove_handler(slot->clients.modem_client,
+                io->modem_radio_state_changed_id);
+
+            binder_devmon_io_free(io->devmon_io);
+            ofono_cell_info_unref(io->cell_info);
+            binder_radio_caps_request_free(io->caps_req);
+            binder_radio_caps_drop(io->caps);
+            binder_data_unref(io->data);
+            binder_radio_unref(io->radio);
+            binder_network_unref(io->network);
+            binder_sim_card_unref(io->sim_card);
+            radio_request_drop(io->caps_check_req);
+            g_free(io);
+        }
+
+        if (slot->imei_req) {
+            radio_request_drop(slot->imei_req);
+            slot->imei_req = NULL;
+        }
+
+        binder_slot_foreach_service(slot, binder_service_disconnect);
+
+        /* BinderClients contains pointers, not refs. Just zero it */
+        memset(&slot->clients, 0, sizeof(slot->clients));
+
+        binder_ext_slot_drop(slot->ext_slot);
+        slot->ext_slot = NULL;
     }
 }
 
 static
-GUtilInts*
-binder_plugin_config_get_ints(
-    GKeyFile* file,
-    const char* group,
-    const char* key)
+gboolean
+binder_slot_start_timeout(
+    gpointer user_data)
 {
-    char* value = ofono_conf_get_string(file, group, key);
+    BinderSlot* slot = user_data;
+    BinderPlugin* plugin = slot->plugin;
 
-    if (value) {
-        GUtilIntArray *array = gutil_int_array_new();
-        char **values, **ptr;
+    DBG("%s", slot->name);
+    slot->start_timeout_id = 0;
 
-        /*
-         * Some people are thinking that # is a comment
-         * anywhere on the line, not just at the beginning
-         */
-        char *comment = strchr(value, '#');
-
-        if (comment) *comment = 0;
-        values = g_strsplit(value, ",", -1);
-        ptr = values;
-
-        while (*ptr) {
-            int val;
-
-            if (gutil_parse_int(*ptr++, 0, &val)) {
-                gutil_int_array_append(array, val);
-            }
-        }
-
-        g_free(value);
-        g_strfreev(values);
-        return gutil_int_array_free_to_ints(array);
+    /*
+     * If any slot times out and we still haven't seen IRadioConfig,
+     * then assume that we don't need it.
+     */
+    if (!(plugin->flags & BINDER_PLUGIN_SEEN_CONFIG_SERVICE)) {
+        plugin->flags &= ~BINDER_PLUGIN_NEED_CONFIG_SERVICE;
     }
-    return NULL;
+
+    /*
+     * This timer gets cancelled as soon as all clients are connected.
+     * If we are here then we have failed to connect. Remove ourselves
+     * from slot list.
+     */
+    GASSERT(!slot->handle);
+    plugin->slots = g_slist_remove(plugin->slots, slot);
+    binder_slot_free(slot);
+    binder_plugin_check(plugin);
+    return G_SOURCE_REMOVE;
+}
+
+static
+void
+binder_slot_start(
+    BinderSlot* slot)
+{
+    /* Start timeout for this slot */
+    slot->start_timeout_id = g_timeout_add(slot->start_timeout_ms,
+        binder_slot_start_timeout, slot);
+    binder_slot_foreach_service(slot, binder_service_start);
+    binder_slot_check(slot);
+}
+
+static
+void
+binder_slot_free(
+    BinderSlot* slot)
+{
+    BinderPlugin* plugin = slot->plugin;
+    GBinderServiceManager* sm = plugin->svcmgr;
+
+    guint i;
+
+    DBG("%s", slot->name);
+    binder_slot_shutdown(slot, TRUE);
+    binder_ext_plugin_unref(slot->ext_plugin);
+    plugin->slots = g_slist_remove(plugin->slots, slot);
+    ofono_watch_remove_all_handlers(slot->watch, slot->watch_event_id);
+    ofono_watch_unref(slot->watch);
+    ofono_slot_remove_all_handlers(slot->handle, slot->slot_event_id);
+    ofono_slot_unref(slot->handle);
+    for (i = 0; i < slot->n_services; i++) {
+        binder_service_destroy(slot->services + i, sm);
+    }
+    g_free(slot->services);
+    binder_devmon_free(slot->devmon);
+    binder_sim_settings_unref(slot->sim_settings);
+    gutil_ints_unref(slot->config.local_hangup_reasons);
+    gutil_ints_unref(slot->config.remote_hangup_reasons);
+    gutil_source_clear(&slot->start_timeout_id);
+    if (slot->ext_params) {
+        g_hash_table_unref(slot->ext_params);
+    }
+    g_free(slot->name);
+    g_free(slot->path);
+    g_free(slot->imei);
+    g_free(slot->imeisv);
+    g_free(slot);
+}
+
+/*==========================================================================*
+ * BinderPlugin
+ *==========================================================================*/
+
+static
+void
+binder_plugin_drop_orphan_slots(
+    BinderPlugin* plugin)
+{
+    GSList* l = plugin->slots;
+
+    while (l) {
+        GSList* next = l->next;
+        BinderSlot* slot = l->data;
+
+        if (!slot->handle) {
+            plugin->slots = g_slist_delete_link(plugin->slots, l);
+            binder_slot_free(slot);
+        }
+        l = next;
+    }
+}
+
+static
+void
+binder_plugin_manager_start_done(
+    gpointer user_data)
+{
+    BinderPlugin* plugin = user_data;
+
+    DBG("");
+    if (plugin->start_timeout_id) {
+        /* Startup was cancelled */
+        plugin->start_timeout_id = 0;
+        binder_plugin_drop_orphan_slots(plugin);
+    }
+}
+
+static
+void
+binder_plugin_slot_pick_shortest_timeout_cb(
+    BinderSlot* slot,
+    void* param)
+{
+    guint* timeout = param;
+
+    if (!(*timeout) || (*timeout) < slot->start_timeout_ms) {
+        (*timeout) = slot->start_timeout_ms;
+    }
 }
 
 static
@@ -1584,18 +1730,18 @@ binder_plugin_parse_spec_params(
 static
 BinderSlot*
 binder_plugin_create_slot(
-    GBinderServiceManager* sm,
+    BinderPlugin* plugin,
     const char* name,
     GKeyFile* file)
 {
+    const BinderPluginSettings* ps = &plugin->settings;
     BinderSlot* slot;
     BinderSlotConfig* config;
     BinderDataOptions* data_opt;
     BinderDataProfileConfig* dpc;
     GError* error = NULL;
     const char* group = name;
-    GUtilInts* ints;
-    char **strv;
+    char** strv;
     char* sval;
     int ival;
 
@@ -1623,8 +1769,8 @@ binder_plugin_create_slot(
         BINDER_DEFAULT_SLOT_NETWORK_MODE_TIMEOUT_MS;
     config->network_selection_timeout_ms =
         BINDER_DEFAULT_SLOT_NETWORK_SELECTION_TIMEOUT_MS;
-    config->signal_strength_dbm_weak = BINDER_DEFAULT_SLOT_DBM_WEAK;
-    config->signal_strength_dbm_strong = BINDER_DEFAULT_SLOT_DBM_STRONG;
+    config->prefer_lte_signal_strength =
+        BINDER_DEFAULT_SLOT_PREFER_LTE_SIGNAL_STRENGTH;
     config->empty_pin_query = BINDER_DEFAULT_SLOT_EMPTY_PIN_QUERY;
     config->radio_power_cycle = BINDER_DEFAULT_SLOT_RADIO_POWER_CYCLE;
     config->confirm_radio_power_on = BINDER_DEFAULT_SLOT_CONFIRM_RADIO_POWER_ON;
@@ -1644,7 +1790,7 @@ binder_plugin_create_slot(
     dpc->default_profile_id = BINDER_DEFAULT_SLOT_DATA_PROFILE_ID;
 
     slot->name = g_strdup(name);
-    slot->svcmgr = gbinder_servicemanager_ref(sm);
+    slot->plugin = plugin;
     slot->version = BINDER_DEFAULT_RADIO_INTERFACE;
     slot->req_timeout_ms = BINDER_DEFAULT_SLOT_REQ_TIMEOUT_MS;
     slot->slot_flags = BINDER_DEFAULT_SLOT_FLAGS;
@@ -1798,7 +1944,8 @@ binder_plugin_create_slot(
     }
 
     /* technologies */
-    strv = ofono_conf_get_strings(file, group, BINDER_CONF_SLOT_TECHNOLOGIES, ',');
+    strv = ofono_conf_get_strings(file, group,
+        BINDER_CONF_SLOT_TECHNOLOGIES, ',');
     if (strv) {
         char **p;
 
@@ -1837,7 +1984,7 @@ binder_plugin_create_slot(
     }
 
     /* limit technologies based on radioInterface */
-    if (slot->interface_type == RADIO_INTERFACE_TYPE_HIDL &&
+    if (ps->interface_type == RADIO_INTERFACE_TYPE_HIDL &&
         slot->version < RADIO_INTERFACE_1_4) {
         config->techs &= ~OFONO_RADIO_ACCESS_MODE_NR;
     }
@@ -1872,55 +2019,33 @@ binder_plugin_create_slot(
             config->replace_strange_oper ? "yes" : "no");
     }
 
-    /* signalStrengthRange */
-    ints = binder_plugin_config_get_ints(file, group,
-        BINDER_CONF_SLOT_SIGNAL_STRENGTH_RANGE);
-    if (gutil_ints_get_count(ints) == 2) {
-        const int* dbms = gutil_ints_get_data(ints, NULL);
-
-        /* MIN,MAX */
-        if (dbms[0] < dbms[1]) {
-            DBG("%s: " BINDER_CONF_SLOT_SIGNAL_STRENGTH_RANGE " [%d,%d]",
-                group, dbms[0], dbms[1]);
-            config->signal_strength_dbm_weak = dbms[0];
-            config->signal_strength_dbm_strong = dbms[1];
-        }
+    /* preferLteSignalStrength */
+    if (ofono_conf_get_boolean(file, group,
+        BINDER_CONF_SLOT_PREFER_LTE_SIGNAL_STRENGTH,
+        &config->prefer_lte_signal_strength)) {
+        DBG("%s: " BINDER_CONF_SLOT_PREFER_LTE_SIGNAL_STRENGTH " %s", group,
+            config->prefer_lte_signal_strength ? "yes" : "no");
     }
-    gutil_ints_unref(ints);
+
+    if (ps->interface_type == RADIO_INTERFACE_TYPE_HIDL) {
+        slot->n_services = 1;
+        slot->services = g_new0(BinderService, slot->n_services);
+        binder_service_init(slot->services, slot, "radio",
+            RADIO_AIDL_INTERFACE_NONE);
+    } else {
+        guint i = 0;
+
+        slot->n_services = BINDER_CLIENT_COUNT;
+        slot->services = g_new0(BinderService, slot->n_services);
+
+        #define BINDER_SERVICE_INIT(TYPE,type) \
+        binder_service_init(slot->services + (i++), slot, \
+            #type, RADIO_##TYPE##_INTERFACE);
+        BINDER_FOREACH_CLIENT(BINDER_SERVICE_INIT)
+        #undef BINDER_SERVICE_INIT
+    }
 
     return slot;
-}
-
-static
-void
-binder_plugin_slot_free(
-    BinderSlot* slot)
-{
-    BinderPlugin* plugin = slot->plugin;
-
-    DBG("%s", slot->name);
-    binder_plugin_slot_shutdown(slot, TRUE);
-    binder_ext_plugin_unref(slot->ext_plugin);
-    plugin->slots = g_slist_remove(plugin->slots, slot);
-    ofono_watch_remove_all_handlers(slot->watch, slot->watch_event_id);
-    ofono_watch_unref(slot->watch);
-    ofono_slot_remove_all_handlers(slot->handle, slot->slot_event_id);
-    ofono_slot_unref(slot->handle);
-    binder_devmon_free(slot->devmon);
-    binder_sim_settings_unref(slot->sim_settings);
-    gutil_ints_unref(slot->config.local_hangup_reasons);
-    gutil_ints_unref(slot->config.remote_hangup_reasons);
-    gbinder_servicemanager_remove_handler(slot->svcmgr, slot->radio_watch_id);
-    gbinder_servicemanager_cancel(slot->svcmgr, slot->list_call_id);
-    gbinder_servicemanager_unref(slot->svcmgr);
-    if (slot->ext_params) {
-        g_hash_table_unref(slot->ext_params);
-    }
-    g_free(slot->name);
-    g_free(slot->path);
-    g_free(slot->imei);
-    g_free(slot->imeisv);
-    g_free(slot);
 }
 
 static
@@ -1948,7 +2073,7 @@ binder_plugin_add_slot(
 
         if (delete_this_slot) {
             slots = g_slist_delete_link(slots, link);
-            binder_plugin_slot_free(slot);
+            binder_slot_free(slot);
         }
 
         link = next;
@@ -2162,6 +2287,10 @@ binder_plugin_parse_config_file(
         ps->interface_type = ival;
     }
 
+    /* Choose the binder API flavor */
+    plugin->api = (ps->interface_type == RADIO_INTERFACE_TYPE_AIDL) ?
+        &binder_api_aidl : &binder_api_hidl;
+
     /*
      * The way to stop the plugin from even trying to find any slots is
      * the IgnoreSlots entry containining '*' pattern in combination with
@@ -2181,7 +2310,7 @@ binder_plugin_parse_config_file(
                 const char* slot = *s;
 
                 list = binder_plugin_try_add_slot(list,
-                    binder_plugin_create_slot(sm, slot, file));
+                    binder_plugin_create_slot(plugin, slot, file));
                 slots = gutil_strv_remove_all(slots, slot);
             }
         }
@@ -2207,7 +2336,7 @@ binder_plugin_parse_config_file(
                         DBG("skipping %s", slot);
                     } else {
                         list = binder_plugin_try_add_slot(list,
-                            binder_plugin_create_slot(sm, slot, file));
+                            binder_plugin_create_slot(plugin, slot, file));
                     }
                 }
             }
@@ -2346,15 +2475,19 @@ binder_plugin_slot_modem_changed(
     struct ofono_watch* watch,
     void* user_data)
 {
-    BinderSlot *slot = user_data;
+    BinderSlot * slot = user_data;
 
     DBG("%s", slot->path);
     if (!watch->modem) {
+        BinderSlotIo* io = slot->io;
+
         GASSERT(slot->modem);
         slot->modem = NULL;
-        binder_data_allow(slot->data, OFONO_SLOT_DATA_NONE);
-        binder_radio_caps_request_free(slot->caps_req);
-        slot->caps_req = NULL;
+        if (io) {
+            binder_data_allow(io->data, OFONO_SLOT_DATA_NONE);
+            binder_radio_caps_request_free(io->caps_req);
+            io->caps_req = NULL;
+        }
     }
 }
 
@@ -2367,117 +2500,12 @@ binder_plugin_manager_start_timeout(
 
     DBG("");
     plugin->start_timeout_id = 0;
-
-    /*
-     * If we haven't seen IRadioConfig before startup timeout has expired
-     * then assume that we don't need it.
-     */
-    if (!(plugin->flags & BINDER_PLUGIN_HAVE_CONFIG_SERVICE)) {
-        plugin->flags &= ~BINDER_PLUGIN_NEED_CONFIG_SERVICE;
-    }
-
-    binder_plugin_foreach_slot(plugin, binder_plugin_slot_check_radio_client);
     binder_plugin_manager_started(plugin);
     return G_SOURCE_REMOVE;
 }
 
 static
-void
-binder_plugin_drop_orphan_slots(
-    BinderPlugin* plugin)
-{
-    GSList* l = plugin->slots;
-
-    while (l) {
-        GSList* next = l->next;
-        BinderSlot* slot = l->data;
-
-        if (!slot->handle) {
-            plugin->slots = g_slist_delete_link(plugin->slots, l);
-            binder_plugin_slot_free(slot);
-        }
-        l = next;
-    }
-}
-
-static
-void
-binder_plugin_manager_start_done(
-    gpointer user_data)
-{
-    BinderPlugin* plugin = user_data;
-
-    DBG("");
-    if (plugin->start_timeout_id) {
-        /* Startup was cancelled */
-        plugin->start_timeout_id = 0;
-        binder_plugin_drop_orphan_slots(plugin);
-    }
-}
-
-static
-void
-binder_plugin_slot_pick_shortest_timeout_cb(
-    BinderSlot* slot,
-    void* param)
-{
-    guint* timeout = param;
-
-    if (!(*timeout) || (*timeout) < slot->start_timeout_ms) {
-        (*timeout) = slot->start_timeout_ms;
-    }
-}
-
-static
-gboolean
-binder_plugin_slot_start_timeout(
-    gpointer user_data)
-{
-    BinderSlot* slot = user_data;
-    BinderPlugin* plugin = slot->plugin;
-
-    DBG("%s", slot->name);
-    slot->start_timeout_id = 0;
-
-    /*
-     * If any slot times out and we haven't seen IRadioConfig so far,
-     * then assume that we don't need it.
-     */
-    if (!(plugin->flags & BINDER_PLUGIN_HAVE_CONFIG_SERVICE)) {
-        plugin->flags &= ~BINDER_PLUGIN_NEED_CONFIG_SERVICE;
-    }
-    binder_plugin_foreach_slot(plugin, binder_plugin_slot_check_radio_client);
-    if (!binder_plugin_is_slot_client_connected(slot)) {
-        plugin->slots = g_slist_remove(plugin->slots, slot);
-        binder_plugin_slot_free(slot);
-    }
-    binder_plugin_check_if_started(plugin);
-    return G_SOURCE_REMOVE;
-}
-
-static
-void
-binder_logger_slot_start(
-    BinderSlot* slot)
-{
-    char* name = NULL;
-    if (slot->interface_type == RADIO_INTERFACE_TYPE_HIDL) {
-        name = g_strdup(binder_radio_ifaces[slot->version]);
-    } else if (slot->interface_type == RADIO_INTERFACE_TYPE_AIDL) {
-        name = g_strconcat(RADIO_MODEM, "/", slot->name, NULL);
-    }
-
-    /* Watch the radio service */
-    slot->radio_watch_id =
-        gbinder_servicemanager_add_registration_handler(slot->svcmgr,
-            name, binder_plugin_slot_service_registration_proc, slot);
-    g_free(name);
-
-    /* They could be already there */
-    binder_plugin_slot_check(slot);
-}
-
-static BinderPlugin*
+BinderPlugin*
 binder_plugin_slot_driver_init(
     struct ofono_slot_manager* sm)
 {
@@ -2562,18 +2590,12 @@ binder_plugin_slot_driver_init(
                 GUINT_TO_POINTER(slot->config.slot));
         }
 
-        slot->plugin = plugin;
-        slot->interface_type = plugin->settings.interface_type;
         slot->watch = ofono_watch_new(slot->path);
         slot->watch_event_id[WATCH_EVENT_MODEM] =
             ofono_watch_add_modem_changed_handler(slot->watch,
                 binder_plugin_slot_modem_changed, slot);
         slot->sim_settings = binder_sim_settings_new(slot->path,
             slot->config.techs);
-
-        /* Start timeout for this slot */
-        slot->start_timeout_id = g_timeout_add(slot->start_timeout_ms,
-            binder_plugin_slot_start_timeout, slot);
     }
 
     g_hash_table_unref(slot_paths);
@@ -2585,13 +2607,14 @@ binder_plugin_slot_driver_init(
 static
 void
 binder_plugin_slot_check_plugin_flags_cb(
-    BinderSlot* slot,
-    void* param)
+    BinderSlot* slot)
 {
-    BinderPlugin* plugin = param;
-
+    /*
+     * At startup, assume that we need IRadioConfig for IRadio 1.2
+     * and higher.
+     */
     if (slot->version >= RADIO_INTERFACE_1_2) {
-        plugin->flags |= BINDER_PLUGIN_NEED_CONFIG_SERVICE;
+        slot->plugin->flags |= BINDER_PLUGIN_NEED_CONFIG_SERVICE;
     }
 }
 
@@ -2622,33 +2645,16 @@ binder_plugin_slot_driver_start(
 
     DBG("start timeout %u ms id %u", start_timeout, plugin->start_timeout_id);
 
-    /*
-     * Keep and eye on IRadioConfig service. Note that we're watching
-     * IRadioConfig 1.0 even though it's of no use to us.
-     *
-     * But if IRadioConfig 1.0 is there and IRadioConfig 1.1 isn't,
-     * then there's no point in waiting for IRadioConfig 1.1.
-     *
-     * At startup, assume that we need IRadioConfig for IRadio 1.2
-     * and higher.
-     */
-    binder_plugin_foreach_slot_param(plugin,
-        binder_plugin_slot_check_plugin_flags_cb, plugin);
+    binder_plugin_foreach_slot(plugin,
+        binder_plugin_slot_check_plugin_flags_cb);
+    binder_plugin_foreach_slot(plugin, binder_slot_start);
 
-    if (ps->interface_type == RADIO_INTERFACE_TYPE_HIDL) {
-        plugin->radio_config_watch_id =
+    /* Try to connect IRadioClient and watch for it */
+    plugin->radio_config_watch_id =
         gbinder_servicemanager_add_registration_handler(plugin->svcmgr,
-            RADIO_CONFIG_1_0, binder_plugin_service_registration_proc, plugin);
-    } else if (ps->interface_type == RADIO_INTERFACE_TYPE_AIDL) {
-        plugin->radio_config_watch_id =
-        gbinder_servicemanager_add_registration_handler(plugin->svcmgr,
-            RADIO_CONFIG_AIDL_FQNAME,binder_plugin_service_registration_proc,
-            plugin);
-    }
-    binder_plugin_service_check(plugin);
-
-    /* And per-slot IRadio services too */
-    binder_plugin_foreach_slot(plugin, binder_logger_slot_start);
+            plugin->api->radio_config_watch_name,
+            binder_plugin_config_registration_proc, plugin);
+    binder_plugin_check_config_client(plugin);
 
     /* Return the timeout id that can be used for cancelling the startup */
     return plugin->start_timeout_id;
@@ -2662,8 +2668,7 @@ binder_plugin_slot_driver_cancel(
 {
     DBG("%u", id);
     GASSERT(plugin->start_timeout_id == id);
-    plugin->start_timeout_id = 0;
-    g_source_remove(id);
+    gutil_source_clear(&plugin->start_timeout_id);
 }
 
 static
@@ -2678,11 +2683,8 @@ binder_plugin_slot_driver_cleanup(
             binder_plugin_modules[i].cleanup();
         }
         GASSERT(!plugin->slots);
-        if (plugin->system_bus) {
-            g_object_unref(plugin->system_bus);
-        }
+        gutil_object_unref(plugin->system_bus);
         binder_plugin_drop_radio_config(plugin);
-        gbinder_servicemanager_cancel(plugin->svcmgr, plugin->list_call_id);
         gbinder_servicemanager_remove_handler(plugin->svcmgr,
             plugin->radio_config_watch_id);
         gbinder_servicemanager_unref(plugin->svcmgr);
@@ -2716,7 +2718,7 @@ binder_logger_trace_notify(
     binder_logger_module.level = (desc->flags & OFONO_DEBUG_FLAG_PRINT) ?
         GLOG_LEVEL_VERBOSE : GLOG_LEVEL_INHERIT;
     binder_radio_config_trace_update(plugin);
-    binder_plugin_foreach_slot(plugin, binder_logger_trace_update_slot);
+    binder_plugin_foreach_service(plugin, binder_service_update_trace_logger);
 }
 
 static
@@ -2726,7 +2728,7 @@ binder_logger_dump_notify(
 {
     BinderPlugin* plugin = ofono_slot_driver_get_data(binder_driver_reg);
 
-    binder_plugin_foreach_slot(plugin, binder_logger_dump_update_slot);
+    binder_plugin_foreach_service(plugin, binder_service_update_dump_logger);
     binder_radio_config_dump_update(plugin);
 }
 
@@ -2736,7 +2738,26 @@ binder_plugin_manager_started(
     BinderPlugin* plugin)
 {
     binder_plugin_drop_orphan_slots(plugin);
-    binder_plugin_check_data_manager(plugin);
+
+    /*
+     * If we haven't seen IRadioConfig during startup then assume
+     * that we don't need it.
+     */
+    if (!(plugin->flags & BINDER_PLUGIN_SEEN_CONFIG_SERVICE)) {
+        plugin->flags &= ~BINDER_PLUGIN_NEED_CONFIG_SERVICE;
+    }
+
+    /*
+     * If we haven't found any IRadioConfig (even 1.0) then still create
+     * the data manager.
+     */
+    if (!plugin->data_manager) {
+        const BinderPluginSettings* ps = &plugin->settings;
+
+        plugin->data_manager = binder_data_manager_new(NULL, ps->dm_flags,
+            ps->non_data_mode);
+    }
+
     binder_data_manager_check_data(plugin->data_manager);
     ofono_slot_driver_started(binder_driver_reg);
 }
@@ -2780,7 +2801,7 @@ binder_plugin_exit(void)
 {
     DBG("");
     binder_plugin_foreach_slot(ofono_slot_driver_get_data(binder_driver_reg),
-        binder_plugin_slot_free);
+        binder_slot_free);
     ofono_slot_driver_unregister(binder_driver_reg);
     binder_driver_reg = NULL;
 }

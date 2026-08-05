@@ -1,6 +1,7 @@
 /*
  *  oFono - Open Source Telephony - binder based adaptation
  *
+ *  Copyright (C) 2026 Jolla Mobile Ltd
  *  Copyright (C) 2021-2022 Jolla Ltd.
  *
  *  This program is free software; you can redistribute it and/or modify
@@ -219,19 +220,11 @@ binder_read_int32(
 const void*
 binder_read_hidl_struct1(
     const GBinderReader* reader,
-    gsize size);
+    gsize size)
+    BINDER_INTERNAL;
 
 #define binder_read_hidl_struct(reader,type) \
     ((const type*)binder_read_hidl_struct1(reader, sizeof(type)))
-
-const void*
-binder_read_parcelable(
-    const GBinderReader* reader,
-    gsize* out_size);
-
-gsize
-binder_read_parcelable_size(
-    GBinderReader* reader);
 
 char**
 binder_strv_from_hidl_string_vec(
@@ -247,6 +240,18 @@ gboolean
 binder_read_string16_parse_int(
     GBinderReader* reader,
     gint32* value)
+    BINDER_INTERNAL;
+
+gboolean
+binder_read_aidl_union_tag(
+    GBinderReader* reader,
+    gint32* tag)
+    BINDER_INTERNAL;
+
+void
+binder_append_aidl_union_tag(
+    GBinderWriter* writer,
+    int tag)
     BINDER_INTERNAL;
 
 guint
@@ -288,6 +293,76 @@ binder_append_hidl_string_with_parent(
 #define binder_append_hidl_string_data2(writer,ptr,field,index,off) \
     binder_append_hidl_string_with_parent(writer, &ptr->field, index, \
         (off) + ((guint8*)(&ptr->field) - (guint8*)ptr))
+
+/* HIDL/AIDL API callbacks */
+
+typedef
+const void*
+(*BinderReadByteArrayArg)(
+    GBinderReader* reader,
+    gsize* len);
+
+const void*
+binder_read_byte_array_hidl(
+    GBinderReader* reader,
+    gsize* len)
+    BINDER_INTERNAL;
+
+/* gbinder_reader_read_byte_array() matches BinderReadByteArrayArg */
+
+typedef
+const char*
+(*BinderReadStringArg)(
+    GBinderReader* reader,
+    char** alloc);
+
+const char*
+binder_read_string_arg_hidl(
+    GBinderReader* reader,
+    char** alloc)
+    BINDER_INTERNAL;
+
+const char*
+binder_read_string_arg_aidl(
+    GBinderReader* reader,
+    char** alloc)
+    BINDER_INTERNAL;
+
+typedef
+void
+(*BinderWriteStringArg)(
+    GBinderWriter* writer,
+    const char* arg);
+
+void
+binder_write_string_arg_hidl(
+    GBinderWriter* writer,
+    const char* arg)
+    BINDER_INTERNAL;
+
+void
+binder_write_string_arg_aidl(
+    GBinderWriter* writer,
+    const char* arg)
+    BINDER_INTERNAL;
+
+typedef
+void
+(*BinderTakeStringArg)(
+    GBinderWriter* writer,
+    char* arg);
+
+void
+binder_take_string_arg_hidl(
+    GBinderWriter* writer,
+    char* arg)
+    BINDER_INTERNAL;
+
+void
+binder_take_string_arg_aidl(
+    GBinderWriter* writer,
+    char* arg)
+    BINDER_INTERNAL;
 
 #endif /* BINDER_UTIL_H */
 

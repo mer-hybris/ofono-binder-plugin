@@ -1,6 +1,7 @@
 /*
  *  oFono - Open Source Telephony - binder based adaptation
  *
+ *  Copyright (C) 2026 Jolla Mobile Ltd
  *  Copyright (C) 2021-2022 Jolla Ltd.
  *
  *  This program is free software; you can redistribute it and/or modify
@@ -13,9 +14,9 @@
  *  GNU General Public License for more details.
  */
 
+#include "binder_ussd.h"
 #include "binder_log.h"
 #include "binder_modem.h"
-#include "binder_ussd.h"
 #include "binder_util.h"
 
 #include <ofono/ussd.h>
@@ -34,11 +35,13 @@
 #define USSD_REQUEST_TIMEOUT_MS (30 * SEC)
 #define USSD_CANCEL_TIMEOUT_MS (20 * SEC)
 
+typedef struct binder_call_ussd_api BinderUssdApi;
+
 typedef struct binder_ussd {
     struct ofono_ussd *ussd;
+    const BinderUssdApi* api;
     char* log_prefix;
     RadioClient* client;
-    RADIO_AIDL_INTERFACE interface_aidl;
     RadioRequest* send_req;
     RadioRequest* cancel_req;
     gulong event_id;
@@ -50,6 +53,18 @@ typedef struct binder_ussd_cbd {
     ofono_ussd_cb_t cb;
     gpointer data;
 } BinderUssdCbData;
+
+/* Binder API flavors */
+struct binder_call_ussd_api {
+    const char* name;
+    BinderReadStringArg read_string_arg;
+    BinderWriteStringArg write_string_arg;
+    RADIO_REQ send_ussd_req;
+    RADIO_REQ cancel_pending_ussd_req;
+    RADIO_IND on_ussd_ind;
+};
+static const BinderUssdApi binder_ussd_api_hidl;
+static const BinderUssdApi binder_ussd_api_aidl;
 
 #define DBG_(cd,fmt,args...) DBG("%s" fmt, (cd)->log_prefix, ##args)
 
@@ -97,20 +112,11 @@ binder_ussd_cancel_cb(
     radio_request_unref(self->cancel_req);
     self->cancel_req = NULL;
 
-    if (status == RADIO_TX_STATUS_OK) {
-        guint32 code = self->interface_aidl == RADIO_VOICE_INTERFACE ?
-            RADIO_VOICE_RESP_CANCEL_PENDING_USSD :
-            RADIO_RESP_CANCEL_PENDING_USSD;
-        if (resp == code) {
-            if (error != RADIO_ERROR_NONE) {
-                ofono_warn("Error cancelling USSD: %s",
-                    binder_radio_error_string(error));
-            }
-        } else {
-            ofono_error("Unexpected cancelPendingUssd response %d", resp);
-        }
-    } else {
-        ofono_warn("Failed to cancel USSD");
+    if (status != RADIO_TX_STATUS_OK) {
+        DBG_(self, "cancelPendingUssd tx failed");
+    } else if (error != RADIO_ERROR_NONE) {
+        ofono_warn("Error cancelling USSD: %s",
+            binder_radio_error_string(error));
     }
 
     /*
@@ -138,22 +144,14 @@ binder_ussd_send_cb(
     radio_request_unref(self->send_req);
     self->send_req = NULL;
 
-    if (status == RADIO_TX_STATUS_OK) {
-        guint32 code = self->interface_aidl == RADIO_VOICE_INTERFACE ?
-            RADIO_VOICE_RESP_SEND_USSD : RADIO_RESP_SEND_USSD;
-        if (resp == code) {
-            if (error == RADIO_ERROR_NONE) {
-                cbd->cb(binder_error_ok(&err), cbd->data);
-                return;
-            } else {
-                ofono_warn("Error sending USSD: %s",
-                    binder_radio_error_string(error));
-            }
-        } else {
-            ofono_error("Unexpected sendUssd response %d", resp);
-        }
+    if (status != RADIO_TX_STATUS_OK) {
+        DBG_(self, "sendUssd tx failed");
+    } else if (error != RADIO_ERROR_NONE) {
+        ofono_warn("Error sending USSD: %s",
+            binder_radio_error_string(error));
     } else {
-        ofono_warn("Failed to send USSD");
+        cbd->cb(binder_error_ok(&err), cbd->data);
+        return;
     }
     cbd->cb(binder_error_failure(&err), cbd->data);
 }
@@ -179,22 +177,22 @@ binder_ussd_request(
 
     if (text) {
         /* sendUssd(int32 serial, string ussd); */
-        GBinderWriter writer;
-        guint32 code = self->interface_aidl == RADIO_VOICE_INTERFACE ?
-            RADIO_VOICE_REQ_SEND_USSD : RADIO_REQ_SEND_USSD;
+        const BinderUssdApi* api = self->api;
+        GBinderWriter args;
         RadioRequest* req = radio_request_new(self->client,
-            code, &writer,
+            api->send_ussd_req, &args,
             binder_ussd_send_cb, binder_ussd_cbd_free,
             binder_ussd_cbd_new(self, cb, data));
 
-        if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
-            gbinder_writer_append_hidl_string(&writer, text);
-        } else {
-            gbinder_writer_append_string16(&writer, text);
-        }
-        /* USSD text will be deallocated together with the request */
-        gbinder_writer_add_cleanup(&writer, (GDestroyNotify)
-            ofono_ussd_decode_free, text);
+        /*
+         * IRadio.hal:
+         * oneway sendUssd(int32_t serial, string ussd);
+         *
+         * IRadioVoice.aidl:
+         * void sendUssd(in int serial, in String ussd);
+         */
+        api->write_string_arg(&args, text);
+        ofono_ussd_decode_free(text);
 
         radio_request_set_timeout(req, USSD_REQUEST_TIMEOUT_MS);
         if (radio_request_submit(req)) {
@@ -218,25 +216,19 @@ binder_ussd_cancel(
     void* data)
 {
     BinderUssd* self = binder_ussd_get_data(ussd);
+    RadioRequest* req = radio_request_new(self->client,
+        self->api->cancel_pending_ussd_req, NULL,
+        binder_ussd_cancel_cb, binder_ussd_cbd_free,
+        binder_ussd_cbd_new(self, cb, data));
 
     ofono_info("sending ussd cancel");
     GASSERT(!self->cancel_req);
     radio_request_drop(self->cancel_req);
 
-    /* cancelPendingUssd(int32 serial); */
-    guint32 code = self->interface_aidl == RADIO_VOICE_INTERFACE ?
-        RADIO_VOICE_REQ_CANCEL_PENDING_USSD : RADIO_REQ_CANCEL_PENDING_USSD;
-    self->cancel_req = radio_request_new(self->client,
-        code, NULL,
-        binder_ussd_cancel_cb, binder_ussd_cbd_free,
-        binder_ussd_cbd_new(self, cb, data));
-
-    radio_request_set_timeout(self->cancel_req, USSD_CANCEL_TIMEOUT_MS);
-    if (!radio_request_submit(self->cancel_req)) {
+    radio_request_set_timeout(req, USSD_CANCEL_TIMEOUT_MS);
+    if (!(self->cancel_req = radio_request_try_submit(req))) {
         struct ofono_error err;
 
-        radio_request_unref(self->cancel_req);
-        self->cancel_req = NULL;
         cb(binder_error_failure(&err), data);
     }
 }
@@ -256,16 +248,10 @@ binder_ussd_notify(
     ofono_info("ussd received");
 
     /* onUssd(RadioIndicationType, UssdModeType modeType, string msg); */
-    GASSERT(code == (self->interface_aidl == RADIO_VOICE_INTERFACE ?
-        RADIO_VOICE_IND_ON_USSD : RADIO_IND_ON_USSD));
     gbinder_reader_copy(&reader, args);
     if (gbinder_reader_read_int32(&reader, &type)) {
-        char* msg;
-        if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
-            msg = gbinder_reader_read_hidl_string(&reader);
-        } else {
-            msg = gbinder_reader_read_string16(&reader);
-        }
+        char* tmp = NULL;
+        const char* msg = self->api->read_string_arg(&reader, &tmp);
 
         if (msg && msg[0]) {
             const int len = (int) strlen(msg);
@@ -296,7 +282,7 @@ binder_ussd_notify(
             ofono_ussd_notify(self->ussd, type, 0, NULL, 0);
         }
 
-        g_free(msg);
+        g_free(tmp);
     }
 }
 
@@ -314,13 +300,8 @@ binder_ussd_register(
     ofono_ussd_register(self->ussd);
 
     /* Register for USSD events */
-    if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
-        self->event_id = radio_client_add_indication_handler(self->client,
-            RADIO_IND_ON_USSD, binder_ussd_notify, self);
-    } else {
-        self->event_id = radio_client_add_indication_handler(self->client,
-            RADIO_VOICE_IND_ON_USSD, binder_ussd_notify, self);
-    }
+    self->event_id = radio_client_add_indication_handler(self->client,
+        self->api->on_ussd_ind, binder_ussd_notify, self);
 
     return G_SOURCE_REMOVE;
 }
@@ -334,14 +315,17 @@ binder_ussd_probe(
 {
     BinderModem* modem = binder_modem_get_data(data);
     BinderUssd* self = g_new0(BinderUssd, 1);
+    RadioClient* voice_client = modem->clients.voice_client;
+    const BinderUssdApi* api = radio_client_aidl_interface(voice_client) ==
+        RADIO_VOICE_INTERFACE ? &binder_ussd_api_aidl : &binder_ussd_api_hidl;
 
     self->ussd = ussd;
-    self->client = radio_client_ref(modem->voice_client);
-    self->interface_aidl = radio_client_aidl_interface(modem->voice_client);
+    self->api = api;
+    self->client = radio_client_ref(voice_client);
     self->log_prefix = binder_dup_prefix(modem->log_prefix);
     self->register_id = g_idle_add(binder_ussd_register, self);
 
-    DBG_(self, "");
+    DBG_(self, "%s api", api->name);
     ofono_ussd_set_data(ussd, self);
     return 0;
 }
@@ -355,10 +339,7 @@ binder_ussd_remove(
 
     DBG_(self, "");
 
-    if (self->register_id) {
-        g_source_remove(self->register_id);
-    }
-
+    gutil_source_remove(self->register_id);
     radio_request_drop(self->send_req);
     radio_request_drop(self->cancel_req);
     radio_client_remove_handler(self->client, self->event_id);
@@ -369,6 +350,32 @@ binder_ussd_remove(
 
     ofono_ussd_set_data(ussd, NULL);
 }
+
+/*==========================================================================*
+ * HIDL API flavor
+ *==========================================================================*/
+
+static const BinderUssdApi binder_ussd_api_hidl = {
+    "hidl",
+    binder_read_string_arg_hidl,
+    binder_write_string_arg_hidl,
+    RADIO_REQ_SEND_USSD,
+    RADIO_REQ_CANCEL_PENDING_USSD,
+    RADIO_IND_ON_USSD
+};
+
+/*==========================================================================*
+ * AIDL API flavor
+ *==========================================================================*/
+
+static const BinderUssdApi binder_ussd_api_aidl = {
+    "aidl",
+    binder_read_string_arg_aidl,
+    binder_write_string_arg_aidl,
+    RADIO_VOICE_REQ_SEND_USSD,
+    RADIO_VOICE_REQ_CANCEL_PENDING_USSD,
+    RADIO_VOICE_IND_ON_USSD
+};
 
 /*==========================================================================*
  * API

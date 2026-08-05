@@ -1,6 +1,7 @@
 /*
  *  oFono - Open Source Telephony - binder based adaptation
  *
+ *  Copyright (C) 2026 Jolla Mobile Ltd
  *  Copyright (C) 2021-2022 Jolla Ltd.
  *
  *  This program is free software; you can redistribute it and/or modify
@@ -29,10 +30,14 @@
 #include <gbinder_reader.h>
 #include <gbinder_writer.h>
 
+#include <gutil_misc.h>
+
+typedef struct binder_call_volume_api BinderCallVolumeApi;
+
 typedef struct binder_call_volume {
     struct ofono_call_volume* v;
+    const BinderCallVolumeApi* api;
     RadioRequestGroup* g;
-    RADIO_AIDL_INTERFACE interface_aidl;
     char* log_prefix;
     guint register_id;
 } BinderCallVolume;
@@ -44,6 +49,15 @@ typedef struct binder_call_volume_req {
 } BinderCallVolumeCbData;
 
 #define DBG_(cd,fmt,args...) DBG("%s" fmt, (cd)->log_prefix, ##args)
+
+struct binder_call_volume_api {
+    const char* name;
+    RADIO_REQ get_mute_req;
+    RADIO_REQ set_mute_req;
+};
+
+static const BinderCallVolumeApi binder_call_volume_api_hidl;
+static const BinderCallVolumeApi binder_call_volume_api_aidl;
 
 static inline BinderCallVolume*
 binder_call_volume_get_data(struct ofono_call_volume* v)
@@ -86,19 +100,14 @@ binder_call_volume_mute_cb(
     const BinderCallVolumeCbData* cbd = user_data;
     ofono_call_volume_cb_t cb = cbd->cb;
 
-    if (status == RADIO_TX_STATUS_OK) {
-        guint32 code = cbd->self->interface_aidl == RADIO_VOICE_INTERFACE ?
-            RADIO_VOICE_RESP_SET_MUTE : RADIO_RESP_SET_MUTE;
-        if (resp == code) {
-            if (error == RADIO_ERROR_NONE) {
-                cb(binder_error_ok(&err), cbd->data);
-                return;
-            } else {
-                ofono_warn("Could not set the mute state, error %d", error);
-            }
-        } else {
-            ofono_error("Unexpected setMute response %d", resp);
-        }
+    if (status != RADIO_TX_STATUS_OK) {
+        DBG_(cbd->self, "setMute tx failed");
+    } else if (error != RADIO_ERROR_NONE) {
+        ofono_warn("Could not set the mute state, error %s",
+            binder_radio_error_string(error));
+    } else {
+        cb(binder_error_ok(&err), cbd->data);
+        return;
     }
     cb(binder_error_failure(&err), cbd->data);
 }
@@ -112,19 +121,23 @@ binder_call_volume_mute(
     void* data)
 {
     BinderCallVolume* self = binder_call_volume_get_data(v);
-    guint32 code = self->interface_aidl == RADIO_VOICE_INTERFACE ?
-        RADIO_VOICE_REQ_SET_MUTE : RADIO_REQ_SET_MUTE;
-
-    /* setMute(int32_t serial, bool enable); */
     GBinderWriter writer;
     RadioRequest* req = radio_request_new2(self->g,
-        code, &writer,
+        self->api->set_mute_req, &writer,
         binder_call_volume_mute_cb,
         binder_call_volume_callback_data_free,
         binder_call_volume_callback_data_new(self, cb, data));
 
     DBG_(self, "%d", muted);
-    gbinder_writer_append_bool(&writer, muted);  /* enabled */
+
+    /*
+     * IRadio.hal:
+     * oneway setMute(int32_t serial, bool enable);
+     *
+     * IRadioVoice.aidl:
+     * void setMute(in int serial, in boolean enable);
+     */
+    gbinder_writer_append_bool(&writer, muted); /* enable */
 
     radio_request_submit(req);
     radio_request_unref(req);
@@ -141,27 +154,29 @@ binder_call_volume_query_mute_cb(
     void* user_data)
 {
     const BinderCallVolume* self = user_data;
-    if (status == RADIO_TX_STATUS_OK) {
-        guint32 code = self->interface_aidl == RADIO_VOICE_INTERFACE ?
-            RADIO_VOICE_RESP_GET_MUTE : RADIO_RESP_GET_MUTE;
-        if (resp == code) {
-            if (error == RADIO_ERROR_NONE) {
-                GBinderReader reader;
-                gboolean muted;
 
-                /* getMuteResponse(RadioResponseInfo info, bool enable); */
-                gbinder_reader_copy(&reader, args);
-                if (gbinder_reader_read_bool(&reader, &muted)) {
-                    BinderCallVolume* self = user_data;
+    if (status != RADIO_TX_STATUS_OK) {
+        DBG_(self, "getMute tx failed");
+    } else if (error != RADIO_ERROR_NONE) {
+        ofono_warn("Could not get the mute state, error %s",
+            binder_radio_error_string(error));
+    } else {
+        GBinderReader reader;
+        gboolean muted;
 
-                    DBG_(self, "%d", muted);
-                    ofono_call_volume_set_muted(self->v, muted);
-                }
-            } else {
-                ofono_warn("Could not get the mute state, error %d", error);
-            }
-        } else {
-            ofono_error("Unexpected getMute response %d", resp);
+        /*
+         * IRadioResponse.hal:
+         * oneway getMuteResponse(RadioResponseInfo info, bool enable);
+         *
+         * IRadioVoiceResponse.aidl:
+         * void getMuteResponse(in RadioResponseInfo info, in boolean enable);
+         */
+        gbinder_reader_copy(&reader, args);
+        if (gbinder_reader_read_bool(&reader, &muted)) {
+            BinderCallVolume* self = user_data;
+
+            DBG_(self, "%d", muted);
+            ofono_call_volume_set_muted(self->v, muted);
         }
     }
 }
@@ -172,8 +187,6 @@ binder_call_volume_register(
     gpointer user_data)
 {
     BinderCallVolume* self = user_data;
-    guint32 code = self->interface_aidl == RADIO_VOICE_INTERFACE ?
-        RADIO_VOICE_REQ_GET_MUTE : RADIO_REQ_GET_MUTE;
 
     DBG_(self, "");
     GASSERT(self->register_id);
@@ -181,7 +194,7 @@ binder_call_volume_register(
     ofono_call_volume_register(self->v);
 
     /* Probe the mute state */
-    binder_submit_request2(self->g, code,
+    binder_submit_request2(self->g, self->api->get_mute_req,
         binder_call_volume_query_mute_cb, NULL, self);
 
     return G_SOURCE_REMOVE;
@@ -196,14 +209,18 @@ binder_call_volume_probe(
 {
     BinderModem* modem = binder_modem_get_data(data);
     BinderCallVolume* self = g_new0(BinderCallVolume, 1);
+    RadioClient* voice_client = modem->clients.voice_client;
+    const BinderCallVolumeApi* api =
+        radio_client_aidl_interface(voice_client) == RADIO_VOICE_INTERFACE ?
+        &binder_call_volume_api_aidl : &binder_call_volume_api_hidl;
 
     self->v = v;
-    self->g = radio_request_group_new(modem->voice_client);
-    self->interface_aidl = radio_client_aidl_interface(modem->voice_client);
+    self->api = api;
+    self->g = radio_request_group_new(voice_client);
     self->log_prefix = binder_dup_prefix(modem->log_prefix);
     self->register_id = g_idle_add(binder_call_volume_register, self);
 
-    DBG_(self, "");
+    DBG_(self, "%s api", api->name);
     ofono_call_volume_set_data(v, self);
     return 0;
 }
@@ -216,9 +233,7 @@ binder_call_volume_remove(
     BinderCallVolume* self = binder_call_volume_get_data(v);
 
     DBG_(self, "");
-    if (self->register_id) {
-        g_source_remove(self->register_id);
-    }
+    gutil_source_remove(self->register_id);
     radio_request_group_cancel(self->g);
     radio_request_group_unref(self->g);
     g_free(self->log_prefix);
@@ -226,6 +241,26 @@ binder_call_volume_remove(
 
     ofono_call_volume_set_data(v, NULL);
 }
+
+/*==========================================================================*
+ * HIDL API flavor
+ *==========================================================================*/
+
+static const BinderCallVolumeApi binder_call_volume_api_hidl = {
+    "hidl",
+    RADIO_REQ_GET_MUTE,
+    RADIO_REQ_SET_MUTE
+};
+
+/*==========================================================================*
+ * AIDL API flavor
+ *==========================================================================*/
+
+static const BinderCallVolumeApi binder_call_volume_api_aidl = {
+    "aidl",
+    RADIO_VOICE_REQ_GET_MUTE,
+    RADIO_VOICE_REQ_SET_MUTE
+};
 
 /*==========================================================================*
  * API

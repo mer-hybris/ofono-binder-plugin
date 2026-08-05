@@ -1,6 +1,7 @@
 /*
  *  oFono - Open Source Telephony - binder based adaptation
  *
+ *  Copyright (C) 2026 Jolla Mobile Ltd
  *  Copyright (C) 2021-2022 Jolla Ltd.
  *
  *  This program is free software; you can redistribute it and/or modify
@@ -15,8 +16,7 @@
 
 #include "binder_devmon.h"
 #include "binder_log.h"
-
-#include <ofono/log.h>
+#include "binder_util.h"
 
 #include <mce_battery.h>
 #include <mce_charger.h>
@@ -48,6 +48,12 @@ enum binder_devmon_if_display_event {
     DISPLAY_EVENT_COUNT
 };
 
+typedef struct binder_devmon_if_api {
+    const char* name;
+    RADIO_REQ set_indication_filter_req;
+    RADIO_IND_FILTER ind_filter_all;
+} DevMonApi;
+
 typedef struct binder_devmon_if {
     BinderDevmon pub;
     MceBattery* battery;
@@ -60,10 +66,11 @@ typedef struct binder_devmon_if {
 typedef struct binder_devmon_if_io {
     BinderDevmonIo pub;
     struct ofono_slot* slot;
+    const DevMonApi* api;
     MceBattery* battery;
     MceCharger* charger;
     MceDisplay* display;
-    RadioClient* client;
+    RadioClient* network_client;
     RadioRequest* req;
     gboolean display_on;
     gboolean ind_filter_supported;
@@ -74,8 +81,40 @@ typedef struct binder_devmon_if_io {
     int cell_info_interval_long_ms;
 } DevMonIo;
 
+/* Binder API flavors */
+static const DevMonApi binder_devmon_if_api_hidl = {
+    "hidl",
+    RADIO_REQ_SET_INDICATION_FILTER,
+    RADIO_IND_FILTER_ALL
+};
+
+static const DevMonApi binder_devmon_if_api_hidl_1_2 = {
+    "hidl_1_2",
+    RADIO_REQ_SET_INDICATION_FILTER_1_2,
+    RADIO_IND_FILTER_ALL_1_2
+};
+
+static const DevMonApi binder_devmon_if_api_hidl_1_5 = {
+    "hidl_1_5",
+    RADIO_REQ_SET_INDICATION_FILTER_1_5,
+    RADIO_IND_FILTER_ALL_1_5
+};
+
+static const DevMonApi binder_devmon_if_api_aidl = {
+    "aidl",
+    RADIO_NETWORK_REQ_SET_INDICATION_FILTER,
+    /* Some devices don't like setting all filters */
+    RADIO_IND_FILTER_SIGNAL_STRENGTH |
+    RADIO_IND_FILTER_FULL_NETWORK_STATE |
+    RADIO_IND_FILTER_DATA_CALL_DORMANCY |
+    RADIO_IND_FILTER_LINK_CAPACITY_ESTIMATE |
+    RADIO_IND_FILTER_PHYSICAL_CHANNEL_CONFIG |
+    RADIO_IND_FILTER_REGISTRATION_FAILURE |
+    RADIO_IND_FILTER_BARRING_INFO
+};
+
 #define DBG_(self,fmt,args...) \
-    DBG("%s: " fmt, radio_client_slot((self)->client), ##args)
+    DBG("%s: " fmt, radio_client_slot((self)->network_client), ##args)
 
 inline static DevMon* binder_devmon_if_cast(BinderDevmon* pub)
     { return G_CAST(pub, DevMon, pub); }
@@ -108,22 +147,15 @@ binder_devmon_if_io_indication_filter_sent(
     radio_request_unref(self->req);
     self->req = NULL;
 
-    if (status == RADIO_TX_STATUS_OK) {
-        const RADIO_AIDL_INTERFACE iface_aidl =
-            radio_client_aidl_interface(self->client);
-        guint32 code = iface_aidl == RADIO_NETWORK_INTERFACE ?
-            RADIO_NETWORK_RESP_SET_INDICATION_FILTER :
-            RADIO_RESP_SET_INDICATION_FILTER;
-
-        if (resp == code) {
-            if (error == RADIO_ERROR_REQUEST_NOT_SUPPORTED) {
-                /* This is a permanent failure */
-                DBG_(self, "Indication response filter is not supported");
-                self->ind_filter_supported = FALSE;
-            }
-        } else {
-            ofono_error("Unexpected setIndicationFilter response %d", resp);
-        }
+    if (status != RADIO_TX_STATUS_OK) {
+        DBG_(self, "setIndicationFilter tx failed");
+    } else if (error == RADIO_ERROR_REQUEST_NOT_SUPPORTED) {
+        /* This is a permanent failure */
+        DBG_(self, "Indication response filter is not supported");
+        self->ind_filter_supported = FALSE;
+    } else if (error != RADIO_ERROR_NONE) {
+        DBG_(self, "setIndicationFilter error %s",
+             binder_radio_error_string(error));
     }
 }
 
@@ -134,59 +166,31 @@ binder_devmon_if_io_set_indication_filter(
 {
     if (self->ind_filter_supported) {
         GBinderWriter args;
-        RADIO_REQ code;
-        gint32 value;
-        const RADIO_AIDL_INTERFACE iface_aidl =
-            radio_client_aidl_interface(self->client);
-
-        if (iface_aidl == RADIO_AIDL_INTERFACE_NONE) {
-            /*
-             * Both requests take the same args:
-             *
-             * setIndicationFilter(serial, bitfield<IndicationFilter>)
-             * setIndicationFilter_1_2(serial, bitfield<IndicationFilter>)
-             *
-             * and both produce IRadioResponse.setIndicationFilterResponse()
-             *
-             * However setIndicationFilter_1_2 comments says "If unset, defaults
-             * to @1.2::IndicationFilter:ALL" and it's unclear what "unset" means
-             * wrt a bitmask. How is "unset" different from NONE which is zero.
-             * To be on the safe side, let's always set the most innocently
-             * looking bit which I think is DATA_CALL_DORMANCY.
-             */
-            if (radio_client_interface(self->client) < RADIO_INTERFACE_1_2) {
-                code = RADIO_REQ_SET_INDICATION_FILTER;
-                value = self->display_on ? RADIO_IND_FILTER_ALL :
-                    RADIO_IND_FILTER_DATA_CALL_DORMANCY;
-            } else if (radio_client_interface(self->client) < RADIO_INTERFACE_1_5) {
-                code = RADIO_REQ_SET_INDICATION_FILTER_1_2;
-                value = self->display_on ? RADIO_IND_FILTER_ALL_1_2 :
-                    RADIO_IND_FILTER_DATA_CALL_DORMANCY;
-            } else {
-                code = RADIO_REQ_SET_INDICATION_FILTER_1_5;
-                value = self->display_on ? RADIO_IND_FILTER_ALL_1_5 :
-                    RADIO_IND_FILTER_DATA_CALL_DORMANCY;
-            }
-        } else {
-            code = RADIO_NETWORK_REQ_SET_INDICATION_FILTER;
-            /* Some devices don't like setting all filters */
-            value = self->display_on ?
-                RADIO_IND_FILTER_SIGNAL_STRENGTH |
-                    RADIO_IND_FILTER_FULL_NETWORK_STATE |
-                    RADIO_IND_FILTER_DATA_CALL_DORMANCY |
-                    RADIO_IND_FILTER_LINK_CAPACITY_ESTIMATE |
-                    RADIO_IND_FILTER_PHYSICAL_CHANNEL_CONFIG |
-                    RADIO_IND_FILTER_REGISTRATION_FAILURE |
-                    RADIO_IND_FILTER_BARRING_INFO :
-                RADIO_IND_FILTER_DATA_CALL_DORMANCY;
-        }
-
-        radio_request_drop(self->req);
-        self->req = radio_request_new(self->client, code, &args,
+        const DevMonApi* api = self->api;
+        RadioRequest* req = radio_request_new(self->network_client,
+            api->set_indication_filter_req, &args,
             binder_devmon_if_io_indication_filter_sent, NULL, self);
-        gbinder_writer_append_int32(&args, value);
-        DBG_(self, "Setting indication filter: 0x%02x", value);
-        radio_request_submit(self->req);
+
+        /*
+         * 1.0/IRadio.hal:
+         * oneway setIndicationFilter(int32_t serial,
+         *     bitfield<IndicationFilter> indicationFilter);
+         *
+         * 1.2/IRadio.hal:
+         * oneway setIndicationFilter_1_2(int32_t serial,
+         *     bitfield<IndicationFilter> indicationFilter);
+         *
+         * 1.5/IRadio.hal:
+         * oneway setIndicationFilter_1_5(int32_t serial,
+         *     bitfield<IndicationFilter> indicationFilter);
+         *
+         * IRadioNetwork.aidl:
+         * void setIndicationFilter(in int serial, in int indicationFilter);
+         */
+        DBG_(self, "Setting indication filter: 0x%02x", api->ind_filter_all);
+        gbinder_writer_append_int32(&args, api->ind_filter_all);
+        radio_request_drop(self->req);
+        self->req = radio_request_try_submit(req);
     }
 }
 
@@ -252,7 +256,7 @@ binder_devmon_if_io_free(
     mce_display_unref(self->display);
 
     radio_request_drop(self->req);
-    radio_client_unref(self->client);
+    radio_client_unref(self->network_client);
 
     ofono_slot_drop_cell_info_requests(self->slot, self);
     ofono_slot_unref(self->slot);
@@ -263,17 +267,25 @@ static
 BinderDevmonIo*
 binder_devmon_if_start_io(
     BinderDevmon* devmon,
-    RadioClient* ds_client,
-    RadioClient* if_client,
+    BinderClients* clients,
     struct ofono_slot* slot)
 {
     DevMon* impl = binder_devmon_if_cast(devmon);
     DevMonIo* self = g_new0(DevMonIo, 1);
+    RadioClient* network_client = clients->network_client;
+    RADIO_AIDL_INTERFACE aidl = radio_client_aidl_interface(network_client);
+    RADIO_INTERFACE hidl = radio_client_interface(network_client);
+    const DevMonApi* api =
+        (aidl == RADIO_NETWORK_INTERFACE) ? &binder_devmon_if_api_aidl :
+        (hidl >= RADIO_INTERFACE_1_5) ? &binder_devmon_if_api_hidl_1_5 :
+        (hidl >= RADIO_INTERFACE_1_2) ? &binder_devmon_if_api_hidl_1_2 :
+        &binder_devmon_if_api_hidl;
 
     self->pub.free = binder_devmon_if_io_free;
     self->ind_filter_supported = TRUE;
-    self->client = radio_client_ref(if_client);
     self->slot = ofono_slot_ref(slot);
+    self->network_client = radio_client_ref(network_client);
+    self->api = api;
 
     self->battery = mce_battery_ref(impl->battery);
     self->battery_event_id[BATTERY_EVENT_VALID] =

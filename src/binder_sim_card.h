@@ -1,6 +1,7 @@
 /*
  *  oFono - Open Source Telephony - binder based adaptation
  *
+ *  Copyright (C) 2026 Jolla Mobile Ltd
  *  Copyright (C) 2021-2022 Jolla Ltd.
  *
  *  This program is free software; you can redistribute it and/or modify
@@ -156,6 +157,9 @@ static inline const char* binder_sim_card_app_aid(BinderSimCard* card)
 
 #define binder_sim_card_remove_all_handlers(net, ids) \
 	binder_sim_card_remove_handlers(net, ids, G_N_ELEMENTS(ids))
+
+#define binder_sim_card_clear_handler(net, id_ptr) \
+	binder_sim_card_remove_handlers(net, id_ptr, 1)
 
 #endif /* BINDER_SIM_CARD_H */
 

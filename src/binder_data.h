@@ -1,6 +1,7 @@
 /*
  *  oFono - Open Source Telephony - binder based adaptation
  *
+ *  Copyright (C) 2026 Jolla Mobile Ltd
  *  Copyright (C) 2021-2022 Jolla Ltd.
  *
  *  This program is free software; you can redistribute it and/or modify
@@ -131,13 +132,13 @@ binder_data_manager_need_set_data_allowed(
 BinderData*
 binder_data_new(
     BinderDataManager* dm,
-    RadioClient* client,
-    RadioClient* network_client,
+    BinderClients* clients,
     const char* name,
     BinderRadio* radio,
     BinderNetwork* network,
     const BinderDataOptions* options,
-    const BinderSlotConfig* config)
+    const BinderSlotConfig* config,
+    struct ofono_slot* slot)
     BINDER_INTERNAL;
 
 BinderData*
@@ -239,7 +240,7 @@ binder_data_call_find(
 
 RadioRequest*
 binder_data_deactivate_data_call_request_new(
-    RadioRequestGroup* group,
+    BinderData* data,
     int cid,
     RadioRequestCompleteFunc complete,
     GDestroyNotify destroy,
@@ -248,7 +249,7 @@ binder_data_deactivate_data_call_request_new(
 
 RadioRequest*
 binder_data_set_data_allowed_request_new(
-    RadioRequestGroup* group,
+    BinderData* data,
     gboolean allow,
     RadioRequestCompleteFunc complete,
     GDestroyNotify destroy,

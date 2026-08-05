@@ -1,6 +1,7 @@
 /*
  *  oFono - Open Source Telephony - binder based adaptation
  *
+ *  Copyright (C) 2026 Jolla Mobile Ltd
  *  Copyright (C) 2021-2022 Jolla Ltd.
  *
  *  This program is free software; you can redistribute it and/or modify
@@ -29,10 +30,14 @@
 #include <gbinder_reader.h>
 #include <gbinder_writer.h>
 
+#include <gutil_misc.h>
+
+typedef struct binder_call_forwarding_api BinderCallForwardingApi;
+
 typedef struct binder_call_forwarding {
     struct ofono_call_forwarding* f;
+    const BinderCallForwardingApi* api;
     RadioRequestGroup* g;
-    RADIO_AIDL_INTERFACE interface_aidl;
     char* log_prefix;
     guint register_id;
 } BinderCallForwarding;
@@ -50,6 +55,26 @@ typedef struct binder_call_forwarding_cbd {
 #define CF_TIME_DEFAULT (0)
 
 #define DBG_(self,fmt,args...) DBG("%s" fmt, (self)->log_prefix, ##args)
+
+/* Binder API flavors */
+struct binder_call_forwarding_api {
+    const char* name;
+    RADIO_REQ get_call_forward_status_req;
+    RADIO_REQ set_call_forward_req;
+    void (*write_call_forward_info_arg)(
+        GBinderWriter* writer,
+        RADIO_CALL_FORWARD action,
+        int reason,
+        int cls,
+        const struct ofono_phone_number* number,
+        int time);
+    struct ofono_call_forwarding_condition* (*read_call_forwarding_conditions)(
+        GBinderReader* reader,
+        guint* count);
+};
+
+static const BinderCallForwardingApi binder_call_forwarding_api_hidl;
+static const BinderCallForwardingApi binder_call_forwarding_api_aidl;
 
 static inline BinderCallForwarding*
 binder_call_forwarding_get_data(struct ofono_call_forwarding* f)
@@ -80,76 +105,6 @@ binder_call_forwarding_callback_data_free(
 
 static
 void
-binder_call_forwarding_call(
-    BinderCallForwarding* self,
-    RADIO_REQ code,
-    RADIO_CALL_FORWARD action,
-    int reason,
-    int cls,
-    const struct ofono_phone_number* number,
-    int time,
-    RadioRequestCompleteFunc complete,
-    BinderCallback cb,
-    void* data)
-{
-    /*
-     * getCallForwardStatus(int32_t serial, CallForwardInfo callInfo);
-     * setCallForward(int32_t serial, CallForwardInfo callInfo);
-     */
-    GBinderWriter writer;
-    RadioRequest* req = radio_request_new2(self->g, code, &writer, complete,
-        binder_call_forwarding_callback_data_free,
-        binder_call_forwarding_callback_data_new(self, cb, data));
-
-    if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
-        RadioCallForwardInfo* info = gbinder_writer_new0(&writer,
-            RadioCallForwardInfo);
-        guint parent;
-
-        info->status = action;
-        info->reason = reason;
-        info->serviceClass = cls;
-        info->timeSeconds = time;
-        if (number) {
-            info->toa = number->type;
-            binder_copy_hidl_string(&writer, &info->number, number->number);
-        } else {
-            info->toa = OFONO_NUMBER_TYPE_UNKNOWN;
-            binder_copy_hidl_string(&writer, &info->number, NULL);
-        }
-        parent = gbinder_writer_append_buffer_object(&writer, info, sizeof(*info));
-        binder_append_hidl_string_data(&writer, info, number, parent);
-    } else {
-        gint32 initial_size;
-        /* Non-null parcelable */
-        gbinder_writer_append_int32(&writer, 1);
-        initial_size = gbinder_writer_bytes_written(&writer);
-        /* Dummy parcelable size, replaced at the end */
-        gbinder_writer_append_int32(&writer, -1);
-
-        gbinder_writer_append_int32(&writer, action);
-        gbinder_writer_append_int32(&writer, reason);
-        gbinder_writer_append_int32(&writer, cls);
-        if (number) {
-            gbinder_writer_append_int32(&writer, number->type);
-            gbinder_writer_append_string16(&writer, number->number);
-        } else {
-            gbinder_writer_append_int32(&writer, OFONO_NUMBER_TYPE_UNKNOWN);
-            gbinder_writer_append_string16(&writer, "");
-        }
-        gbinder_writer_append_int32(&writer, time);
-
-        /* Overwrite parcelable size */
-        gbinder_writer_overwrite_int32(&writer, initial_size,
-            gbinder_writer_bytes_written(&writer) - initial_size);
-    }
-
-    radio_request_submit(req);
-    radio_request_unref(req);
-}
-
-static
-void
 binder_call_forwarding_set_cb(
     RadioRequest* req,
     RADIO_TX_STATUS status,
@@ -162,20 +117,13 @@ binder_call_forwarding_set_cb(
     const BinderCallForwardingCbData* cbd = user_data;
     ofono_call_forwarding_set_cb_t cb = cbd->cb.set;
 
-    if (status == RADIO_TX_STATUS_OK) {
-        guint32 code = cbd->self->interface_aidl == RADIO_VOICE_INTERFACE ?
-            RADIO_VOICE_RESP_SET_CALL_FORWARD :
-            RADIO_RESP_SET_CALL_FORWARD;
-        if (resp == code) {
-            if (error == RADIO_ERROR_NONE) {
-                cb(binder_error_ok(&err), cbd->data);
-                return;
-            } else {
-                ofono_error("CF error %d", error);
-            }
-        } else {
-            ofono_error("Unexpected setCallForward response %d", resp);
-        }
+    if (status != RADIO_TX_STATUS_OK) {
+        DBG_(cbd->self, "setCallForward tx failed");
+    } else if (error != RADIO_ERROR_NONE) {
+        ofono_error("CF error %s", binder_radio_error_string(error));
+    } else {
+        cb(binder_error_ok(&err), cbd->data);
+        return;
     }
     cb(binder_error_failure(&err), cbd->data);
 }
@@ -192,20 +140,34 @@ binder_call_forwarding_set(
     ofono_call_forwarding_set_cb_t cb,
     void* data)
 {
-    guint32 code = self->interface_aidl == RADIO_VOICE_INTERFACE ?
-        RADIO_VOICE_REQ_SET_CALL_FORWARD :
-        RADIO_REQ_SET_CALL_FORWARD;
+    const BinderCallForwardingApi* api = self->api;
+    GBinderWriter args;
+    RadioRequest* req = radio_request_new2(self->g,
+        self->api->set_call_forward_req, &args,
+        binder_call_forwarding_set_cb,
+        binder_call_forwarding_callback_data_free,
+        binder_call_forwarding_callback_data_new(self, BINDER_CB(cb), data));
 
-    /* Modem doesn't seem to like class mask 7, replace it with 0 */
+    DBG_(self, "");
+
+    /* Modems doen't seem to like class mask 7, replace it with 0 */
     if (cls == (RADIO_SERVICE_CLASS_VOICE |
         RADIO_SERVICE_CLASS_DATA | RADIO_SERVICE_CLASS_FAX)) {
         DBG_(self, "cls %d => %d", cls, RADIO_SERVICE_CLASS_NONE);
         cls = RADIO_SERVICE_CLASS_NONE;
     }
 
-    binder_call_forwarding_call(self, code,
-        action, reason, cls, number, time, binder_call_forwarding_set_cb,
-        BINDER_CB(cb), data);
+    /*
+     * IRadio.hal:
+     * oneway setCallForward(int32_t serial, CallForwardInfo callInfo);
+     *
+     * IRadioVoice.aidl:
+     * void setCallForward(in int serial, in CallForwardInfo callInfo);
+     */
+    api->write_call_forward_info_arg(&args, action, reason, cls, number, time);
+
+    radio_request_submit(req);
+    radio_request_unref(req);
 }
 
 static
@@ -276,71 +238,6 @@ binder_call_forwarding_activate(
 
 static
 void
-binder_call_forwarding_query_ok(
-    const BinderCallForwardingCbData* cbd,
-    const GBinderReader* args)
-{
-    struct ofono_error err;
-    struct ofono_call_forwarding_condition* list = NULL;
-    GBinderReader reader;
-    gsize count = 0;
-
-    gbinder_reader_copy(&reader, args);
-
-    if (cbd->self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
-        /* getCallForwardStatusResponse(RadioResponseInfo, vec<CallForwardInfo>) */
-        const RadioCallForwardInfo* infos = gbinder_reader_read_hidl_type_vec(
-            &reader, RadioCallForwardInfo, &count);
-        if (count) {
-            gsize i;
-
-            list = g_new0(struct ofono_call_forwarding_condition, count);
-            for (i = 0; i < count; i++) {
-                const RadioCallForwardInfo* info = infos + i;
-                struct ofono_call_forwarding_condition* fw = list + i;
-
-                fw->status = info->status;
-                fw->cls = info->serviceClass;
-                fw->time = info->timeSeconds;
-                fw->phone_number.type = info->toa;
-                memcpy(fw->phone_number.number, info->number.data.str,
-                    MIN(OFONO_MAX_PHONE_NUMBER_LENGTH, info->number.len));
-            }
-        }
-    } else {
-        /* getCallForwardStatusResponse(RadioResponseInfo, CallForwardInfo[] callForwardInfos) */
-        gbinder_reader_read_uint32(&reader, (guint32 *)&count);
-        if (count) {
-            gsize i;
-
-            list = g_new0(struct ofono_call_forwarding_condition, count);
-            for (i = 0; i < count; i++) {
-                struct ofono_call_forwarding_condition* fw = list + i;
-
-                // Non-null parcelable
-                gbinder_reader_read_int32(&reader, NULL);
-                // Parcelable size
-                gbinder_reader_read_int32(&reader, NULL);
-                gbinder_reader_read_int32(&reader, &fw->status);
-                gbinder_reader_read_int32(&reader, NULL);
-                gbinder_reader_read_int32(&reader, &fw->cls);
-                gbinder_reader_read_int32(&reader, &fw->phone_number.type);
-                gchar* number = gbinder_reader_read_string16(&reader);
-                if (number) {
-                    memcpy(fw->phone_number.number, number,
-                        MIN(OFONO_MAX_PHONE_NUMBER_LENGTH, strlen(number)));
-                    g_free(number);
-                }
-                gbinder_reader_read_int32(&reader, &fw->time);
-            }
-        }
-    }
-    cbd->cb.query(binder_error_ok(&err), count, list, cbd->data);
-    g_free(list);
-}
-
-static
-void
 binder_call_forwarding_query_cb(
     RadioRequest* req,
     RADIO_TX_STATUS status,
@@ -352,20 +249,20 @@ binder_call_forwarding_query_cb(
     struct ofono_error err;
     const BinderCallForwardingCbData* cbd = user_data;
 
-    if (status == RADIO_TX_STATUS_OK) {
-        guint32 code = cbd->self->interface_aidl == RADIO_VOICE_INTERFACE ?
-            RADIO_VOICE_RESP_GET_CALL_FORWARD_STATUS :
-            RADIO_RESP_GET_CALL_FORWARD_STATUS;
-        if (resp == code) {
-            if (error == RADIO_ERROR_NONE) {
-                binder_call_forwarding_query_ok(cbd, args);
-                return;
-            } else {
-                ofono_error("CF query error %d", error);
-            }
-        } else {
-            ofono_error("Unexpected getCallForwardStatus response %d", resp);
-        }
+    if (status != RADIO_TX_STATUS_OK) {
+        DBG_(cbd->self, "getCallForwardStatus tx failed");
+    } else if (error != RADIO_ERROR_NONE) {
+        ofono_error("CF query error %s", binder_radio_error_string(error));
+    } else {
+        guint n = 0;
+        struct ofono_call_forwarding_condition* list = NULL;
+        GBinderReader reader;
+
+        gbinder_reader_copy(&reader, args);
+        list = cbd->self->api->read_call_forwarding_conditions(&reader, &n);
+        cbd->cb.query(binder_error_ok(&err), n, list, cbd->data);
+        g_free(list);
+        return;
     }
     cbd->cb.query(binder_error_failure(&err), 0, NULL, cbd->data);
 }
@@ -380,21 +277,35 @@ binder_call_forwarding_query(
     void* data)
 {
     BinderCallForwarding* self = binder_call_forwarding_get_data(f);
-    guint32 code = self->interface_aidl == RADIO_VOICE_INTERFACE ?
-        RADIO_VOICE_REQ_GET_CALL_FORWARD_STATUS :
-        RADIO_REQ_GET_CALL_FORWARD_STATUS;
+    const BinderCallForwardingApi* api = self->api;
+    GBinderWriter args;
+    RadioRequest* req = radio_request_new2(self->g,
+        api->get_call_forward_status_req, &args,
+        binder_call_forwarding_query_cb,
+        binder_call_forwarding_callback_data_free,
+        binder_call_forwarding_callback_data_new(self, BINDER_CB(cb), data));
 
     DBG_(self, "%d", type);
 
-    /* Modem doesn't seem to like class mask 7, replace it with 0 */
+    /* Modems doen't seem to like class mask 7, replace it with 0 */
     if (cls == (RADIO_SERVICE_CLASS_VOICE |
         RADIO_SERVICE_CLASS_DATA | RADIO_SERVICE_CLASS_FAX)) {
         DBG_(self, "cls %d => %d", cls, RADIO_SERVICE_CLASS_NONE);
         cls = RADIO_SERVICE_CLASS_NONE;
     }
-    binder_call_forwarding_call(self, code,
-        RADIO_CALL_FORWARD_INTERROGATE, type, cls, NULL, CF_TIME_DEFAULT,
-        binder_call_forwarding_query_cb, BINDER_CB(cb), data);
+
+    /*
+     * IRadio.hal:
+     * oneway getCallForwardStatus(int32_t serial, CallForwardInfo callInfo);
+     *
+     * IRadioVoice.aidl:
+     * void getCallForwardStatus(in int serial, in CallForwardInfo callInfo);
+     */
+    api->write_call_forward_info_arg(&args, RADIO_CALL_FORWARD_INTERROGATE,
+        type, cls, NULL, CF_TIME_DEFAULT);
+
+    radio_request_submit(req);
+    radio_request_unref(req);
 }
 
 static
@@ -419,14 +330,18 @@ binder_call_forwarding_probe(
 {
     BinderModem* modem = binder_modem_get_data(data);
     BinderCallForwarding* self = g_new0(BinderCallForwarding, 1);
+    RadioClient* voice_client = modem->clients.voice_client;
+    const BinderCallForwardingApi* api =
+        radio_client_aidl_interface(voice_client) == RADIO_VOICE_INTERFACE ?
+        &binder_call_forwarding_api_aidl : &binder_call_forwarding_api_hidl;
 
     self->f = f;
-    self->g = radio_request_group_new(modem->voice_client);
-    self->interface_aidl = radio_client_aidl_interface(modem->voice_client);
+    self->api = api;
+    self->g = radio_request_group_new(voice_client);
     self->log_prefix = binder_dup_prefix(modem->log_prefix);
     self->register_id = g_idle_add(binder_call_forwarding_register, self);
 
-    DBG_(self, "");
+    DBG_(self, "%s api", api->name);
     ofono_call_forwarding_set_data(f, self);
     return 0;
 }
@@ -439,9 +354,7 @@ binder_call_forwarding_remove(
     BinderCallForwarding* self = binder_call_forwarding_get_data(f);
 
     DBG_(self, "");
-    if (self->register_id) {
-        g_source_remove(self->register_id);
-    }
+    gutil_source_remove(self->register_id);
     radio_request_group_cancel(self->g);
     radio_request_group_unref(self->g);
     g_free(self->log_prefix);
@@ -449,6 +362,173 @@ binder_call_forwarding_remove(
 
     ofono_call_forwarding_set_data(f, NULL);
 }
+
+/*==========================================================================*
+ * HIDL API flavor
+ *==========================================================================*/
+
+static
+void
+binder_call_forwarding_api_write_call_forward_info_arg_hidl(
+    GBinderWriter* writer,
+    RADIO_CALL_FORWARD action,
+    int reason,
+    int cls,
+    const struct ofono_phone_number* number,
+    int time)
+{
+    guint parent;
+    RadioCallForwardInfo* info = gbinder_writer_new0(writer,
+        RadioCallForwardInfo);
+
+    info->status = action;
+    info->reason = reason;
+    info->serviceClass = cls;
+    info->timeSeconds = time;
+    if (number) {
+        info->toa = number->type;
+        binder_copy_hidl_string(writer, &info->number, number->number);
+    } else {
+        info->toa = OFONO_NUMBER_TYPE_UNKNOWN;
+        binder_copy_hidl_string(writer, &info->number, NULL);
+    }
+    parent = gbinder_writer_append_buffer_object(writer, info, sizeof(*info));
+    binder_append_hidl_string_data(writer, info, number, parent);
+}
+
+static
+struct ofono_call_forwarding_condition*
+binder_call_forwarding_api_read_call_forwarding_conditions_hidl(
+    GBinderReader* reader,
+    guint* count)
+{
+    /*  vec<CallForwardInfo>) */
+    gsize n;
+    const RadioCallForwardInfo* infos =
+        gbinder_reader_read_hidl_type_vec( reader, RadioCallForwardInfo, &n);
+
+    if (infos) {
+        gsize i;
+        struct ofono_call_forwarding_condition* list =
+            g_new0(struct ofono_call_forwarding_condition, n);
+
+        for (i = 0; i < n; i++) {
+            const RadioCallForwardInfo* info = infos + i;
+            struct ofono_call_forwarding_condition* fw = list + i;
+
+            fw->status = info->status;
+            fw->cls = info->serviceClass;
+            fw->time = info->timeSeconds;
+            fw->phone_number.type = info->toa;
+            memcpy(fw->phone_number.number, info->number.data.str,
+                MIN(OFONO_MAX_PHONE_NUMBER_LENGTH, info->number.len));
+        }
+        *count = n;
+        return list;
+    }
+    return NULL;
+}
+
+static const BinderCallForwardingApi binder_call_forwarding_api_hidl = {
+    "hidl",
+    RADIO_REQ_GET_CALL_FORWARD_STATUS,
+    RADIO_REQ_SET_CALL_FORWARD,
+    binder_call_forwarding_api_write_call_forward_info_arg_hidl,
+    binder_call_forwarding_api_read_call_forwarding_conditions_hidl
+};
+
+/*==========================================================================*
+ * AIDL API flavor
+ *==========================================================================*/
+
+static
+void
+binder_call_forwarding_api_write_call_forward_info_arg_aidl(
+    GBinderWriter* writer,
+    RADIO_CALL_FORWARD action,
+    int reason,
+    int serviceClass,
+    const struct ofono_phone_number* number,
+    int timeSeconds)
+{
+    GBinderWriter parcel;
+
+    /*
+     * package android.hardware.radio.voice;
+     * parcelable CallForwardInfo {
+     *   int status;
+     *   int reason;
+     *   int serviceClass;
+     *   int toa;
+     *   String number;
+     *   int timeSeconds;
+     * }
+     */
+    gbinder_writer_start_parcelable(writer, &parcel);
+    gbinder_writer_append_int32(&parcel, action);
+    gbinder_writer_append_int32(&parcel, reason);
+    gbinder_writer_append_int32(&parcel, serviceClass);
+    if (number) {
+        gbinder_writer_append_int32(&parcel, number->type);
+        gbinder_writer_append_string16(&parcel, number->number);
+    } else {
+        gbinder_writer_append_int32(&parcel, OFONO_NUMBER_TYPE_UNKNOWN);
+        gbinder_writer_append_string16(&parcel, "");
+    }
+    gbinder_writer_append_int32(&parcel, timeSeconds);
+    gbinder_writer_finish_parcelable(&parcel);
+}
+
+static
+struct ofono_call_forwarding_condition*
+binder_call_forwarding_api_read_call_forwarding_conditions_aidl(
+    GBinderReader* reader,
+    guint* count)
+{
+    /* CallForwardInfo[] */
+    if (gbinder_reader_read_uint32(reader, count)) {
+        guint i;
+        struct ofono_call_forwarding_condition* list =
+            g_new0(struct ofono_call_forwarding_condition, *count);
+
+        for (i = 0; i < *count; i++) {
+            struct ofono_call_forwarding_condition* fw = list + i;
+            GBinderReader parcel;
+
+            if (gbinder_reader_start_parcelable(reader, &parcel, NULL)) {
+                gchar* number = NULL;
+
+                if (gbinder_reader_read_int32(&parcel, &fw->status) &&
+                    gbinder_reader_read_int32(&parcel, NULL) &&
+                    gbinder_reader_read_int32(&parcel, &fw->cls) &&
+                    gbinder_reader_read_int32(&parcel, &fw->phone_number.type)&&
+                    gbinder_reader_read_nullable_string16(&parcel, &number) &&
+                    gbinder_reader_read_int32(&parcel, &fw->time)) {
+                    if (number) {
+                        g_strlcpy(fw->phone_number.number, number,
+                            sizeof(fw->phone_number.number));
+                        g_free(number);
+                    }
+                    gbinder_reader_finish_parcelable(&parcel);
+                    continue;
+                }
+                g_free(number);
+            }
+            g_free(list);
+            return NULL;
+        }
+        return list;
+    }
+    return NULL;
+}
+
+static const BinderCallForwardingApi binder_call_forwarding_api_aidl = {
+    "aidl",
+    RADIO_VOICE_REQ_GET_CALL_FORWARD_STATUS,
+    RADIO_VOICE_REQ_SET_CALL_FORWARD,
+    binder_call_forwarding_api_write_call_forward_info_arg_aidl,
+    binder_call_forwarding_api_read_call_forwarding_conditions_aidl
+};
 
 /*==========================================================================*
  * API

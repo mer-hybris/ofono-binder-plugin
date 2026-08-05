@@ -1,6 +1,7 @@
 /*
  *  oFono - Open Source Telephony - binder based adaptation
  *
+ *  Copyright (C) 2026 Jolla Mobile Ltd
  *  Copyright (C) 2021-2022 Jolla Ltd.
  *
  *  This program is free software; you can redistribute it and/or modify
@@ -31,12 +32,16 @@
 #include <gbinder_reader.h>
 #include <gbinder_writer.h>
 
+#include <gutil_misc.h>
+
+typedef struct binder_call_barring_api BinderCallBarringApi;
+
 typedef struct binder_call_barring {
     struct ofono_call_barring* b;
+    const BinderCallBarringApi* api;
     BinderSimCard* card;
-    RadioClient* network_client;
-    RadioRequestGroup* g;
-    RADIO_AIDL_INTERFACE interface_aidl;
+    RadioRequestGroup* sim_g;
+    RadioRequestGroup* network_g;
     char* log_prefix;
     guint register_id;
 } BinderCallBarring;
@@ -52,6 +57,18 @@ typedef struct binder_call_barring_callback_data {
 } BinderCallBarringCbData;
 
 #define DBG_(self,fmt,args...) DBG("%s" fmt, (self)->log_prefix, ##args)
+
+/* Binder API flavors */
+struct binder_call_barring_api {
+    const char* name;
+    BinderWriteStringArg write_string_arg;
+    RADIO_REQ sim_get_facility_lock_for_app_req;
+    RADIO_REQ sim_set_facility_lock_for_app_req;
+    RADIO_REQ network_set_barring_password_req;
+};
+
+static const BinderCallBarringApi binder_call_barring_api_hidl;
+static const BinderCallBarringApi binder_call_barring_api_aidl;
 
 static inline BinderCallBarring*
 binder_call_barring_get_data(struct ofono_call_barring* b)
@@ -90,7 +107,11 @@ binder_call_barring_query_ok(
     gint32 response;
 
     /*
-     * getFacilityLockForAppResponse(RadioResponseInfo, int32_t response);
+     * IRadioResponse.hal:
+     * oneway getFacilityLockForAppResponse(RadioResponseInfo info, int32_t response);
+     *
+     * IRadioSimResponse.aidl:
+     * void getFacilityLockForAppResponse(in RadioResponseInfo info, in int response);
      *
      * response - the TS 27.007 service class bit vector of services
      * for which the specified barring facility is active.
@@ -120,21 +141,13 @@ binder_call_barring_query_cb(
     struct ofono_error err;
     const BinderCallBarringCbData* cbd = user_data;
 
-    if (status == RADIO_TX_STATUS_OK) {
-        guint32 code = cbd->self->interface_aidl == RADIO_SIM_INTERFACE ?
-            RADIO_SIM_RESP_GET_FACILITY_LOCK_FOR_APP :
-            RADIO_RESP_GET_FACILITY_LOCK_FOR_APP;
-        if (resp == code) {
-            if (error == RADIO_ERROR_NONE) {
-                if (binder_call_barring_query_ok(cbd, args)) {
-                    return;
-                }
-            } else {
-                ofono_warn("Call Barring query error %d", error);
-            }
-        } else {
-            ofono_error("Unexpected getFacilityLockForApp response %d", resp);
-        }
+    if (status != RADIO_TX_STATUS_OK) {
+        DBG_(cbd->self, "getFacilityLockForApp tx failed");
+    } else if (error != RADIO_ERROR_NONE) {
+        ofono_warn("Call Barring query error %s",
+            binder_radio_error_string(error));
+    } else if (binder_call_barring_query_ok(cbd, args)) {
+        return;
     }
     cbd->cb.query(binder_error_failure(&err), 0, cbd->data);
 }
@@ -149,35 +162,31 @@ binder_call_barring_query(
     void* data)
 {
     BinderCallBarring* self = ofono_call_barring_get_data(b);
-
-    /*
-     * getFacilityLockForApp(int32_t serial, string facility,
-     *      string password, int32_t serviceClass, string appId);
-     */
-    GBinderWriter writer;
-    guint32 code = self->interface_aidl == RADIO_SIM_INTERFACE ?
-        RADIO_SIM_REQ_GET_FACILITY_LOCK_FOR_APP :
-        RADIO_REQ_GET_FACILITY_LOCK_FOR_APP;
-    RadioRequest* req = radio_request_new2(self->g,
-        code, &writer,
+    const BinderCallBarringApi* api = self->api;
+    GBinderWriter args;
+    RadioRequest* req = radio_request_new2(self->sim_g,
+        api->sim_get_facility_lock_for_app_req, &args,
         binder_call_barring_query_cb,
         binder_call_barring_callback_data_free,
         binder_call_barring_callback_data_new(self, BINDER_CB(cb), data));
 
     DBG_(self, "lock: %s, services to query: 0x%02x", lock, cls);
-    if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
-        binder_append_hidl_string(&writer, lock);   /* facility */
-        binder_append_hidl_string(&writer, "");     /* password */
-        gbinder_writer_append_int32(&writer, cls);  /* serviceClass */
-        binder_append_hidl_string(&writer, binder_sim_card_app_aid(self->card));
-                                                    /* appId */
-    } else {
-        gbinder_writer_append_string16(&writer, lock);  /* facility */
-        gbinder_writer_append_string16(&writer, "");    /* password */
-        gbinder_writer_append_int32(&writer, cls);      /* serviceClass */
-        gbinder_writer_append_string16(&writer,
-            binder_sim_card_app_aid(self->card));       /* appId */
-    }
+
+    /*
+     * IRadio.hal:
+     * oneway getFacilityLockForApp(int32_t serial, string facility,
+     *     string password, int32_t serviceClass, string appId);
+     *
+     * IRadioSim.aidl:
+     * void getFacilityLockForApp(in int serial, in String facility,
+     *     in String password, in int serviceClass, in String appId);
+     */
+    binder_append_hidl_string(&args, lock);   /* facility */
+    api->write_string_arg(&args, "");         /* password */
+    gbinder_writer_append_int32(&args, cls);  /* serviceClass */
+    api->write_string_arg(&args,              /* appId */
+        binder_sim_card_app_aid(self->card));
+
     radio_request_submit(req);
     radio_request_unref(req);
 }
@@ -196,25 +205,14 @@ binder_call_barring_set_cb(
     const BinderCallBarringCbData* cbd = user_data;
     ofono_call_barring_set_cb_t cb = cbd->cb.set;
 
-    if (status == RADIO_TX_STATUS_OK) {
-        guint32 code = cbd->self->interface_aidl == RADIO_SIM_INTERFACE ?
-            RADIO_SIM_RESP_SET_FACILITY_LOCK_FOR_APP :
-            RADIO_RESP_SET_FACILITY_LOCK_FOR_APP;
-        if (resp == code) {
-            /*
-             * setFacilityLockForAppResponse(RadioResponseInfo, int32_t retry);
-             *
-             * retry - the number of retries remaining, or -1 if unknown
-             */
-            if (error == RADIO_ERROR_NONE) {
-                cb(binder_error_ok(&err), cbd->data);
-                return;
-            } else {
-                ofono_error("Call Barring Set error %d", error);
-            }
-        } else {
-            ofono_error("Unexpected setFacilityLockForApp response %d", resp);
-        }
+    if (status != RADIO_TX_STATUS_OK) {
+        DBG_(cbd->self, "setFacilityLockForApp tx failed");
+    } else if (error != RADIO_ERROR_NONE) {
+        ofono_error("Call Barring Set error %s",
+            binder_radio_error_string(error));
+    } else {
+        cb(binder_error_ok(&err), cbd->data);
+        return;
     }
     cb(binder_error_failure(&err), cbd->data);
 }
@@ -231,38 +229,34 @@ binder_call_barring_set(
     void* data)
 {
     BinderCallBarring* self = ofono_call_barring_get_data(b);
-
-    /*
-     * setFacilityLockForApp(int32_t serial, string facility, bool lockState,
-     *            string password, int32_t serviceClass, string appId);
-     */
-    GBinderWriter writer;
-    guint32 code = self->interface_aidl == RADIO_SIM_INTERFACE ?
-        RADIO_SIM_REQ_SET_FACILITY_LOCK_FOR_APP :
-        RADIO_REQ_SET_FACILITY_LOCK_FOR_APP;
-    RadioRequest* req = radio_request_new2(self->g,
-        code, &writer,
+    const BinderCallBarringApi* api = self->api;
+    GBinderWriter args;
+    RadioRequest* req = radio_request_new2(self->sim_g,
+        api->sim_set_facility_lock_for_app_req, &args,
         binder_call_barring_set_cb,
         binder_call_barring_callback_data_free,
         binder_call_barring_callback_data_new(self, BINDER_CB(cb), data));
 
     DBG_(self, "lock: %s, enable: %i, bearer class: %i", lock, enable, cls);
 
-    if (self->interface_aidl == RADIO_AIDL_INTERFACE_NONE) {
-        binder_append_hidl_string(&writer, lock);     /* facility */
-        gbinder_writer_append_bool(&writer, enable);  /* lockState */
-        binder_append_hidl_string(&writer, passwd);   /* password */
-        gbinder_writer_append_int32(&writer, cls);    /* serviceClass */
-        binder_append_hidl_string(&writer, binder_sim_card_app_aid(self->card));
-                                                      /* appId */
-    } else {
-        gbinder_writer_append_string16(&writer, lock);   /* facility */
-        gbinder_writer_append_bool(&writer, enable);     /* lockState */
-        gbinder_writer_append_string16(&writer, passwd); /* password */
-        gbinder_writer_append_int32(&writer, cls);       /* serviceClass */
-        gbinder_writer_append_string16(&writer,
-            binder_sim_card_app_aid(self->card));        /* appId */
-    }
+    /*
+     * IRadio.hal:
+     * oneway setFacilityLockForApp(int32_t serial, string facility,
+     *     bool lockState, string password, int32_t serviceClass,
+     *     string appId);
+     *
+     * IRadioSim.aidl:
+     * void setFacilityLockForApp(in int serial, in String facility,
+     *     in boolean lockState, in String password, in int serviceClass,
+     *     in String appId);
+     */
+    api->write_string_arg(&args, lock);         /* facility */
+    gbinder_writer_append_bool(&args, enable);  /* lockState */
+    api->write_string_arg(&args, passwd);       /* password */
+    gbinder_writer_append_int32(&args, cls);    /* serviceClass */
+    api->write_string_arg(&args,                /* appId */
+        binder_sim_card_app_aid(self->card));
+
     radio_request_submit(req);
     radio_request_unref(req);
 }
@@ -281,22 +275,14 @@ binder_call_barring_set_passwd_cb(
     const BinderCallBarringCbData* cbd = user_data;
     ofono_call_barring_set_cb_t cb = cbd->cb.set;
 
-    if (status == RADIO_TX_STATUS_OK) {
-        const RADIO_AIDL_INTERFACE iface_aidl =
-            radio_client_aidl_interface(cbd->self->network_client);
-        guint32 code = iface_aidl == RADIO_NETWORK_INTERFACE ?
-            RADIO_NETWORK_RESP_SET_BARRING_PASSWORD :
-            RADIO_RESP_SET_BARRING_PASSWORD;
-        if (resp == code) {
-            if (error == RADIO_ERROR_NONE) {
-                cb(binder_error_ok(&err), cbd->data);
-                return;
-            } else {
-                ofono_error("Call Barring Set PW error %d", error);
-            }
-        } else {
-            ofono_error("Unexpected setBarringPassword response %d", resp);
-        }
+    if (status != RADIO_TX_STATUS_OK) {
+        DBG_(cbd->self, "setBarringPassword tx failed");
+    } else if (error != RADIO_ERROR_NONE) {
+        ofono_error("Call Barring Set PW error %s",
+            binder_radio_error_string(error));
+    } else {
+        cb(binder_error_ok(&err), cbd->data);
+        return;
     }
     cb(binder_error_failure(&err), cbd->data);
 }
@@ -312,34 +298,33 @@ binder_call_barring_set_passwd(
     void* data)
 {
     BinderCallBarring* self = ofono_call_barring_get_data(b);
-    const RADIO_AIDL_INTERFACE iface_aidl =
-        radio_client_aidl_interface(self->network_client);
+    const BinderCallBarringApi* api = self->api;
 
     /*
      * setBarringPassword(int32_t serial, string facility,
      *     string oldPassword, string newPassword);
      */
-    GBinderWriter writer;
-    guint32 code = iface_aidl == RADIO_NETWORK_INTERFACE ?
-        RADIO_NETWORK_REQ_SET_BARRING_PASSWORD :
-        RADIO_REQ_SET_BARRING_PASSWORD;
-
-    RadioRequest* req = radio_request_new(self->network_client,
-        code, &writer,
+    GBinderWriter args;
+    RadioRequest* req = radio_request_new2(self->network_g,
+        api->network_set_barring_password_req, &args,
         binder_call_barring_set_passwd_cb,
         binder_call_barring_callback_data_free,
         binder_call_barring_callback_data_new(self, BINDER_CB(cb), data));
 
-    DBG_(self, "");
-    if (iface_aidl == RADIO_AIDL_INTERFACE_NONE) {
-        binder_append_hidl_string(&writer, lock);         /* facility */
-        binder_append_hidl_string(&writer, old_passwd);   /* oldPassword */
-        binder_append_hidl_string(&writer, new_passwd);   /* newPassword */
-    } else {
-        gbinder_writer_append_string16(&writer, lock);         /* facility */
-        gbinder_writer_append_string16(&writer, old_passwd);   /* oldPassword */
-        gbinder_writer_append_string16(&writer, new_passwd);   /* newPassword */
-    }
+    DBG_(self, "%s", lock);
+
+    /*
+     * IRadio.hal:
+     * oneway setBarringPassword(int32_t serial, string facility,
+     *     string oldPassword, string newPassword);
+     *
+     * IRadioNetwork.aidl:
+     * void setBarringPassword(in int serial, in String facility,
+     *     in String oldPassword, in String newPassword);
+     */
+    api->write_string_arg(&args, lock);         /* facility */
+    api->write_string_arg(&args, old_passwd);   /* oldPassword */
+    api->write_string_arg(&args, new_passwd);   /* newPassword */
 
     radio_request_submit(req);
     radio_request_unref(req);
@@ -367,16 +352,20 @@ binder_call_barring_probe(
 {
     BinderModem* modem = binder_modem_get_data(data);
     BinderCallBarring* self = g_new0(struct binder_call_barring, 1);
+    RadioClient* sim_client = modem->clients.sim_client;
+    const BinderCallBarringApi* api =
+        radio_client_aidl_interface(sim_client) == RADIO_SIM_INTERFACE ?
+        &binder_call_barring_api_aidl : &binder_call_barring_api_hidl;
 
     self->b = b;
+    self->api = api;
     self->card = binder_sim_card_ref(modem->sim_card);
-    self->g = radio_request_group_new(modem->sim_client);
-    self->interface_aidl = radio_client_aidl_interface(modem->sim_client);
+    self->sim_g = radio_request_group_new(sim_client);
+    self->network_g = radio_request_group_new(modem->clients.network_client);
     self->log_prefix = binder_dup_prefix(modem->log_prefix);
-    self->network_client = radio_client_ref(modem->network_client);
     self->register_id = g_idle_add(binder_call_barring_register, self);
 
-    DBG_(self, "");
+    DBG_(self, "%s api", api->name);
     ofono_call_barring_set_data(b, self);
     return 0;
 }
@@ -389,18 +378,41 @@ binder_call_barring_remove(
     BinderCallBarring* self = binder_call_barring_get_data(b);
 
     DBG_(self, "");
-    if (self->register_id) {
-        g_source_remove(self->register_id);
-    }
+    gutil_source_remove(self->register_id);
     binder_sim_card_unref(self->card);
-    radio_request_group_cancel(self->g);
-    radio_request_group_unref(self->g);
-    radio_client_unref(self->network_client);
+    radio_request_group_cancel(self->sim_g);
+    radio_request_group_unref(self->sim_g);
+    radio_request_group_cancel(self->network_g);
+    radio_request_group_unref(self->network_g);
     g_free(self->log_prefix);
     g_free(self);
 
     ofono_call_barring_set_data(b, NULL);
 }
+
+/*==========================================================================*
+ * HIDL API flavor
+ *==========================================================================*/
+
+static const BinderCallBarringApi binder_call_barring_api_hidl = {
+    "hidl",
+    binder_write_string_arg_hidl,
+    RADIO_REQ_GET_FACILITY_LOCK_FOR_APP,
+    RADIO_REQ_SET_FACILITY_LOCK_FOR_APP,
+    RADIO_REQ_SET_BARRING_PASSWORD,
+};
+
+/*==========================================================================*
+ * AIDL API flavor
+ *==========================================================================*/
+
+static const BinderCallBarringApi binder_call_barring_api_aidl = {
+    "aidl",
+    binder_write_string_arg_aidl,
+    RADIO_SIM_REQ_GET_FACILITY_LOCK_FOR_APP,
+    RADIO_SIM_REQ_SET_FACILITY_LOCK_FOR_APP,
+    RADIO_NETWORK_REQ_SET_BARRING_PASSWORD,
+};
 
 /*==========================================================================*
  * API

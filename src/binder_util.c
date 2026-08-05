@@ -1,6 +1,7 @@
 /*
  *  oFono - Open Source Telephony - binder based adaptation
  *
+ *  Copyright (C) 2026 Jolla Mobile Ltd
  *  Copyright (C) 2021-2022 Jolla Ltd.
  *
  *  This program is free software; you can redistribute it and/or modify
@@ -827,33 +828,6 @@ binder_read_hidl_struct1(
     return gbinder_reader_read_hidl_struct1(&reader, size);
 }
 
-const void*
-binder_read_parcelable(
-    const GBinderReader* args,
-    gsize* out_size)
-{
-    GBinderReader reader;
-
-    /* Read a single AIDL parcelable */
-    gbinder_reader_copy(&reader, args);
-    return gbinder_reader_read_parcelable(&reader, out_size);
-}
-
-gsize
-binder_read_parcelable_size(
-    GBinderReader* reader)
-{
-    /* Read a single AIDL parcelable header and return inner data size */
-    guint32 non_null = 0, payload_size = 0;
-    if (gbinder_reader_read_uint32(reader, &non_null) && non_null &&
-        gbinder_reader_read_uint32(reader, &payload_size) &&
-        payload_size >= sizeof(payload_size)) {
-
-        return payload_size - sizeof(payload_size);
-    }
-    return 0;
-}
-
 char**
 binder_strv_from_hidl_string_vec(
     const GBinderHidlVec* vec)
@@ -894,15 +868,12 @@ char**
 binder_strv_from_string16_array(
     GBinderReader* reader)
 {
-    if (reader) {
-        gint32 count;
-        gbinder_reader_read_int32(reader, &count);
-        if (count < 0) {
-            count = 0;
-        }
-        char** out = g_new(char*, count + 1);
+    gint32 count;
+
+    if (gbinder_reader_read_int32(reader, &count)) {
+        char** out = g_new(char*, MAX(count, 0) + 1);
         char** ptr = out;
-        guint i;
+        int i;
 
         for (i = 0; i < count; i++, ptr++) {
             char* str = gbinder_reader_read_string16(reader);
@@ -913,6 +884,28 @@ binder_strv_from_string16_array(
         return out;
     }
     return NULL;
+}
+
+/*
+ * There seems to be extra 4 bytes (typically 0x01, 0x00, 0x00, 0x00)
+ * before the tag in AIDL unions.
+ */
+gboolean
+binder_read_aidl_union_tag(
+    GBinderReader* reader,
+    gint32* tag)
+{
+    return gbinder_reader_read_int32(reader, NULL) &&
+        gbinder_reader_read_int32(reader, tag);
+}
+
+void
+binder_append_aidl_union_tag(
+    GBinderWriter* writer,
+    int tag)
+{
+    gbinder_writer_append_int32(writer, 1);
+    gbinder_writer_append_int32(writer, tag);
 }
 
 guint
@@ -992,6 +985,65 @@ binder_append_hidl_string_with_parent(
     /* Strings are NULL-terminated, hence len + 1 */
     gbinder_writer_append_buffer_object_with_parent(writer, str->data.str,
         str->len + 1, &parent);
+}
+
+const void*
+binder_read_byte_array_hidl(
+    GBinderReader* reader,
+    gsize* len)
+{
+    return gbinder_reader_read_hidl_byte_vec(reader, len);
+}
+
+const char*
+binder_read_string_arg_hidl(
+    GBinderReader* reader,
+    char** alloc)
+{
+    *alloc = NULL;
+    return gbinder_reader_read_hidl_string_c(reader);
+}
+
+const char*
+binder_read_string_arg_aidl(
+    GBinderReader* reader,
+    char** alloc)
+{
+    return (*alloc = gbinder_reader_read_string16(reader));
+}
+
+void
+binder_write_string_arg_hidl(
+    GBinderWriter* writer,
+    const char* arg)
+{
+    gbinder_writer_append_hidl_string_copy(writer, arg);
+}
+
+void
+binder_write_string_arg_aidl(
+    GBinderWriter* writer,
+    const char* arg)
+{
+    gbinder_writer_append_string16(writer, arg);
+}
+
+void
+binder_take_string_arg_hidl(
+    GBinderWriter* writer,
+    char* arg)
+{
+    gbinder_writer_add_cleanup(writer, g_free, arg);
+    gbinder_writer_append_hidl_string(writer, arg);
+}
+
+void
+binder_take_string_arg_aidl(
+    GBinderWriter* writer,
+    char* arg)
+{
+    gbinder_writer_append_string16(writer, arg);
+    g_free(arg);
 }
 
 /*

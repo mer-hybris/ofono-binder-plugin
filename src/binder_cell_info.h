@@ -1,6 +1,7 @@
 /*
  *  oFono - Open Source Telephony - binder based adaptation
  *
+ *  Copyright (C) 2026 Jolla Mobile Ltd
  *  Copyright (C) 2021-2022 Jolla Ltd.
  *
  *  This program is free software; you can redistribute it and/or modify
@@ -22,10 +23,10 @@
 
 struct ofono_cell_info*
 binder_cell_info_new(
-    RadioInstance* instance,
-    RadioClient* client,
+    RadioClient* network_client,
     const char* log_prefix,
     BinderRadio* radio,
+    BinderNetwork* network,
     BinderSimCard* sim)
     BINDER_INTERNAL;
 

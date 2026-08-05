@@ -1,6 +1,7 @@
 /*
  *  oFono - Open Source Telephony - binder based adaptation
  *
+ *  Copyright (C) 2026 Jolla Mobile Ltd
  *  Copyright (C) 2021-2022 Jolla Ltd.
  *
  *  This program is free software; you can redistribute it and/or modify
@@ -61,9 +62,7 @@ void
 BinderNetwork*
 binder_network_new(
     const char* path,
-    RadioClient* client,
-    RadioClient* data_client,
-    RadioClient* modem_client,
+    BinderClients* clients,
     const char* log_prefix,
     BinderRadio* radio,
     BinderSimCard* sim_card,
