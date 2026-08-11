@@ -307,23 +307,8 @@ binder_cbs_notify(
     gbinder_reader_copy(&reader, args);
     ptr = self->api->read_byte_array_arg(&reader, &len);
 
-    /* By default assume that it's a length followed by the binary PDU data. */
-    if (ptr) {
-        if (len > 4) {
-            const guint32 pdu_len = GUINT32_FROM_LE(*(guint32*)ptr);
-
-            if (G_ALIGN4(pdu_len) == (len - 4)) {
-                DBG_(self, "%u bytes", pdu_len);
-                ofono_cbs_notify(self->cbs, ptr + 4, pdu_len);
-                return;
-            }
-        }
-
-        /*
-         * But I've seen cell broadcasts arriving without the length,
-         * simply as a blob.
-         */
-        ofono_cbs_notify(self->cbs, ptr, (guint) len);
+    if (ptr && len <= G_MAXINT) {
+        ofono_cbs_notify(self->cbs, ptr, (int)len);
     }
 }
 
