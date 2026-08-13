@@ -22,7 +22,7 @@
 
 G_BEGIN_DECLS
 
-#define BINDER_EXT_IMS_INTERFACE_VERSION 1
+#define BINDER_EXT_IMS_INTERFACE_VERSION 2
 
 /*
  * Implementation sets field to BINDER_EXT_IMS_INTERFACE_VERSION.
@@ -50,6 +50,9 @@ typedef struct binder_ext_ims_interface {
         BinderExtImsFunc handler, void* user_data);
     void (*remove_handler)(BinderExtIms* ext, gulong id);
 
+    BINDER_EXT_IMS_REGISTRATION_TECHNOLOGY
+        (*get_registration_technology)(BinderExtIms* ext); /* Since 1.1.29 */
+
     /* Padding for future expansion */
     void (*_reserved1)(void);
     void (*_reserved2)(void);
@@ -60,7 +63,6 @@ typedef struct binder_ext_ims_interface {
     void (*_reserved7)(void);
     void (*_reserved8)(void);
     void (*_reserved9)(void);
-    void (*_reserved10)(void);
 } BinderExtImsInterface;
 
 #define BINDER_EXT_IMS_GET_IFACE(obj) G_TYPE_INSTANCE_GET_INTERFACE(obj, \

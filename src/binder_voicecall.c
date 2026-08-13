@@ -106,6 +106,7 @@ typedef struct binder_voicecall_lastcause_data {
 typedef struct binder_voicecall_info {
     struct ofono_call oc;
     BinderExtCall* ext; /* Not a ref */
+    enum ofono_voicecall_bearer bearer;
 } BinderVoiceCallInfo;
 
 #define ANSWER_FLAGS BINDER_EXT_CALL_ANSWER_NO_FLAGS
@@ -242,6 +243,7 @@ binder_voicecall_info_new(
     struct ofono_call* oc = &call->oc;
 
     ofono_call_init(oc);
+    call->bearer = OFONO_VOICECALL_BEARER_CELLULAR;
 
     oc->status = rc->state;
     oc->id = rc->index;
@@ -284,6 +286,7 @@ binder_voicecall_info_new_aidl(
     gsize address_parcel_size = binder_read_parcelable_size(reader);
 
     ofono_call_init(oc);
+    call->bearer = OFONO_VOICECALL_BEARER_CELLULAR;
     if (address_parcel_size) {
         gsize address_data_read;
         gsize address_initial_size = gbinder_reader_bytes_read(reader);
@@ -343,6 +346,8 @@ binder_voicecall_info_ext_new(
     struct ofono_call* oc = &call->oc;
 
     ofono_call_init(oc);
+    call->bearer = (ci->flags & BINDER_EXT_CALL_FLAG_IWLAN) ?
+        OFONO_VOICECALL_BEARER_IWLAN : OFONO_VOICECALL_BEARER_CELLULAR;
 
     oc->status = binder_voicecall_ext_call_state_to_ofono(ci->state);
     oc->id = ci->call_id;
@@ -689,7 +694,7 @@ binder_voicecall_set_calls(
         } else if (nc && (!oc || (nc->oc.id < oc->oc.id))) {
             /* new call, signal it */
             if (nc->oc.type == OFONO_CALL_MODE_VOICE) {
-                ofono_voicecall_notify(vc, &nc->oc);
+                ofono_voicecall_notify_with_bearer(vc, &nc->oc, nc->bearer);
                 if (self->cb) {
                     ofono_voicecall_cb_t cb = self->cb;
                     void* cbdata = self->data;
@@ -706,7 +711,9 @@ binder_voicecall_set_calls(
         } else {
             /* Both old and new call exist */
             if (!binder_voicecall_ofono_call_equal(&nc->oc, &oc->oc)) {
-                ofono_voicecall_notify(vc, &nc->oc);
+                ofono_voicecall_notify_with_bearer(vc, &nc->oc, nc->bearer);
+            } else if (nc->bearer != oc->bearer) {
+                ofono_voicecall_bearer_notify(vc, nc->oc.id, nc->bearer);
             }
             n = n->next;
             o = o->next;
@@ -1032,6 +1039,24 @@ binder_voicecall_can_ext_dial(
 }
 
 static
+ofono_bool_t
+binder_voicecall_can_dial_offline(
+    struct ofono_voicecall* vc)
+{
+    BinderVoiceCall* self = binder_voicecall_get_data(vc);
+    const BINDER_EXT_CALL_INTERFACE_FLAGS flags = self && self->ext ?
+        binder_ext_call_get_interface_flags(self->ext) :
+        BINDER_EXT_CALL_INTERFACE_NO_FLAGS;
+
+    return (flags & BINDER_EXT_CALL_INTERFACE_FLAG_IMS_SUPPORT) &&
+        self->ims_reg && self->ims_reg->registered &&
+        (self->ims_reg->caps & OFONO_IMS_VOICE_CAPABLE) &&
+        self->ims_reg->registration_technology ==
+            BINDER_EXT_IMS_REGISTRATION_TECHNOLOGY_IWLAN &&
+        binder_voicecall_can_ext_dial(self);
+}
+
+static
 BINDER_EXT_CALL_CLIR
 binder_voicecall_ext_clir(
     enum ofono_clir_option clir)
@@ -1070,7 +1095,9 @@ binder_voicecall_dial(
     DBG_(self, "%s,%d,0", phstr, clir);
 
     binder_ext_call_cancel(self->ext, self->ext_req_id);
-    if (binder_voicecall_can_ext_dial(self)) {
+    if (ofono_modem_get_online(ofono_voicecall_get_modem(vc)) ?
+        binder_voicecall_can_ext_dial(self) :
+        binder_voicecall_can_dial_offline(vc)) {
         self->ext_req_id = binder_ext_call_dial(self->ext, phstr, ph->type,
             binder_voicecall_ext_clir(clir), BINDER_EXT_CALL_DIAL_FLAGS_NONE,
             binder_voicecall_ext_dial_cb, NULL, self);
@@ -1081,6 +1108,14 @@ binder_voicecall_dial(
         }
     } else {
         self->ext_req_id = 0;
+    }
+
+    /* Never fall back to a cellular radio request while RF is offline. */
+    if (!ofono_modem_get_online(ofono_voicecall_get_modem(vc))) {
+        struct ofono_error err;
+
+        cb(binder_error_failure(&err), data);
+        return;
     }
 
     /* dial(int32 serial, Dial dialInfo) */
@@ -1523,19 +1558,19 @@ binder_voicecall_answer(
     const BinderVoiceCallInfo* call =
         binder_voicecall_find_call_with_status(self,
             OFONO_CALL_STATUS_INCOMING);
+    const guint32 code = self->interface_aidl == RADIO_VOICE_INTERFACE ?
+        RADIO_VOICE_REQ_ACCEPT_CALL : RADIO_REQ_ACCEPT_CALL;
 
     if (call && call->ext) {
         DBG_(self, "answering ext call");
         if (!binder_voicecall_ext_answer(self, cbd)) {
             /* If it's not handled by the extension, revert to IRadio */
             DBG_(self, "answering ext call (fallback)");
-            binder_voicecall_request_submit(self, RADIO_REQ_ACCEPT_CALL, cbd);
+            binder_voicecall_request_submit(self, code, cbd);
         }
     } else {
         /* Default action */
         DBG_(self, "answering current call");
-        guint32 code = self->interface_aidl == RADIO_VOICE_INTERFACE ?
-            RADIO_VOICE_REQ_ACCEPT_CALL : RADIO_REQ_ACCEPT_CALL;
         binder_voicecall_request_submit(self, code, cbd);
     }
     binder_voicecall_cbd_unref(cbd);
@@ -2264,6 +2299,8 @@ binder_voicecall_probe(
     binder_voicecall_clear_dtmf_queue(self);
     gutil_idle_queue_add(self->idleq, binder_voicecall_register, self);
     ofono_voicecall_set_data(vc, self);
+    ofono_voicecall_set_offline_dial_check(vc,
+        binder_voicecall_can_dial_offline);
     return 0;
 }
 
@@ -2275,6 +2312,7 @@ binder_voicecall_remove(
     BinderVoiceCall* self = binder_voicecall_get_data(vc);
 
     DBG_(self, "");
+    ofono_voicecall_set_offline_dial_check(vc, NULL);
     g_slist_free_full(self->calls, binder_voicecall_info_free);
 
     radio_request_drop(self->send_dtmf_req);

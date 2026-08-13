@@ -35,6 +35,12 @@ typedef enum binder_ext_ims_state {
     BINDER_EXT_IMS_STATE_REGISTERED
 } BINDER_EXT_IMS_STATE;
 
+typedef enum binder_ext_ims_registration_technology {
+    BINDER_EXT_IMS_REGISTRATION_TECHNOLOGY_UNKNOWN,
+    BINDER_EXT_IMS_REGISTRATION_TECHNOLOGY_CELLULAR,
+    BINDER_EXT_IMS_REGISTRATION_TECHNOLOGY_IWLAN
+} BINDER_EXT_IMS_REGISTRATION_TECHNOLOGY;
+
 typedef enum binder_ext_ims_flags {
     BINDER_EXT_IMS_NO_FLAGS = 0,
     BINDER_EXT_IMS_FLAG_AUTO = 0x01
@@ -82,6 +88,10 @@ binder_ext_ims_get_interface_flags(
 
 BINDER_EXT_IMS_STATE
 binder_ext_ims_get_state(
+    BinderExtIms* ext);
+
+BINDER_EXT_IMS_REGISTRATION_TECHNOLOGY
+binder_ext_ims_get_registration_technology(
     BinderExtIms* ext);
 
 guint

@@ -18,19 +18,21 @@
 #define BINDER_IMS_REG_H
 
 #include "binder_types.h"
-#include "binder_ext_types.h"
+#include "binder_ext_ims.h"
 
 /* Object tracking IMS registration state */
 
 typedef enum binder_ims_reg_property {
     BINDER_IMS_REG_PROPERTY_ANY,
     BINDER_IMS_REG_PROPERTY_REGISTERED,
+    BINDER_IMS_REG_PROPERTY_REGISTRATION_TECHNOLOGY,
     BINDER_IMS_REG_PROPERTY_COUNT
 } BINDER_IMS_REG_PROPERTY;
 
 struct binder_ims_reg {
     gboolean registered;
     int caps; /* OFONO_IMS_xxx bits */
+    BINDER_EXT_IMS_REGISTRATION_TECHNOLOGY registration_technology;
 };
 
 typedef

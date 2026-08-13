@@ -120,6 +120,17 @@ binder_ims_reg_query_done(
         binder_base_queue_property_change(base,
             BINDER_IMS_REG_PROPERTY_REGISTERED);
     }
+    {
+        const BINDER_EXT_IMS_REGISTRATION_TECHNOLOGY technology = registered ?
+            BINDER_EXT_IMS_REGISTRATION_TECHNOLOGY_CELLULAR :
+            BINDER_EXT_IMS_REGISTRATION_TECHNOLOGY_UNKNOWN;
+
+        if (ims->registration_technology != technology) {
+            ims->registration_technology = technology;
+            binder_base_queue_property_change(base,
+                BINDER_IMS_REG_PROPERTY_REGISTRATION_TECHNOLOGY);
+        }
+    }
     binder_base_emit_queued_signals(base);
 }
 
@@ -160,6 +171,9 @@ binder_ims_reg_update_state(
 {
     const BINDER_EXT_IMS_STATE state = binder_ext_ims_get_state(self->ext);
     const gboolean registered = (state == BINDER_EXT_IMS_STATE_REGISTERED);
+    const BINDER_EXT_IMS_REGISTRATION_TECHNOLOGY technology = registered ?
+        binder_ext_ims_get_registration_technology(self->ext) :
+        BINDER_EXT_IMS_REGISTRATION_TECHNOLOGY_UNKNOWN;
     BinderImsReg* ims = &self->pub;
 
     if (ims->registered != registered) {
@@ -167,6 +181,12 @@ binder_ims_reg_update_state(
         DBG_(self, "%sregistered", registered ? "" : "not ");
         binder_base_queue_property_change(&self->base,
             BINDER_IMS_REG_PROPERTY_REGISTERED);
+    }
+    if (ims->registration_technology != technology) {
+        ims->registration_technology = technology;
+        DBG_(self, "registration technology %d", technology);
+        binder_base_queue_property_change(&self->base,
+            BINDER_IMS_REG_PROPERTY_REGISTRATION_TECHNOLOGY);
     }
 }
 

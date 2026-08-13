@@ -97,7 +97,23 @@ binder_ims_notify(
     BinderIms* self)
 {
     BinderImsReg* ims = self->ims;
+    enum ofono_ims_registration_technology technology =
+        OFONO_IMS_REGISTRATION_TECHNOLOGY_UNKNOWN;
 
+    if (ims->registered) {
+        switch (ims->registration_technology) {
+        case BINDER_EXT_IMS_REGISTRATION_TECHNOLOGY_CELLULAR:
+            technology = OFONO_IMS_REGISTRATION_TECHNOLOGY_CELLULAR;
+            break;
+        case BINDER_EXT_IMS_REGISTRATION_TECHNOLOGY_IWLAN:
+            technology = OFONO_IMS_REGISTRATION_TECHNOLOGY_IWLAN;
+            break;
+        default:
+            break;
+        }
+    }
+
+    ofono_ims_registration_technology_notify(self->handle, technology);
     ofono_ims_status_notify(self->handle, ims->registered,
         ims->registered ? ims->caps : 0);
 }
@@ -112,7 +128,6 @@ binder_ims_registration_changed(
     BinderIms* self = user_data;
 
     DBG_(self, "");
-    GASSERT(property == BINDER_IMS_REG_PROPERTY_REGISTERED);
     binder_ims_notify(self);
 }
 
@@ -191,7 +206,7 @@ binder_ims_start(
 
     GASSERT(!self->event_id);
     self->event_id = binder_ims_reg_add_property_handler(self->ims,
-        BINDER_IMS_REG_PROPERTY_REGISTERED, binder_ims_registration_changed,
+        BINDER_IMS_REG_PROPERTY_ANY, binder_ims_registration_changed,
         self);
 
     ofono_ims_register(self->handle);

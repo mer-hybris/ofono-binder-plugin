@@ -1,6 +1,6 @@
 Name: ofono-binder-plugin
 
-Version: 1.1.28
+Version: 1.1.29
 Release: 1
 Summary: Binder based ofono plugin
 License: GPLv2
@@ -13,10 +13,11 @@ Source: %{name}-%{version}.tar.bz2
 %define libmce_version 1.0.6
 %define libofonobinderpluginext_version 1.1.22
 %define glib_version 2.32
-%define ofono_version 1.29+git8
+%define ofono_version 1.29+git13
 
 BuildRequires: pkgconfig
 BuildRequires: ofono-devel >= %{ofono_version}
+BuildRequires: ofono-voicecall-offline-dial-api >= 1
 BuildRequires: pkgconfig(libgbinder) >= %{libgbinder_version}
 BuildRequires: pkgconfig(libgbinder-radio) >= %{libgbinder_radio_version}
 BuildRequires: pkgconfig(libglibutil) >= %{libglibutil_version}
@@ -31,12 +32,14 @@ BuildRequires: pkgconfig(rpm)
 %{!?make_build:%define make_build make %{_smp_mflags}}
 
 Requires: ofono >= %{ofono_version}
+Requires: ofono-voicecall-offline-dial-api >= 1
 Requires: libofonobinderpluginext >= %{libofonobinderpluginext_version}
 Requires: libgbinder >= %{libgbinder_version}
 Requires: libgbinder-radio >= %{libgbinder_radio_version}
 Requires: libglibutil >= %{libglibutil_version}
 Requires: libmce-glib >= %{libmce_version}
 Requires: glib2 >= %{glib_version}
+Provides: ofono-binder-plugin-vowifi-api = 1
 
 Conflicts: ofono-ril-plugin
 Obsoletes: ofono-ril-plugin
@@ -78,6 +81,7 @@ install -m 644 binder.conf %{buildroot}%{config_dir}
 
 %package -n libofonobinderpluginext
 Summary: Extension framework for ofono-binder-plugin
+Provides: libofonobinderpluginext-vowifi-api = 1
 Requires(post): /sbin/ldconfig
 Requires(postun): /sbin/ldconfig
 

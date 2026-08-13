@@ -63,6 +63,20 @@ binder_ext_ims_get_state(
     return BINDER_EXT_IMS_STATE_UNKNOWN;
 }
 
+BINDER_EXT_IMS_REGISTRATION_TECHNOLOGY
+binder_ext_ims_get_registration_technology(
+    BinderExtIms* self)
+{
+    if (G_LIKELY(self)) {
+        BinderExtImsInterface* iface = GET_IFACE(self);
+
+        if (iface->version >= 2 && iface->get_registration_technology) {
+            return iface->get_registration_technology(self);
+        }
+    }
+    return BINDER_EXT_IMS_REGISTRATION_TECHNOLOGY_UNKNOWN;
+}
+
 guint
 binder_ext_ims_set_registration(
     BinderExtIms* self,

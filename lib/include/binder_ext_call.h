@@ -51,7 +51,8 @@ typedef enum binder_ext_call_flags {
     BINDER_EXT_CALL_FLAG_ENCRYPTED = 0x0004,
     BINDER_EXT_CALL_FLAG_MPTY = 0x0008,
     BINDER_EXT_CALL_FLAG_RTT = 0x0010,
-    BINDER_EXT_CALL_FLAG_IMS = 0x0020
+    BINDER_EXT_CALL_FLAG_IMS = 0x0020,
+    BINDER_EXT_CALL_FLAG_IWLAN = 0x0040
 } BINDER_EXT_CALL_FLAGS;
 
 typedef enum binder_ext_call_direction {

@@ -33,11 +33,22 @@ G_IMPLEMENT_INTERFACE(BINDER_EXT_TYPE_IMS, test_dummy_ims_iface_init))
 #define TEST_TYPE_DUMMY_IMS test_dummy_ims_get_type()
 
 static
+BINDER_EXT_IMS_REGISTRATION_TECHNOLOGY
+test_dummy_ims_get_registration_technology(
+    BinderExtIms* ext)
+{
+    g_assert_not_reached();
+    return BINDER_EXT_IMS_REGISTRATION_TECHNOLOGY_UNKNOWN;
+}
+
+static
 void
 test_dummy_ims_iface_init(
     BinderExtImsInterface* iface)
 {
-    iface->version = BINDER_EXT_IMS_INTERFACE_VERSION;
+    iface->version = 1;
+    iface->get_registration_technology =
+        test_dummy_ims_get_registration_technology;
     /* No callbacks at all */
 }
 
@@ -92,6 +103,14 @@ test_ims_get_state(
 }
 
 static
+BINDER_EXT_IMS_REGISTRATION_TECHNOLOGY
+test_ims_get_registration_technology(
+    BinderExtIms* ext)
+{
+    return BINDER_EXT_IMS_REGISTRATION_TECHNOLOGY_IWLAN;
+}
+
+static
 guint
 test_ims_set_registration(
     BinderExtIms* ext,
@@ -135,6 +154,7 @@ test_ims_iface_init(
     iface->set_registration = test_ims_set_registration;
     iface->cancel = test_ims_cancel;
     iface->add_state_handler = test_ims_add_state_handler;
+    iface->get_registration_technology = test_ims_get_registration_technology;
 }
 
 static
@@ -191,6 +211,8 @@ test_basic(
         BINDER_EXT_IMS_INTERFACE_NO_FLAGS);
     g_assert_cmpint(binder_ext_ims_get_state(NULL), == ,
         BINDER_EXT_IMS_STATE_UNKNOWN);
+    g_assert_cmpint(binder_ext_ims_get_registration_technology(NULL), == ,
+        BINDER_EXT_IMS_REGISTRATION_TECHNOLOGY_UNKNOWN);
     g_assert_cmpint(binder_ext_ims_set_registration(NULL,
         BINDER_EXT_IMS_REGISTRATION_ON, NULL, NULL, NULL), == ,0);
     g_assert_cmpint(binder_ext_ims_add_state_handler(NULL, NULL, NULL), == ,0);
@@ -203,6 +225,8 @@ test_basic(
         TEST_IMS_FLAGS);
     g_assert_cmpint(binder_ext_ims_get_state(ims), == ,
         BINDER_EXT_IMS_STATE_NOT_REGISTERED);
+    g_assert_cmpint(binder_ext_ims_get_registration_technology(ims), == ,
+        BINDER_EXT_IMS_REGISTRATION_TECHNOLOGY_IWLAN);
     g_assert_cmpuint(binder_ext_ims_set_registration(ims,
         BINDER_EXT_IMS_REGISTRATION_ON, NULL, NULL, NULL), == ,TEST_CALL_ID);
     id = binder_ext_ims_add_state_handler(ims, test_not_reached, NULL);
@@ -234,6 +258,8 @@ test_dummy(
         BINDER_EXT_IMS_INTERFACE_NO_FLAGS);
     g_assert_cmpint(binder_ext_ims_get_state(ims), == ,
         BINDER_EXT_IMS_STATE_UNKNOWN);
+    g_assert_cmpint(binder_ext_ims_get_registration_technology(ims), == ,
+        BINDER_EXT_IMS_REGISTRATION_TECHNOLOGY_UNKNOWN);
     g_assert_cmpint(binder_ext_ims_set_registration(ims,
         BINDER_EXT_IMS_REGISTRATION_ON, NULL, NULL, NULL), == ,0);
     g_assert(!binder_ext_ims_add_state_handler(ims, test_not_reached, NULL));
