@@ -1029,8 +1029,10 @@ binder_slot_all_clients_connected(
     if (slot->n_services > 0) {
         uint i;
 
+        /* IMS interface is optional */
         for (i = 0; i < slot->n_services; i++) {
-            if (!radio_client_connected(slot->services[i].client)) {
+            if (!radio_client_connected(slot->services[i].client) &&
+                slot->services[i].aidl_interface != RADIO_IMS_INTERFACE) {
                 return FALSE;
             }
         }
