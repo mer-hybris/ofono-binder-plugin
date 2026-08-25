@@ -491,7 +491,7 @@ binder_modem_remove(
     radio_request_group_cancel(self->g);
     radio_request_group_unref(self->g);
 
-    #define BINDER_CLIENT_UNREF(TYPE,type) \
+    #define BINDER_CLIENT_UNREF(TYPE,type,required) \
     radio_client_unref(modem->clients.type##_client);
     BINDER_FOREACH_CLIENT(BINDER_CLIENT_UNREF)
     #undef BINDER_CLIENT_UNREF
@@ -579,7 +579,7 @@ binder_modem_create(
         modem->ims = binder_ims_reg_new(clients->network_client, ext,
             log_prefix);
 
-        #define BINDER_CLIENT_REF(TYPE,type) \
+        #define BINDER_CLIENT_REF(TYPE,type,required) \
         modem->clients.type##_client = radio_client_ref(clients->type##_client);
         BINDER_FOREACH_CLIENT(BINDER_CLIENT_REF)
         #undef BINDER_CLIENT_REF

@@ -146,20 +146,20 @@ typedef enum network_cell_identity_type {
     NETWORK_CELL_IDENTITY_NR
 } NETWORK_CELL_IDENTITY_TYPE;
 
-/* client(TYPE,type) */
+/* client(TYPE,type,required) */
 #define BINDER_FOREACH_CLIENT(client) \
-    client(DATA,data) \
-    client(IMS,ims) \
-    client(MESSAGING,messaging) \
-    client(MODEM,modem) \
-    client(NETWORK,network) \
-    client(SIM,sim) \
-    client(VOICE,voice)
+    client(DATA,data,TRUE) \
+    client(IMS,ims,FALSE) \
+    client(MESSAGING,messaging,TRUE) \
+    client(MODEM,modem,TRUE) \
+    client(NETWORK,network,TRUE) \
+    client(SIM,sim,TRUE) \
+    client(VOICE,voice,TRUE)
 
 #define BINDER_CLIENT_COUNT (7) /* Must match the above */
 
 typedef struct binder_clients {
-    #define BINDER_CLIENT_FIELD(TYPE,type) RadioClient* type##_client;
+    #define BINDER_CLIENT_FIELD(TYPE,type,required) RadioClient* type##_client;
     BINDER_FOREACH_CLIENT(BINDER_CLIENT_FIELD)
     #undef BINDER_CLIENT_FIELD
 } BinderClients;

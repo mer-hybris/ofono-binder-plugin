@@ -127,25 +127,9 @@
 #define BINDER_SLOT_RADIO_INTERFACE_1_4 "1.4"
 #define BINDER_SLOT_RADIO_INTERFACE_1_5 "1.5"
 
-static const char* const binder_radio_ifaces[] = {
-    RADIO_1_0, /* android.hardware.radio@1.0::IRadio */
-    RADIO_1_1, /* android.hardware.radio@1.1::IRadio */
-    RADIO_1_2, /* android.hardware.radio@1.2::IRadio */
-    RADIO_1_3, /* android.hardware.radio@1.3::IRadio */
-    RADIO_1_4, /* android.hardware.radio@1.4::IRadio */
-    RADIO_1_5  /* android.hardware.radio@1.5::IRadio */
-};
-
-static const char* binder_aidl_interfaces[] = {
-    RADIO_DATA,
-    RADIO_IMS,
-    RADIO_MESSAGING,
-    RADIO_MODEM,
-    RADIO_NETWORK,
-    RADIO_SIM,
-    RADIO_VOICE
-};
-G_STATIC_ASSERT(G_N_ELEMENTS(binder_aidl_interfaces) == RADIO_AIDL_INTERFACE_COUNT);
+/* v(version) */
+#define BINDER_FOREACH_HIDL_INTERFACE(v) \
+    v(1_0) v(1_1) v(1_2) v(1_3) v(1_4) v(1_5)
 
 /*
  * The convention is that the keys which can only appear in the [Settings]
@@ -351,10 +335,16 @@ struct binder_slot_io {
     gboolean received_sim_status;
 };
 
-struct binder_service {
+typedef struct binder_service_type {
     const char* name;
-    BinderSlot* slot;
+    const char* iface;
     RADIO_AIDL_INTERFACE aidl_interface;
+    gboolean required;
+} BinderServiceType;
+
+struct binder_service {
+    const BinderServiceType* type;
+    BinderSlot* slot;
     RadioInstance* instance;
     RadioClient* client;
     BinderLogger* log_trace;
@@ -840,23 +830,19 @@ void
 binder_service_init(
     BinderService* service,
     BinderSlot* slot,
-    const char* name,
-    RADIO_AIDL_INTERFACE aidl_interface)
+    const BinderServiceType* type)
 {
     service->slot = slot;
-    service->name = name;
-    service->aidl_interface = aidl_interface;
+    service->type = type;
 
-    if (aidl_interface == RADIO_AIDL_INTERFACE_NONE) {
+    if (type->aidl_interface == RADIO_AIDL_INTERFACE_NONE) {
         /* HIDL */
         service->fqname = g_strconcat(service->watch_name =
-            g_strdup(binder_radio_ifaces[slot->version]), "/",
-                slot->name, NULL);
+            g_strdup(type->iface), "/", slot->name, NULL);
     } else {
         /* AIDL */
         service->fqname = g_strdup(service->watch_name =
-            g_strconcat(binder_aidl_interfaces[aidl_interface], "/",
-                slot->name, NULL));
+            g_strconcat(type->iface, "/", slot->name, NULL));
     }
 }
 
@@ -913,12 +899,12 @@ binder_service_connect(
         service->instance =
             radio_instance_new_with_modem_slot_version_and_interface(dev,
                 slot->name, slot->path, slot->config.slot, slot->version,
-                service->aidl_interface);
+                service->type->aidl_interface);
         binder_service_update_logger(service);
     }
 
     if (!service->client) {
-        DBG("Bringing up %s %s", slot->name, service->name);
+        DBG("Bringing up %s %s", slot->name, service->type->name);
         service->client = radio_client_new(service->instance);
         if (service->client) {
             radio_client_set_default_timeout(service->client,
@@ -944,9 +930,11 @@ binder_service_disconnect(
 {
     if (service->client) {
         if (radio_client_dead(service->client)) {
-            DBG("%s %s is has died", service->slot->name, service->name);
+            DBG("%s %s is has died", service->slot->name,
+                service->type->name);
         } else {
-            DBG("Shutting down %s %s", service->slot->name, service->name);
+            DBG("Shutting down %s %s", service->slot->name,
+                service->type->name);
         }
         radio_client_remove_all_handlers(service->client,
             service->client_event_id);
@@ -986,10 +974,10 @@ binder_slot_find_service(
 
     for (i = 0; i < slot->n_services; i++) {
         BinderService* service = slot->services + i;
+        const RADIO_AIDL_INTERFACE ai = service->type->aidl_interface;
 
         /* RADIO_AIDL_INTERFACE_NONE is HIDL and matches anything */
-        if (service->aidl_interface == RADIO_AIDL_INTERFACE_NONE ||
-            service->aidl_interface == aidl_interface) {
+        if (ai == RADIO_AIDL_INTERFACE_NONE || ai == aidl_interface) {
             return service;
         }
     }
@@ -1014,7 +1002,7 @@ binder_slot_publish_clients(
     BinderSlot* slot)
 {
     /* Fill in BinderServices */
-    #define BINDER_CLIENT(TYPE,type) \
+    #define BINDER_CLIENT(TYPE,type,required) \
     slot->clients.type##_client = \
     binder_slot_find_connected_client(slot, RADIO_##TYPE##_INTERFACE);
     BINDER_FOREACH_CLIENT(BINDER_CLIENT)
@@ -1030,7 +1018,10 @@ binder_slot_all_clients_connected(
         uint i;
 
         for (i = 0; i < slot->n_services; i++) {
-            if (!radio_client_connected(slot->services[i].client)) {
+            const BinderService* service = slot->services + i;
+
+            if (!radio_client_connected(service->client) &&
+                service->type->required) {
                 return FALSE;
             }
         }
@@ -1647,42 +1638,6 @@ binder_plugin_slot_pick_shortest_timeout_cb(
     }
 }
 
-static
-const char*
-binder_plugin_radio_interface_name(
-    RADIO_INTERFACE interface)
-{
-    switch (interface) {
-    case RADIO_INTERFACE_1_0: return BINDER_SLOT_RADIO_INTERFACE_1_0;
-    case RADIO_INTERFACE_1_1: return BINDER_SLOT_RADIO_INTERFACE_1_1;
-    case RADIO_INTERFACE_1_2: return BINDER_SLOT_RADIO_INTERFACE_1_2;
-    case RADIO_INTERFACE_1_3: return BINDER_SLOT_RADIO_INTERFACE_1_3;
-    case RADIO_INTERFACE_1_4: return BINDER_SLOT_RADIO_INTERFACE_1_4;
-    case RADIO_INTERFACE_1_5: return BINDER_SLOT_RADIO_INTERFACE_1_5;
-    case RADIO_INTERFACE_NONE:
-    case RADIO_INTERFACE_COUNT:
-        break;
-    }
-    return NULL;
-}
-
-static
-RADIO_INTERFACE
-binder_plugin_parse_radio_interface(
-    const char* name)
-{
-    if (name) {
-        RADIO_INTERFACE i;
-
-        for (i = RADIO_INTERFACE_1_0; i < RADIO_INTERFACE_COUNT; i++ ) {
-            if (!g_strcmp0(name, binder_plugin_radio_interface_name(i))) {
-                return i;
-            }
-        }
-    }
-    return BINDER_DEFAULT_RADIO_INTERFACE;
-}
-
 /*
  * Parse the spec according to the following grammar:
  *
@@ -1848,11 +1803,26 @@ binder_plugin_create_slot(
     }
 
     /* radioInterface */
-    sval = ofono_conf_get_string(file, group,
-        BINDER_CONF_SLOT_RADIO_INTERFACE);
+    sval = ofono_conf_get_string(file, group, BINDER_CONF_SLOT_RADIO_INTERFACE);
     if (sval) {
-        DBG("%s: " BINDER_CONF_SLOT_RADIO_INTERFACE " %s", group, sval);
-        slot->version = binder_plugin_parse_radio_interface(sval);
+        static const char* radio_interface_opts[] = {
+            #define RADIO_INTERFACE_OPT(v) BINDER_SLOT_RADIO_INTERFACE_##v,
+            BINDER_FOREACH_HIDL_INTERFACE(RADIO_INTERFACE_OPT)
+            #undef RADIO_INTERFACE_OPT
+        };
+        guint i;
+
+        /* Only accept valid values */
+        for (i = 0; i < G_N_ELEMENTS(radio_interface_opts); i++ ) {
+            if (!g_strcmp0(sval, radio_interface_opts[i])) {
+                DBG("%s: " BINDER_CONF_SLOT_RADIO_INTERFACE " %s", group, sval);
+                slot->version = i;
+                break;
+            }
+        }
+        if (i == G_N_ELEMENTS(radio_interface_opts)) {
+            ofono_warn("Unknown radio interface '%s'", sval);
+        }
         g_free(sval);
     }
 
@@ -2037,21 +2007,32 @@ binder_plugin_create_slot(
     }
 
     if (ps->interface_type == RADIO_INTERFACE_TYPE_HIDL) {
+        /* Multiple versions of the same interface */
+        static const BinderServiceType hidl_types[] = {
+            #define BINDER_HIDL_INTERFACE_TYPE(version) \
+            { "radio", RADIO_##version, RADIO_AIDL_INTERFACE_NONE, TRUE },
+            BINDER_FOREACH_HIDL_INTERFACE(BINDER_HIDL_INTERFACE_TYPE)
+            #undef BINDER_HIDL_INTERFACE_TYPE
+        };
+
         slot->n_services = 1;
         slot->services = g_new0(BinderService, slot->n_services);
-        binder_service_init(slot->services, slot, "radio",
-            RADIO_AIDL_INTERFACE_NONE);
+        binder_service_init(slot->services, slot, hidl_types + slot->version);
     } else {
-        guint i = 0;
+        /* Multiple interfaces, no versioning (yet) */
+        static const BinderServiceType aidl_types[]= {
+            #define BINDER_SERVICE_TYPE(TYPE,type,required) \
+            { #type, RADIO_##TYPE, RADIO_##TYPE##_INTERFACE, required },
+            BINDER_FOREACH_CLIENT(BINDER_SERVICE_TYPE)
+            #undef BINDER_SERVICE_TYPE
+        };
+        guint i;
 
-        slot->n_services = BINDER_CLIENT_COUNT;
+        slot->n_services = G_N_ELEMENTS(aidl_types);
         slot->services = g_new0(BinderService, slot->n_services);
-
-        #define BINDER_SERVICE_INIT(TYPE,type) \
-        binder_service_init(slot->services + (i++), slot, \
-            #type, RADIO_##TYPE##_INTERFACE);
-        BINDER_FOREACH_CLIENT(BINDER_SERVICE_INIT)
-        #undef BINDER_SERVICE_INIT
+        for (i = 0; i < slot->n_services; i++) {
+            binder_service_init(slot->services + i, slot, aidl_types + i);
+        }
     }
 
     return slot;
