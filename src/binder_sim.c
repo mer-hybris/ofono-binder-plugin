@@ -691,12 +691,12 @@ binder_sim_read_cb(
             if (binder_sim_io_response_ok(res)) {
                 /* Success */
                 cb(binder_error_ok(&err), res->data, res->data_len, cbd->data);
-                binder_sim_io_response_free(res);
-                return;
             } else {
-                binder_error_init_sim_error(&err, res->sw1, res->sw2);
+                cb(binder_error_sim(&err, res->sw1, res->sw2), NULL, 0,
+                    cbd->data);
             }
             binder_sim_io_response_free(res);
+            return;
         } else {
             ofono_error("Failed to parse iccIOForApp response");
         }
@@ -802,11 +802,11 @@ binder_sim_write_cb(
             if (binder_sim_io_response_ok(res)) {
                 /* Success */
                 cb(binder_error_ok(&err), cbd->data);
-                return;
             } else {
-                binder_error_init_sim_error(&err, res->sw1, res->sw2);
+                cb(binder_error_sim(&err, res->sw1, res->sw2), cbd->data);
             }
             binder_sim_io_response_free(res);
+            return;
         } else {
             ofono_error("Failed to parse iccIOForApp response");
         }
@@ -2232,7 +2232,6 @@ binder_sim_logical_access_get_results_cb(
             if (binder_sim_io_response_ok(res)) {
                 cb(binder_error_ok(&err), res->data, res->data_len, cbd->data);
             } else {
-                binder_error_init_sim_error(&err, res->sw1, res->sw2);
                 cb(binder_error_sim(&err, res->sw1, res->sw2), NULL, 0,
                     cbd->data);
             }
