@@ -96,6 +96,31 @@ binder_call_settings_callback_data_free(
 }
 
 static
+RadioRequest*
+binder_call_settings_req_new(
+    BinderCallSettings* self,
+    RADIO_REQ code,
+    GBinderWriter* writer,
+    RadioRequestCompleteFunc complete,
+    BinderCallback cb,
+    void* data)
+{
+    RadioRequest* req = radio_request_new2(self->g, code, writer, complete,
+        binder_call_settings_callback_data_free,
+        binder_call_settings_callback_data_new(self, cb, data));
+
+    /*
+     * Supplementary service requests may take a long time. Make them
+     * blocking to avoid disturbing the modem while it's talking to the
+     * carrier. These requests are typically initiated by the user from
+     * the system settings.
+     */
+    radio_request_set_timeout(req, BINDER_SS_TIMEOUT_MS);
+    radio_request_set_blocking(req, TRUE);
+    return req;
+}
+
+static
 void
 binder_call_settings_call(
     BinderCallSettings* self,
@@ -104,9 +129,12 @@ binder_call_settings_call(
     BinderCallback cb,
     void* data)
 {
-    binder_submit_request2(self->g, code, complete,
-        binder_call_settings_callback_data_free,
-        binder_call_settings_callback_data_new(self, cb, data));
+    /* Simple call with no arguments (other than the mandatory serial) */
+    RadioRequest* req = binder_call_settings_req_new(self, code, NULL,
+        complete, cb, data);
+
+    radio_request_submit(req);
+    radio_request_unref(req);
 }
 
 static
@@ -159,10 +187,8 @@ binder_call_settings_cw_set(
     if (cls == BEARER_CLASS_DEFAULT)
         cls = BEARER_CLASS_VOICE;
 
-    req = radio_request_new2(self->g, self->api->set_call_waiting_req, &args,
-        binder_call_settings_set_cb,
-        binder_call_settings_callback_data_free,
-        binder_call_settings_callback_data_new(self, BINDER_CB(cb), data));
+    req = binder_call_settings_req_new(self, self->api->set_call_waiting_req,
+        &args, binder_call_settings_set_cb, BINDER_CB(cb), data);
 
     /*
      * IRadio.hal:
@@ -258,10 +284,8 @@ void binder_call_settings_cw_query(
     if (cls == BEARER_CLASS_DEFAULT)
         cls = BEARER_CLASS_VOICE;
 
-    req = radio_request_new2(self->g, self->api->get_call_waiting_req, &args,
-        binder_call_settings_cw_query_cb,
-        binder_call_settings_callback_data_free,
-        binder_call_settings_callback_data_new(self, BINDER_CB(cb), data));
+    req = binder_call_settings_req_new(self, self->api->get_call_waiting_req,
+        &args, binder_call_settings_cw_query_cb, BINDER_CB(cb), data);
 
     /*
      * IRadio.hal:
@@ -404,11 +428,9 @@ binder_call_settings_clir_set(
 {
     BinderCallSettings* self = binder_call_settings_get_data(s);
     GBinderWriter args;
-    RadioRequest* req = radio_request_new2(self->g,
-        self->api->set_clir_req, &args,
-        binder_call_settings_set_cb,
-        binder_call_settings_callback_data_free,
-        binder_call_settings_callback_data_new(self, BINDER_CB(cb), data));
+    RadioRequest* req = binder_call_settings_req_new(self,
+        self->api->set_clir_req, &args, binder_call_settings_set_cb,
+        BINDER_CB(cb), data);
 
     DBG_(self, "%d", mode);
 

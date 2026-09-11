@@ -98,6 +98,32 @@ binder_call_barring_callback_data_free(
 }
 
 static
+RadioRequest*
+binder_call_barring_req_new(
+    BinderCallBarring* self,
+    RadioRequestGroup* g,
+    RADIO_REQ code,
+    GBinderWriter* writer,
+    RadioRequestCompleteFunc complete,
+    BinderCallback cb,
+    void* data)
+{
+    RadioRequest* req = radio_request_new2(g, code, writer, complete,
+        binder_call_barring_callback_data_free,
+        binder_call_barring_callback_data_new(self, cb, data));
+
+    /*
+     * Supplementary service requests may take a long time. Make them
+     * blocking to avoid disturbing the modem while it's talking to the
+     * carrier. These requests are typically initiated by the user from
+     * the system settings.
+     */
+    radio_request_set_timeout(req, BINDER_SS_TIMEOUT_MS);
+    radio_request_set_blocking(req, TRUE);
+    return req;
+}
+
+static
 gboolean
 binder_call_barring_query_ok(
     const BinderCallBarringCbData* cbd,
@@ -108,10 +134,12 @@ binder_call_barring_query_ok(
 
     /*
      * IRadioResponse.hal:
-     * oneway getFacilityLockForAppResponse(RadioResponseInfo info, int32_t response);
+     * oneway getFacilityLockForAppResponse(RadioResponseInfo info,
+     *     int32_t response);
      *
      * IRadioSimResponse.aidl:
-     * void getFacilityLockForAppResponse(in RadioResponseInfo info, in int response);
+     * void getFacilityLockForAppResponse(in RadioResponseInfo info,
+     *     in int response);
      *
      * response - the TS 27.007 service class bit vector of services
      * for which the specified barring facility is active.
@@ -164,11 +192,9 @@ binder_call_barring_query(
     BinderCallBarring* self = ofono_call_barring_get_data(b);
     const BinderCallBarringApi* api = self->api;
     GBinderWriter args;
-    RadioRequest* req = radio_request_new2(self->sim_g,
+    RadioRequest* req = binder_call_barring_req_new(self, self->sim_g,
         api->sim_get_facility_lock_for_app_req, &args,
-        binder_call_barring_query_cb,
-        binder_call_barring_callback_data_free,
-        binder_call_barring_callback_data_new(self, BINDER_CB(cb), data));
+        binder_call_barring_query_cb, BINDER_CB(cb), data);
 
     DBG_(self, "lock: %s, services to query: 0x%02x", lock, cls);
 
@@ -231,11 +257,9 @@ binder_call_barring_set(
     BinderCallBarring* self = ofono_call_barring_get_data(b);
     const BinderCallBarringApi* api = self->api;
     GBinderWriter args;
-    RadioRequest* req = radio_request_new2(self->sim_g,
+    RadioRequest* req = binder_call_barring_req_new(self, self->sim_g,
         api->sim_set_facility_lock_for_app_req, &args,
-        binder_call_barring_set_cb,
-        binder_call_barring_callback_data_free,
-        binder_call_barring_callback_data_new(self, BINDER_CB(cb), data));
+        binder_call_barring_set_cb, BINDER_CB(cb), data);
 
     DBG_(self, "lock: %s, enable: %i, bearer class: %i", lock, enable, cls);
 
@@ -305,11 +329,9 @@ binder_call_barring_set_passwd(
      *     string oldPassword, string newPassword);
      */
     GBinderWriter args;
-    RadioRequest* req = radio_request_new2(self->network_g,
+    RadioRequest* req = binder_call_barring_req_new(self, self->network_g,
         api->network_set_barring_password_req, &args,
-        binder_call_barring_set_passwd_cb,
-        binder_call_barring_callback_data_free,
-        binder_call_barring_callback_data_new(self, BINDER_CB(cb), data));
+        binder_call_barring_set_passwd_cb, BINDER_CB(cb), data);
 
     DBG_(self, "%s", lock);
 

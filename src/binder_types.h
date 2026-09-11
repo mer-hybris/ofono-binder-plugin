@@ -86,6 +86,9 @@ typedef struct binder_slot_config {
 #define BINDER_RETRY_SECS (2)
 #define BINDER_RETRY_MS   (BINDER_RETRY_SECS * 1000)
 
+/* Long timeout for supplementary service requests */
+#define BINDER_SS_TIMEOUT_MS (5*60*1000)
+
 typedef void (*BinderCallback)(void);
 #define BINDER_CB(f) ((BinderCallback)(f))
 
