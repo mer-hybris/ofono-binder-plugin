@@ -104,6 +104,31 @@ binder_call_forwarding_callback_data_free(
 }
 
 static
+RadioRequest*
+binder_call_forwarding_req_new(
+    BinderCallForwarding* self,
+    RADIO_REQ code,
+    GBinderWriter* writer,
+    RadioRequestCompleteFunc complete,
+    BinderCallback cb,
+    void* data)
+{
+    RadioRequest* req = radio_request_new2(self->g, code, writer, complete,
+        binder_call_forwarding_callback_data_free,
+        binder_call_forwarding_callback_data_new(self, cb, data));
+
+    /*
+     * Supplementary service requests may take a long time. Make them
+     * blocking to avoid disturbing the modem while it's talking to the
+     * carrier. These requests are typically initiated by the user from
+     * the system settings.
+     */
+    radio_request_set_timeout(req, BINDER_SS_TIMEOUT_MS);
+    radio_request_set_blocking(req, TRUE);
+    return req;
+}
+
+static
 void
 binder_call_forwarding_set_cb(
     RadioRequest* req,
@@ -142,11 +167,9 @@ binder_call_forwarding_set(
 {
     const BinderCallForwardingApi* api = self->api;
     GBinderWriter args;
-    RadioRequest* req = radio_request_new2(self->g,
+    RadioRequest* req = binder_call_forwarding_req_new(self,
         self->api->set_call_forward_req, &args,
-        binder_call_forwarding_set_cb,
-        binder_call_forwarding_callback_data_free,
-        binder_call_forwarding_callback_data_new(self, BINDER_CB(cb), data));
+        binder_call_forwarding_set_cb, BINDER_CB(cb), data);
 
     DBG_(self, "");
 
@@ -279,11 +302,9 @@ binder_call_forwarding_query(
     BinderCallForwarding* self = binder_call_forwarding_get_data(f);
     const BinderCallForwardingApi* api = self->api;
     GBinderWriter args;
-    RadioRequest* req = radio_request_new2(self->g,
+    RadioRequest* req = binder_call_forwarding_req_new(self,
         api->get_call_forward_status_req, &args,
-        binder_call_forwarding_query_cb,
-        binder_call_forwarding_callback_data_free,
-        binder_call_forwarding_callback_data_new(self, BINDER_CB(cb), data));
+        binder_call_forwarding_query_cb, BINDER_CB(cb), data);
 
     DBG_(self, "%d", type);
 
