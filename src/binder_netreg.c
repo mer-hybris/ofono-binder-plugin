@@ -2275,6 +2275,7 @@ static const BinderNetRegApi binder_netreg_api_hidl_1_4 = {
     binder_netreg_api_write_set_network_selection_mode_manual_args_hidl,
     RADIO_REQ_START_NETWORK_SCAN_1_2,
     RADIO_REQ_STOP_NETWORK_SCAN,
+    RADIO_REQ_GET_AVAILABLE_NETWORKS,
     RADIO_REQ_GET_SIGNAL_STRENGTH_1_4,
     RADIO_REQ_GET_NETWORK_SELECTION_MODE,
     RADIO_REQ_SET_NETWORK_SELECTION_MODE_AUTOMATIC,
