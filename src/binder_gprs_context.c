@@ -22,6 +22,10 @@
 #include "binder_netreg.h"
 #include "binder_util.h"
 
+#include "binder_ext_ims.h"
+#include "binder_ext_slot.h"
+
+#include <ofono/gprs.h>
 #include <ofono/log.h>
 #include <ofono/mtu-limit.h>
 #include <ofono/watch.h>
@@ -30,11 +34,19 @@
 #include <gutil_misc.h>
 
 #include <arpa/inet.h>
+#include <linux/fib_rules.h>
+#include <linux/rtnetlink.h>
+#include <net/if.h>
+#include <errno.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 #define CTX_ID_NONE ((unsigned int)(-1))
 
 #define MAX_MMS_MTU 1280
+
+#define IMS_ROUTE_TABLE_BASE 3000
+#define IMS_ROUTE_RULE_PRIORITY 990
 
 typedef struct binder_gprs_context_call {
     BinderDataRequest* req;
@@ -55,6 +67,8 @@ typedef struct binder_gprs_context {
     BinderDataCall* active_call;
     BinderGprsContextCall activate;
     BinderGprsContextCall deactivate;
+    BinderExtIms* ims;
+    gulong ims_state_id;
 } BinderGprsContext;
 
 #define DBG_(self,fmt,args...) DBG("%s" fmt, (self)->log_prefix, ##args)
@@ -100,10 +114,130 @@ binder_gprs_context_address_family(
 
 static
 void
+binder_gprs_context_nl_attr(
+    struct nlmsghdr* msg,
+    int type,
+    const void* data,
+    int len)
+{
+    struct rtattr* rta = (struct rtattr*)((char*)msg +
+        NLMSG_ALIGN(msg->nlmsg_len));
+
+    rta->rta_type = type;
+    rta->rta_len = RTA_LENGTH(len);
+    memcpy(RTA_DATA(rta), data, len);
+    msg->nlmsg_len = NLMSG_ALIGN(msg->nlmsg_len) + RTA_ALIGN(rta->rta_len);
+}
+
+static
+void
+binder_gprs_context_nl_request(
+    int fd,
+    struct nlmsghdr* msg,
+    int ignored_error)
+{
+    struct {
+        struct nlmsghdr hdr;
+        struct nlmsgerr err;
+    } ack;
+    int error;
+
+    if (send(fd, msg, msg->nlmsg_len, 0) < 0 ||
+        recv(fd, &ack, sizeof(ack), 0) < (ssize_t)sizeof(ack)) {
+        error = errno;
+    } else {
+        error = -ack.err.error;
+    }
+    if (error && error != ignored_error) {
+        ofono_warn("IMS routing request %u failed: %s", msg->nlmsg_type,
+            strerror(error));
+    }
+}
+
+/*
+ * The IMS stack binds its sockets to the IMS interface. While the internet
+ * PDN is up, the main table has no default route via the IMS interface and
+ * the IPv6 reverse path filter drops the replies from the P-CSCF. Lookups
+ * bound to the IMS interface get a default route via it from this table.
+ */
+static
+void
+binder_gprs_context_ims_route(
+    const char* ifname,
+    gboolean add)
+{
+    const guint32 ifindex = ifname ? if_nametoindex(ifname) : 0;
+    const guint32 table = IMS_ROUTE_TABLE_BASE + ifindex;
+    const guint32 priority = IMS_ROUTE_RULE_PRIORITY;
+    struct {
+        struct nlmsghdr hdr;
+        struct rtmsg rtm;
+        char attrs[64];
+    } route;
+    struct {
+        struct nlmsghdr hdr;
+        struct fib_rule_hdr frh;
+        char attrs[64];
+    } rule;
+    int fd;
+
+    if (!ifindex) {
+        ofono_warn("IMS interface %s not found", ifname);
+        return;
+    }
+
+    fd = socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, NETLINK_ROUTE);
+    if (fd < 0) {
+        ofono_error("Failed to open netlink socket: %s", strerror(errno));
+        return;
+    }
+
+    memset(&route, 0, sizeof(route));
+    route.hdr.nlmsg_len = NLMSG_LENGTH(sizeof(route.rtm));
+    route.hdr.nlmsg_type = add ? RTM_NEWROUTE : RTM_DELROUTE;
+    route.hdr.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK |
+        (add ? (NLM_F_CREATE | NLM_F_REPLACE) : 0);
+    route.rtm.rtm_family = AF_INET6;
+    route.rtm.rtm_protocol = RTPROT_STATIC;
+    route.rtm.rtm_type = RTN_UNICAST;
+    binder_gprs_context_nl_attr(&route.hdr, RTA_TABLE, &table, sizeof(table));
+    binder_gprs_context_nl_attr(&route.hdr, RTA_OIF, &ifindex,
+        sizeof(ifindex));
+
+    memset(&rule, 0, sizeof(rule));
+    rule.hdr.nlmsg_len = NLMSG_LENGTH(sizeof(rule.frh));
+    rule.hdr.nlmsg_type = add ? RTM_NEWRULE : RTM_DELRULE;
+    rule.hdr.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK |
+        (add ? (NLM_F_CREATE | NLM_F_EXCL) : 0);
+    rule.frh.family = AF_INET6;
+    rule.frh.action = FR_ACT_TO_TBL;
+    binder_gprs_context_nl_attr(&rule.hdr, FRA_TABLE, &table, sizeof(table));
+    binder_gprs_context_nl_attr(&rule.hdr, FRA_PRIORITY, &priority,
+        sizeof(priority));
+    binder_gprs_context_nl_attr(&rule.hdr, FRA_OIFNAME, ifname,
+        strlen(ifname) + 1);
+
+    /* The kernel drops the route when the interface goes down */
+    if (add) {
+        binder_gprs_context_nl_request(fd, &route.hdr, 0);
+        binder_gprs_context_nl_request(fd, &rule.hdr, EEXIST);
+    } else {
+        binder_gprs_context_nl_request(fd, &rule.hdr, ENOENT);
+        binder_gprs_context_nl_request(fd, &route.hdr, ESRCH);
+    }
+    close(fd);
+}
+
+static
+void
 binder_gprs_context_free_active_call(
     BinderGprsContext* self)
 {
     if (self->active_call) {
+        if (ofono_gprs_context_get_type(self->gc) ==
+            OFONO_GPRS_CONTEXT_TYPE_IMS) {
+            binder_gprs_context_ims_route(self->active_call->ifname, FALSE);
+        }
         binder_data_call_release(self->data, self->active_call->cid, self);
         binder_data_call_free(self->active_call);
         self->active_call = NULL;
@@ -508,6 +642,9 @@ binder_gprs_context_activate_primary_cb(
 
         self->active_ctx_cid = self->activate.cid;
         binder_gprs_context_set_active_call(self, call);
+        if (ofono_gprs_context_get_type(gc) == OFONO_GPRS_CONTEXT_TYPE_IMS) {
+            binder_gprs_context_ims_route(call->ifname, TRUE);
+        }
         ofono_gprs_context_set_interface(gc, call->ifname);
         binder_gprs_context_set_address(gc, call);
         binder_gprs_context_set_gateway(gc, call);
@@ -562,7 +699,8 @@ binder_gprs_context_activate_primary(
     self->activate.data = data;
     self->activate.cid = ctx->cid;
     self->activate.req = binder_data_call_setup(self->data, ctx,
-        ofono_gprs_context_get_assigned_type(gc),
+        (ofono_gprs_context_get_type(gc) == OFONO_GPRS_CONTEXT_TYPE_IMS) ?
+        OFONO_GPRS_CONTEXT_TYPE_IMS : ofono_gprs_context_get_assigned_type(gc),
         binder_gprs_context_activate_primary_cb, self);
 }
 
@@ -642,6 +780,46 @@ binder_gprs_context_detach_shutdown(
 }
 
 static
+void
+binder_gprs_context_ims_finished(
+    const struct ofono_error* error,
+    void* data)
+{
+    if (error->type != OFONO_ERROR_TYPE_NO_ERROR) {
+        ofono_error("IMS data call request failed");
+    }
+}
+
+static
+void
+binder_gprs_context_ims_state_changed(
+    BinderExtIms* ims,
+    void* user_data)
+{
+    BinderGprsContext* self = user_data;
+    struct ofono_gprs_context* gc = self->gc;
+
+    if (ofono_gprs_context_get_type(gc) != OFONO_GPRS_CONTEXT_TYPE_IMS) {
+        return;
+    }
+
+    /* The modem requests the IMS PDN, the core never activates it */
+    if (binder_ext_ims_get_bearer_active(ims)) {
+        const struct ofono_gprs_primary_context* ctx =
+            ofono_gprs_context_settings_by_type(self->watch->gprs,
+                OFONO_GPRS_CONTEXT_TYPE_IMS);
+
+        if (ctx && ctx->apn[0] && !self->active_call && !self->activate.req) {
+            binder_gprs_context_activate_primary(gc, ctx,
+                binder_gprs_context_ims_finished, self);
+        }
+    } else if (self->active_call && !self->deactivate.req) {
+        binder_gprs_context_deactivate_primary(gc, self->active_ctx_cid,
+            binder_gprs_context_ims_finished, self);
+    }
+}
+
+static
 int
 binder_gprs_context_probe(
     struct ofono_gprs_context* gc,
@@ -659,6 +837,10 @@ binder_gprs_context_probe(
     self->network = binder_network_ref(modem->network);
     self->data = binder_data_ref(modem->data);
     self->active_ctx_cid = CTX_ID_NONE;
+    self->ims = binder_ext_ims_ref(binder_ext_slot_get_interface(modem->ext,
+        BINDER_EXT_TYPE_IMS));
+    self->ims_state_id = binder_ext_ims_add_state_handler(self->ims,
+        binder_gprs_context_ims_state_changed, self);
 
     ofono_gprs_context_set_data(gc, self);
     return 0;
@@ -690,6 +872,8 @@ binder_gprs_context_remove(
             NULL, NULL);
     }
 
+    binder_ext_ims_remove_handler(self->ims, self->ims_state_id);
+    binder_ext_ims_unref(self->ims);
     binder_data_remove_handler(self->data, self->calls_changed_id);
     binder_data_unref(self->data);
     binder_network_unref(self->network);

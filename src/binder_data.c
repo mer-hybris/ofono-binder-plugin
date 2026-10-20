@@ -1162,6 +1162,8 @@ binder_data_call_setup_new(
             /* Leave the default value untouched */
             break;
         }
+    } else if (context_type == OFONO_GPRS_CONTEXT_TYPE_IMS) {
+        setup->profile_id = RADIO_DATA_PROFILE_IMS;
     } else {
         setup->profile_id = RADIO_DATA_PROFILE_INVALID;
     }
@@ -2318,7 +2320,9 @@ binder_data_api_write_setup_data_call_args_aidl(
      * }
      */
     gbinder_writer_start_parcelable(args, &dp);
-    gbinder_writer_append_int32(&dp, RADIO_DATA_PROFILE_INVALID);/* profileId */
+    gbinder_writer_append_int32(&dp, (setup->profile_id ==  /* profileId */
+        RADIO_DATA_PROFILE_IMS) ? RADIO_DATA_PROFILE_IMS :
+        RADIO_DATA_PROFILE_INVALID);
     gbinder_writer_append_string16(&dp, setup->apn); /* apn */
     gbinder_writer_append_int32(&dp, pt);   /* protocol */
     gbinder_writer_append_int32(&dp, pt);   /* roamingProtocol */

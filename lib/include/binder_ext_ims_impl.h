@@ -49,9 +49,9 @@ typedef struct binder_ext_ims_interface {
     gulong (*add_state_handler)(BinderExtIms* ext,
         BinderExtImsFunc handler, void* user_data);
     void (*remove_handler)(BinderExtIms* ext, gulong id);
+    gboolean (*get_bearer_active)(BinderExtIms* ext);
 
     /* Padding for future expansion */
-    void (*_reserved1)(void);
     void (*_reserved2)(void);
     void (*_reserved3)(void);
     void (*_reserved4)(void);

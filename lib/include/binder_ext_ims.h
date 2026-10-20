@@ -103,6 +103,10 @@ binder_ext_ims_add_state_handler(
     BinderExtImsFunc handler,
     void* user_data);
 
+gboolean
+binder_ext_ims_get_bearer_active(
+    BinderExtIms* ext);
+
 void
 binder_ext_ims_remove_handler(
     BinderExtIms* ext,
