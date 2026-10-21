@@ -60,6 +60,13 @@ typedef enum radio_pref_net_type_internal {
     RADIO_PREF_NET_NR_LTE_TD_SCDMA_CDMA_EVDO_GSM_WCDMA
 } RADIO_PREF_NET_TYPE_INTERNAL;
 
+/*
+ * Internal data profile id, it only selects the APN types and is never
+ * sent to the modem. Must differ from defaultDataProfileId and
+ * mmsDataProfileId.
+ */
+#define BINDER_DATA_PROFILE_XCAP (RADIO_DATA_PROFILE_OEM_BASE + 1)
+
 RADIO_ACCESS_NETWORK
 binder_radio_access_network_for_tech(
     RADIO_TECH tech)

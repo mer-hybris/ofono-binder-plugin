@@ -118,6 +118,9 @@ binder_radio_apn_types_for_profile(
     case RADIO_DATA_PROFILE_FOTA:
         apn_types |= RADIO_APN_TYPE_FOTA;
         break;
+    case BINDER_DATA_PROFILE_XCAP:
+        apn_types |= RADIO_APN_TYPE_XCAP;
+        break;
     default:
         if (profile_id == config->mms_profile_id ||
             profile_id == config->default_profile_id) {

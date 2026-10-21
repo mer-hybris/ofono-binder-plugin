@@ -1159,6 +1159,7 @@ binder_data_call_setup_new(
         case OFONO_GPRS_CONTEXT_TYPE_ANY:
         case OFONO_GPRS_CONTEXT_TYPE_INTERNET:
         case OFONO_GPRS_CONTEXT_TYPE_WAP:
+        case OFONO_GPRS_CONTEXT_TYPE_XCAP:
             /* Leave the default value untouched */
             break;
         }

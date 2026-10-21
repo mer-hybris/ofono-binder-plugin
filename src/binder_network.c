@@ -912,6 +912,9 @@ binder_network_check_data_profiles(
         const struct ofono_gprs_primary_context* ims =
             ofono_gprs_context_settings_by_type(gprs,
                 OFONO_GPRS_CONTEXT_TYPE_IMS);
+        const struct ofono_gprs_primary_context* xcap =
+            ofono_gprs_context_settings_by_type(gprs,
+                OFONO_GPRS_CONTEXT_TYPE_XCAP);
 
         if (internet) {
             DBG_(self, "internet apn \"%s\"", internet->apn);
@@ -929,6 +932,13 @@ binder_network_check_data_profiles(
             DBG_(self, "ims apn \"%s\"", ims->apn);
             l = g_slist_append(l, binder_network_data_profile_new(ims,
                 RADIO_DATA_PROFILE_IMS));
+        }
+
+        /* The modem brings up the XCAP PDN itself, ofono never does */
+        if (xcap) {
+            DBG_(self, "xcap apn \"%s\"", xcap->apn);
+            l = g_slist_append(l, binder_network_data_profile_new(xcap,
+                BINDER_DATA_PROFILE_XCAP));
         }
 
         if (binder_network_data_profiles_equal(self->data_profiles, l)) {

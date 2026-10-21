@@ -13,7 +13,7 @@ Source: %{name}-%{version}.tar.bz2
 %define libmce_version 1.0.6
 %define libofonobinderpluginext_version 1.1.22
 %define glib_version 2.32
-%define ofono_version 1.29+git8
+%define ofono_version 1.29+git15
 
 BuildRequires: pkgconfig
 BuildRequires: ofono-devel >= %{ofono_version}

@@ -10,3 +10,5 @@ debian/*.substvars
 debian/libofonobinderpluginext-dev
 debian/libofonobinderpluginext
 debian/tmp
+documentation.list
+RPMS/
