@@ -372,6 +372,48 @@ binder_voicecall_merge_ext_calls(
 
 static
 gboolean
+binder_voicecall_is_ext_mpty_call(
+    BinderVoiceCall* self,
+    guint call_id)
+{
+    if (self->ext) {
+        /* binder_ext_call_get_calls never returns NULL */
+        const BinderExtCallInfo* const* ptr =
+            binder_ext_call_get_calls(self->ext);
+
+        for (; *ptr; ptr++) {
+            if ((*ptr)->call_id == call_id) {
+                return ((*ptr)->flags & BINDER_EXT_CALL_FLAG_MPTY) != 0;
+            }
+        }
+    }
+    return FALSE;
+}
+
+static
+GSList*
+binder_voicecall_drop_ext_mpty_calls(
+    BinderVoiceCall* self,
+    GSList* list)
+{
+    GSList* l = list;
+
+    /* IRadio may also report the multiparty calls hidden by ext */
+    while (l) {
+        GSList* next = l->next;
+        BinderVoiceCallInfo* call = l->data;
+
+        if (binder_voicecall_is_ext_mpty_call(self, call->oc.id)) {
+            binder_voicecall_info_free(call);
+            list = g_slist_delete_link(list, l);
+        }
+        l = next;
+    }
+    return list;
+}
+
+static
+gboolean
 binder_voicecall_have_ext_call(
     BinderVoiceCall* self)
 {
@@ -680,8 +722,9 @@ binder_voicecall_clcc_poll_cb(
 
         /* Build sorted list */
         gbinder_reader_copy(&reader, args);
-        list = g_slist_sort(self->api->read_call_list(&reader, resp),
-            binder_voicecall_info_compare);
+        list = binder_voicecall_drop_ext_mpty_calls(self,
+            g_slist_sort(self->api->read_call_list(&reader, resp),
+            binder_voicecall_info_compare));
     }
 
     /* Merge the ongoing ext calls since IRadio may not report them */

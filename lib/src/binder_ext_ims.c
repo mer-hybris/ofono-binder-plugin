@@ -112,6 +112,20 @@ binder_ext_ims_add_state_handler(
     return 0;
 }
 
+gboolean
+binder_ext_ims_get_bearer_active(
+    BinderExtIms* self)
+{
+    if (G_LIKELY(self)) {
+        BinderExtImsInterface* iface = GET_IFACE(self);
+
+        if (iface->get_bearer_active) {
+            return iface->get_bearer_active(self);
+        }
+    }
+    return FALSE;
+}
+
 void
 binder_ext_ims_remove_handler(
     BinderExtIms* self,
