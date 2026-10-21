@@ -675,9 +675,14 @@ binder_gprs_context_activate_primary(
     struct ofono_watch* watch = self->watch;
     struct ofono_netreg* netreg = watch->netreg;
     const enum ofono_netreg_status rs = ofono_netreg_get_status(netreg);
+    const gboolean ims = ofono_gprs_context_get_type(gc) ==
+        OFONO_GPRS_CONTEXT_TYPE_IMS;
 
-    /* Let's make sure that we aren't connecting when roaming not allowed */
-    if (rs == OFONO_NETREG_STATUS_ROAMING) {
+    /*
+     * Let's make sure that we aren't connecting when roaming not allowed.
+     * Data roaming doesn't apply to IMS, it carries no user data traffic.
+     */
+    if (rs == OFONO_NETREG_STATUS_ROAMING && !ims) {
         struct ofono_gprs* gprs = watch->gprs;
 
         if (!ofono_gprs_get_roaming_allowed(gprs) &&
@@ -698,8 +703,7 @@ binder_gprs_context_activate_primary(
     self->activate.cb = cb;
     self->activate.data = data;
     self->activate.cid = ctx->cid;
-    self->activate.req = binder_data_call_setup(self->data, ctx,
-        (ofono_gprs_context_get_type(gc) == OFONO_GPRS_CONTEXT_TYPE_IMS) ?
+    self->activate.req = binder_data_call_setup(self->data, ctx, ims ?
         OFONO_GPRS_CONTEXT_TYPE_IMS : ofono_gprs_context_get_assigned_type(gc),
         binder_gprs_context_activate_primary_cb, self);
 }
