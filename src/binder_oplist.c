@@ -69,7 +69,8 @@ struct ofono_network_operator*
 binder_oplist_find(
     BinderOpList* oplist,
     const char* mcc,
-    const char* mnc)
+    const char* mnc,
+    enum ofono_access_technology tech)
 {
     if (oplist) {
         guint i;
@@ -77,12 +78,37 @@ binder_oplist_find(
         for (i = 0; i < oplist->count; i++) {
             struct ofono_network_operator* op = oplist->op + i;
 
-            if (!strcmp(op->mcc, mcc) && !strcmp(op->mnc, mnc)) {
+            if (op->tech == tech && !strcmp(op->mcc, mcc) &&
+                !strcmp(op->mnc, mnc)) {
                 return op;
             }
         }
     }
     return NULL;
+}
+
+BinderOpList*
+binder_oplist_merge(
+    BinderOpList* dest,
+    const BinderOpList* src)
+{
+    if (src) {
+        guint i;
+
+        for (i = 0; i < src->count; i++) {
+            const struct ofono_network_operator* new_op = src->op + i;
+            struct ofono_network_operator* old_op =
+                binder_oplist_find(dest, new_op->mcc, new_op->mnc,
+                    new_op->tech);
+
+            if (old_op) {
+                *old_op = *new_op;
+            } else {
+                dest = binder_oplist_append(dest, new_op);
+            }
+        }
+    }
+    return dest;
 }
 
 struct ofono_network_operator*
