@@ -989,20 +989,11 @@ binder_netreg_scan_result_notify(
             &reader, &scan_status);
 
         if (oplist) {
-            guint i;
-
-            /* Merge the lists avoiding dups */
-            for (i = 0; i < oplist->count; i++) {
-                struct ofono_network_operator* new_op = oplist->op + i;
-                struct ofono_network_operator* old_op =
-                    binder_oplist_find(scan->oplist, new_op->mcc, new_op->mnc);
-
-                if (old_op) {
-                    *old_op = *new_op;
-                } else {
-                    scan->oplist = binder_oplist_append(scan->oplist, new_op);
-                }
-            }
+            /*
+             * Keep each technology for oFono core to combine. Only repeated
+             * results for the same operator and technology replace each other.
+             */
+            scan->oplist = binder_oplist_merge(scan->oplist, oplist);
             binder_oplist_free(oplist);
         } else {
             DBG_(self, "failed to parse scan result");
