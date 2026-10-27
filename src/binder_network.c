@@ -413,44 +413,37 @@ binder_network_set_registration_state(
     reg->status = OFONO_NETREG_STATUS_NONE;
     reg->access_tech = binder_access_tech_from_radio_tech(rat);
     reg->radio_tech = rat;
-    reg->em_enabled = FALSE;
     reg->lac = lac;
     reg->ci = ci;
 
     switch (reg_state) {
     case RADIO_REG_STATE_REG_HOME:
-        reg->em_enabled = TRUE;
         reg->status = OFONO_NETREG_STATUS_REGISTERED;
         break;
 
     case RADIO_REG_STATE_REG_ROAMING:
-        reg->em_enabled = TRUE;
         reg->status = OFONO_NETREG_STATUS_ROAMING;
         break;
 
     case RADIO_REG_STATE_NOT_REG_MT_NOT_SEARCHING_EM:
-        reg->em_enabled = TRUE;
         /* fallthrough */
     case RADIO_REG_STATE_NOT_REG_NOT_SEARCHING:
         reg->status = OFONO_NETREG_STATUS_NOT_REGISTERED;
         break;
 
     case RADIO_REG_STATE_NOT_REG_MT_SEARCHING_EM:
-        reg->em_enabled = TRUE;
         /* fallthrough */
     case RADIO_REG_STATE_NOT_REG_MT_SEARCHING:
         reg->status = OFONO_NETREG_STATUS_SEARCHING;
         break;
 
     case RADIO_REG_STATE_REG_DENIED_EM:
-        reg->em_enabled = TRUE;
         /* fallthrough */
     case RADIO_REG_STATE_REG_DENIED:
         reg->status = OFONO_NETREG_STATUS_DENIED;
         break;
 
     case RADIO_REG_STATE_UNKNOWN_EM:
-        reg->em_enabled = TRUE;
         /* fallthrough */
     case RADIO_REG_STATE_UNKNOWN:
         reg->status = OFONO_NETREG_STATUS_UNKNOWN;
@@ -2363,7 +2356,7 @@ binder_network_api_read_current_physical_channel_configs_aidl(
              * package android.hardware.radio.network;
              * parcelable PhysicalChannelConfig {
              *   CellConnectionStatus status;
-             *   android.hardware.radio.RadioTechnology rat;
+             *   RadioTechnology rat;
              *   int downlinkChannelNumber;
              *   int uplinkChannelNumber;
              *   int cellBandwidthDownlinkKhz;
@@ -2699,7 +2692,7 @@ binder_network_api_read_data_registration_state_aidl(
      * package android.hardware.radio.network;
      * parcelable RegStateResult {
      *   RegState regState;
-     *   android.hardware.radio.RadioTechnology rat;
+     *   RadioTechnology rat;
      *   RegistrationFailCause reasonForDenial;
      *   CellIdentity cellIdentity;
      *   String registeredPlmn;
