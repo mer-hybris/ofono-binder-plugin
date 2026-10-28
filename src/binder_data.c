@@ -98,7 +98,9 @@ enum binder_data_settings_event_id {
     SETTINGS_EVENT_COUNT
 };
 
+typedef struct binder_data_manager_api BinderDataManagerApi;
 struct binder_data_manager {
+    const BinderDataManagerApi* api;
     gint refcount;
     GSList* data_list;
     enum binder_data_manager_flags flags;
@@ -216,8 +218,17 @@ struct binder_data_api {
     RADIO_IND restricted_state_changed_ind;
     RADIO_IND data_call_list_changed_ind[3];
     GSList* (*read_data_call_list_changed_ind)(
-        GBinderReader* reader,
+        GBinderReader* args,
         RADIO_IND ind);
+};
+
+struct binder_data_manager_api {
+    const char* name;
+    RADIO_CONFIG_REQ get_phone_capability_req;
+    GUtilInts* (*read_get_phone_capability_resp)(
+        GBinderReader* args,
+        RADIO_CONFIG_RESP resp);
+    RADIO_CONFIG_REQ set_preferred_data_modem_req;
 };
 
 /* Data type descriptors */
@@ -620,17 +631,6 @@ binder_data_check_allowed(
         binder_base_queue_property_change(&data->base,
         BINDER_DATA_PROPERTY_ALLOWED);
     }
-}
-
-static
-gboolean
-binder_data_manager_set_preferred_data_modem_allowed(
-    BinderDataManager* dm)
-{
-    return dm &&
-        (radio_config_interface_type(dm->rc) == RADIO_INTERFACE_TYPE_AIDL ||
-         (radio_config_interface_type(dm->rc) == RADIO_INTERFACE_TYPE_HIDL &&
-          radio_config_interface(dm->rc) >= RADIO_CONFIG_INTERFACE_1_1));
 }
 
 static
@@ -1323,26 +1323,20 @@ binder_data_set_preferred_data_modem_cb(
 
     binder_data_request_completed(dr);
 
-    if (status == RADIO_TX_STATUS_OK) {
-        if (error == RADIO_ERROR_NONE) {
-            guint32 code =
-                radio_config_interface_type(data->dm->rc) == RADIO_INTERFACE_TYPE_AIDL ?
-                    RADIO_CONFIG_AIDL_RESP_SET_PREFERRED_DATA_MODEM :
-                    RADIO_CONFIG_RESP_SET_PREFERRED_DATA_MODEM;
-            if (resp == code) {
-                const gboolean was_allowed = binder_data_is_allowed(data);
-
-                data->flags |= BINDER_DATA_FLAG_ON;
-                DBG_(data, "data on");
-                binder_data_check_allowed(data, was_allowed);
-            } else {
-                ofono_error("Unexpected setPreferredDataModem response %d",
-                    resp);
-            }
-        } else {
-            DBG("setPreferredDataModem error %s",
-                binder_radio_error_string(error));
-        }
+    /*
+     * Even if it fails, it's not a big deal. The docs say:
+     *
+     *   It helps the modem with resource optimization and decisions of what
+     *   data connections should be satisfied.
+     *
+     * Well, in case of a failure the modem would have to survive without our
+     * help.
+     */
+    if (status != RADIO_TX_STATUS_OK) {
+        DBG_(data, "setPreferredDataModem tx failed");
+    } else if (error != RADIO_ERROR_NONE) {
+        DBG_(data, "setPreferredDataModem error %s",
+            binder_radio_error_string(error));
     }
 
     binder_data_request_finish(dr);
@@ -1356,15 +1350,19 @@ binder_data_set_preferred_data_modem_submit(
     GBinderWriter args;
     BinderDataObject* data = dr->data;
     BinderDataManager* dm = data->dm;
-    guint32 code =
-        radio_config_interface_type(dm->rc) == RADIO_INTERFACE_TYPE_AIDL ?
-            RADIO_CONFIG_AIDL_REQ_SET_PREFERRED_DATA_MODEM :
-            RADIO_CONFIG_REQ_SET_PREFERRED_DATA_MODEM;
     RadioRequest* req = radio_config_request_new(dm->rc,
-            code, &args,
+            dm->api->set_preferred_data_modem_req, &args,
             binder_data_set_preferred_data_modem_cb, NULL, dr);
 
-    /* setPreferredDataModem(serial, uint8 modemId) */
+    /*
+     * 1.1/IRadioConfig.hal:
+     *
+     * oneway setPreferredDataModem(int32_t serial, uint8_t modemId);
+     *
+     * IRadioConfig.aidl:
+     *
+     * oneway void setPreferredDataModem(in int serial, in byte modemId)
+     */
     if (req) {
         const guint8 modem_id = binder_data_modem_id(data);
 
@@ -1493,13 +1491,13 @@ binder_data_allow_submit_request(
     BinderDataObject* data,
     gboolean allow)
 {
-    if (binder_data_manager_need_set_data_allowed(data->dm)) {
-        if (binder_data_allow_can_submit(data)) {
-            binder_data_request_queue(binder_data_allow_new(data, allow));
-            return TRUE;
+    if (binder_data_allow_can_submit(data)) {
+        binder_data_request_queue(binder_data_allow_new(data, allow));
+        if (data->dm->api->set_preferred_data_modem_req) {
+            binder_data_request_queue
+                (binder_data_set_preferred_data_modem_new(data));
         }
-    } else if (allow && binder_data_manager_set_preferred_data_modem_allowed(data->dm)) {
-        binder_data_request_queue(binder_data_set_preferred_data_modem_new(data));
+        return TRUE;
     }
     return FALSE;
 }
@@ -2987,46 +2985,104 @@ binder_data_object_class_init(
 }
 
 /*==========================================================================*
- * BinderDataManager
+ * HIDL DataManager API flavor
+ *==========================================================================*/
+
+static const BinderDataManagerApi binder_data_manager_api_hidl = {
+    "hidl",
+    RADIO_CONFIG_REQ_NONE,
+    NULL,
+    RADIO_CONFIG_REQ_NONE
+};
+
+static
+GUtilInts*
+binder_data_manager_api_read_get_phone_capability_resp_hidl_1_1(
+    GBinderReader* args,
+    RADIO_CONFIG_RESP resp)
+{
+    /*
+     * 1.1/IRadioConfigResponse.hal:
+     *
+     * oneway getPhoneCapabilityResponse(RadioResponseInfo info,
+     *     PhoneCapability phoneCapability);
+     */
+    const RadioPhoneCapability* pcap = binder_read_hidl_struct(args,
+        RadioPhoneCapability);
+
+    if (pcap) {
+        const GBinderHidlVec* modems = &pcap->logicalModemList;
+        const RadioModemInfo* modem = modems->data.ptr;
+        GUtilIntArray* modem_ids = gutil_int_array_sized_new(modems->count);
+        guint i;
+
+        for (i = 0; i < modems->count; i++) {
+            gutil_int_array_append(modem_ids, modem[i].modemId);
+        }
+
+        if (binder_data_debug_desc.flags & OFONO_DEBUG_FLAG_PRINT) {
+            GString* str = g_string_new(NULL);
+
+            for (i = 0; i < modem_ids->count; i++) {
+                if (i > 0) g_string_append_c(str, ',');
+                g_string_append_printf(str, "%u", modem_ids->data[i]);
+            }
+            DBG("maxActiveData=%u, maxActiveInternetData=%u, "
+                "logicalModemList=[%s]", pcap->maxActiveData,
+                pcap->maxActiveInternetData, str->str);
+            g_string_free(str, TRUE);
+        }
+
+        GASSERT(gbinder_reader_at_end(args));
+        return gutil_int_array_free_to_ints(modem_ids);
+    }
+    return NULL;
+}
+
+static const BinderDataManagerApi binder_data_manager_api_hidl_1_1 = {
+    "hidl_1_1",
+    RADIO_CONFIG_REQ_GET_PHONE_CAPABILITY,
+    binder_data_manager_api_read_get_phone_capability_resp_hidl_1_1,
+    RADIO_CONFIG_REQ_SET_PREFERRED_DATA_MODEM
+};
+
+/*==========================================================================*
+ * AIDL DataManager API flavor
  *==========================================================================*/
 
 static
-void
-binder_data_manager_get_phone_capability_hidl_resp(
-    RadioRequest* req,
-    RADIO_TX_STATUS status,
-    RADIO_CONFIG_RESP resp,
-    RADIO_ERROR error,
-    const GBinderReader* args,
-    gpointer user_data)
+GUtilInts*
+binder_data_manager_api_read_get_phone_capability_resp_aidl(
+    GBinderReader* args,
+    RADIO_CONFIG_RESP resp)
 {
-    BinderDataManager* dm = user_data;
+    GUtilInts* out = NULL;
+    GBinderReader parcel;
 
-    GASSERT(dm->phone_cap_req == req);
-    radio_request_drop(dm->phone_cap_req);
-    dm->phone_cap_req = NULL;
+    /*
+     * package android.hardware.radio.config;
+     * parcelable PhoneCapability {
+     *   byte maxActiveData;
+     *   byte maxActiveInternetData;
+     *   boolean isInternetLingeringSupported;
+     *   byte[] logicalModemIds;
+     *   byte maxActiveVoice;
+     * }
+     */
+    if (gbinder_reader_start_parcelable(args, &parcel, NULL)) {
+        guint32 maxActiveData, maxActiveInternetData;
+        gsize count;
+        const guint8* ids;
 
-    if (status != RADIO_TX_STATUS_OK) {
-        DBG("getPhoneCapability failed");
-    } else if (error != RADIO_ERROR_NONE) {
-        DBG("getPhoneCapability error %s", binder_radio_error_string(error));
-    } else {
-        /* getPhoneCapabilityResponse(RadioResponseInfo, PhoneCapability); */
-        guint maxActiveData = 0, maxActiveInternetData = 0;
-        const RadioPhoneCapability* pcap = binder_read_hidl_struct(args,
-            RadioPhoneCapability);
+        if (gbinder_reader_read_uint32(&parcel, &maxActiveData) &&
+            gbinder_reader_read_uint32(&parcel, &maxActiveInternetData) &&
+            gbinder_reader_read_bool(&parcel, NULL) &&
+            (ids = gbinder_reader_read_byte_array(&parcel, &count))) {
+            GUtilIntArray* modem_ids = gutil_int_array_sized_new(count);
+            gsize i;
 
-        GASSERT(pcap);
-        if (pcap) {
-            const GBinderHidlVec* modems = &pcap->logicalModemList;
-            const RadioModemInfo* modem = modems->data.ptr;
-            GUtilIntArray* modem_ids = gutil_int_array_sized_new(modems->count);
-            guint i;
-
-            maxActiveData = pcap->maxActiveData;
-            maxActiveInternetData = pcap->maxActiveInternetData;
-            for (i = 0; i < modems->count; i++) {
-                gutil_int_array_append(modem_ids, modem[i].modemId);
+            for (i = 0; i < count; i++) {
+                gutil_int_array_append(modem_ids, ids[i]);
             }
 
             if (binder_data_debug_desc.flags & OFONO_DEBUG_FLAG_PRINT) {
@@ -3042,15 +3098,29 @@ binder_data_manager_get_phone_capability_hidl_resp(
                 g_string_free(str, TRUE);
             }
 
-            gutil_ints_unref(dm->modem_ids);
-            dm->modem_ids = gutil_int_array_free_to_ints(modem_ids);
+            out = gutil_int_array_free_to_ints(modem_ids);
         }
+
+        gbinder_reader_finish_parcelable(&parcel);
+        GASSERT(gbinder_reader_at_end(args));
     }
+    return out;
 }
+
+static const BinderDataManagerApi binder_data_manager_api_aidl = {
+    "aidl",
+    RADIO_CONFIG_AIDL_REQ_GET_PHONE_CAPABILITY,
+    binder_data_manager_api_read_get_phone_capability_resp_aidl,
+    RADIO_CONFIG_AIDL_REQ_SET_PREFERRED_DATA_MODEM
+};
+
+/*==========================================================================*
+ * BinderDataManager
+ *==========================================================================*/
 
 static
 void
-binder_data_manager_get_phone_capability_aidl_resp(
+binder_data_manager_get_phone_capability_cb(
     RadioRequest* req,
     RADIO_TX_STATUS status,
     RADIO_CONFIG_RESP resp,
@@ -3069,56 +3139,11 @@ binder_data_manager_get_phone_capability_aidl_resp(
     } else if (error != RADIO_ERROR_NONE) {
         DBG("getPhoneCapability error %s", binder_radio_error_string(error));
     } else {
-        GBinderReader reader, parcel;
-        guint32 maxActiveData, maxActiveInternetData;
-        GUtilIntArray* modem_ids = NULL;
+        GBinderReader reader;
 
-        /*
-         * package android.hardware.radio.config;
-         * parcelable PhoneCapability {
-         *   byte maxActiveData;
-         *   byte maxActiveInternetData;
-         *   boolean isInternetLingeringSupported;
-         *   byte[] logicalModemIds;
-         *   byte maxActiveVoice;
-         * }
-         */
         gbinder_reader_copy(&reader, args);
-        if (gbinder_reader_start_parcelable(&reader, &parcel, NULL)) {
-            gsize count;
-            const guint8* ids;
-
-            if (gbinder_reader_read_uint32(&parcel, &maxActiveData) &&
-                gbinder_reader_read_uint32(&parcel, &maxActiveInternetData) &&
-                gbinder_reader_read_bool(&parcel, NULL) &&
-                (ids = gbinder_reader_read_byte_array(&parcel, &count))) {
-                guint i;
-
-                modem_ids = gutil_int_array_sized_new(count);
-                for (i = 0; i < count; i++) {
-                    gutil_int_array_append(modem_ids, ids[i]);
-                }
-
-                if (binder_data_debug_desc.flags & OFONO_DEBUG_FLAG_PRINT) {
-                    GString* str = g_string_new(NULL);
-
-                    for (i = 0; i < modem_ids->count; i++) {
-                        if (i > 0) g_string_append_c(str, ',');
-                        g_string_append_printf(str, "%u", modem_ids->data[i]);
-                    }
-                    DBG("maxActiveData=%u, maxActiveInternetData=%u, "
-                        "logicalModemList=[%s]", maxActiveData,
-                        maxActiveInternetData, str->str);
-                    g_string_free(str, TRUE);
-                }
-
-                gutil_ints_unref(dm->modem_ids);
-                dm->modem_ids = gutil_int_array_free_to_ints(modem_ids);
-            }
-
-            gbinder_reader_finish_parcelable(&parcel);
-            GASSERT(gbinder_reader_at_end(&reader));
-        }
+        gutil_ints_unref(dm->modem_ids);
+        dm->modem_ids = dm->api->read_get_phone_capability_resp(&reader, resp);
     }
 }
 
@@ -3127,23 +3152,13 @@ void
 binder_data_manager_request_phone_capability(
     BinderDataManager* dm)
 {
-    guint code = RADIO_CONFIG_REQ_NONE;
-    RADIO_INTERFACE_TYPE interface_type = radio_config_interface_type(dm->rc);
-    RadioConfigRequestCompleteFunc resp = NULL;
+    const BinderDataManagerApi* api = dm->api;
 
-    if (interface_type == RADIO_INTERFACE_TYPE_HIDL
-        && radio_config_interface(dm->rc) >= RADIO_CONFIG_INTERFACE_1_1) {
-        code = RADIO_CONFIG_REQ_GET_PHONE_CAPABILITY;
-        resp = binder_data_manager_get_phone_capability_hidl_resp;
-    } else if (interface_type == RADIO_INTERFACE_TYPE_AIDL) {
-        code = RADIO_CONFIG_AIDL_REQ_GET_PHONE_CAPABILITY;
-        resp = binder_data_manager_get_phone_capability_aidl_resp;
-    }
-
-    if (resp) {
+    if (api->get_phone_capability_req) {
         radio_request_drop(dm->phone_cap_req);
         dm->phone_cap_req = radio_request_try_submit(radio_config_request_new
-            (dm->rc, code, NULL, resp, NULL, dm));
+            (dm->rc, api->get_phone_capability_req, NULL,
+                binder_data_manager_get_phone_capability_cb, NULL, dm));
     }
 }
 
@@ -3154,8 +3169,16 @@ binder_data_manager_new(
     enum ofono_radio_access_mode non_data_mode)
 {
     BinderDataManager* dm = g_new0(BinderDataManager, 1);
+    const BinderDataManagerApi* api =
+        (radio_config_interface_type(rc) == RADIO_INTERFACE_TYPE_AIDL) ?
+        &binder_data_manager_api_aidl :
+        (radio_config_interface(rc) >= RADIO_CONFIG_INTERFACE_1_1) ?
+        &binder_data_manager_api_hidl_1_1 :
+        &binder_data_manager_api_hidl;
 
+    DBG("%s api", api->name);
     g_atomic_int_set(&dm->refcount, 1);
+    dm->api = api;
     dm->flags = flags;
     dm->non_data_mode = ofono_radio_access_max_mode(non_data_mode);
     dm->rc = radio_config_ref(rc);
@@ -3362,18 +3385,7 @@ void
 binder_data_manager_assert_data_on(
     BinderDataManager* dm)
 {
-    if (binder_data_manager_need_set_data_allowed(dm)) {
-        binder_data_allow_submit_request(binder_data_manager_allowed(dm), TRUE);
-    }
-}
-
-gboolean
-binder_data_manager_need_set_data_allowed(
-    BinderDataManager* dm)
-{
-    return dm &&
-        radio_config_interface_type(dm->rc) == RADIO_INTERFACE_TYPE_HIDL &&
-        radio_config_interface(dm->rc) < RADIO_CONFIG_INTERFACE_1_1;
+    binder_data_allow_submit_request(binder_data_manager_allowed(dm), TRUE);
 }
 
 /*

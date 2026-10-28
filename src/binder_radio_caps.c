@@ -1623,19 +1623,15 @@ binder_radio_caps_manager_data_off(
     BinderRadioCapsManager* self,
     BinderRadioCapsObject* caps)
 {
-    if (binder_data_manager_need_set_data_allowed(self->data_manager)) {
-        RadioRequest* req = binder_data_set_data_allowed_request_new(caps->data,
-            FALSE, binder_radio_caps_manager_data_disallowed,
-            g_object_unref, g_object_ref(caps));
+    RadioRequest* req = binder_data_set_data_allowed_request_new(caps->data,
+        FALSE, binder_radio_caps_manager_data_disallowed,
+        g_object_unref, g_object_ref(caps));
 
-        caps->tx_pending++;
-        DBG_(caps, "tx_pending=%d", caps->tx_pending);
-        radio_request_set_timeout(req, DATA_OFF_TIMEOUT_MS);
-        radio_request_submit(req);
-        radio_request_unref(req);
-    } else {
-        binder_radio_caps_manager_data_off_done(self, caps);
-    }
+    caps->tx_pending++;
+    DBG_(caps, "tx_pending=%d", caps->tx_pending);
+    radio_request_set_timeout(req, DATA_OFF_TIMEOUT_MS);
+    radio_request_submit(req);
+    radio_request_unref(req);
 }
 
 static

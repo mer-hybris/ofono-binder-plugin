@@ -124,11 +124,6 @@ binder_data_manager_assert_data_on(
     BinderDataManager* dm)
     BINDER_INTERNAL;
 
-gboolean
-binder_data_manager_need_set_data_allowed(
-    BinderDataManager* dm)
-    BINDER_INTERNAL;
-
 BinderData*
 binder_data_new(
     BinderDataManager* dm,
