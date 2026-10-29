@@ -1693,6 +1693,25 @@ binder_voicecall_hold_all_active(
 
 static
 void
+binder_voicecall_mark_local_release(
+    BinderVoiceCall* self,
+    enum ofono_call_status status)
+{
+    GSList* l;
+
+    for (l = self->calls; l; l = l->next) {
+        const BinderVoiceCallInfo* call = l->data;
+        const guint id = call->oc.id;
+
+        if (call->oc.status == status &&
+            !gutil_int_array_contains(self->local_release_ids, id)) {
+            gutil_int_array_append(self->local_release_ids, id);
+        }
+    }
+}
+
+static
+void
 binder_voicecall_release_all_active(
     struct ofono_voicecall* vc,
     ofono_voicecall_cb_t cb,
@@ -1701,6 +1720,7 @@ binder_voicecall_release_all_active(
     BinderVoiceCall* self = binder_voicecall_get_data(vc);
 
     DBG_(self, "");
+    binder_voicecall_mark_local_release(self, OFONO_CALL_STATUS_ACTIVE);
     binder_voicecall_swap_with_fallback(vc, BINDER_EXT_CALL_SWAP_FLAG_HANGUP,
         self->api->voice_hangup_foreground_resume_background_req, cb, data);
 }
@@ -1770,8 +1790,14 @@ binder_voicecall_release_all_held(
     void* data)
 {
     BinderVoiceCall* self = binder_voicecall_get_data(vc);
+    /* A waiting call gets released instead of the held ones */
+    const enum ofono_call_status released =
+        binder_voicecall_find_call_with_status(self,
+        OFONO_CALL_STATUS_WAITING) ? OFONO_CALL_STATUS_WAITING :
+        OFONO_CALL_STATUS_HELD;
 
     DBG_(self, "");
+    binder_voicecall_mark_local_release(self, released);
     binder_voicecall_hangup_with_fallback(vc,
         binder_voicecall_hangup_filter_held,
         BINDER_EXT_CALL_HANGUP_REJECT,
