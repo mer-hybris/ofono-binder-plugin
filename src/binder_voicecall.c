@@ -87,6 +87,8 @@ typedef struct binder_voicecall {
     GUtilInts* remote_hangup_reasons;
     RadioRequest* send_dtmf_req;
     RadioRequest* clcc_poll_req;
+    gboolean clcc_poll_for_dial;
+    gboolean clcc_poll_dial_again;
     guint ext_send_dtmf_id;
     guint ext_req_id;
     gulong ext_event[VOICECALL_EXT_EVENT_COUNT];
@@ -172,6 +174,12 @@ static
 void
 binder_voicecall_clear_dtmf_queue(
     BinderVoiceCall* self);
+
+static
+void
+binder_voicecall_clcc_poll(
+    BinderVoiceCall* self,
+    gboolean for_dial);
 
 static inline BinderVoiceCall*
 binder_voicecall_get_data(struct ofono_voicecall* vc)
@@ -617,6 +625,23 @@ binder_voicecall_lastcause_cb(
 
 static
 void
+binder_voicecall_dial_done(
+    BinderVoiceCall* self,
+    gboolean ok)
+{
+    if (self->cb) {
+        struct ofono_error err;
+        ofono_voicecall_cb_t cb = self->cb;
+        void* cbdata = self->data;
+
+        self->cb = NULL;
+        self->data = NULL;
+        cb(ok ? binder_error_ok(&err) : binder_error_failure(&err), cbdata);
+    }
+}
+
+static
+void
 binder_voicecall_set_calls(
     BinderVoiceCall* self,
     GSList* list)
@@ -658,15 +683,7 @@ binder_voicecall_set_calls(
             /* new call, signal it */
             if (nc->oc.type == OFONO_CALL_MODE_VOICE) {
                 ofono_voicecall_notify(vc, &nc->oc);
-                if (self->cb) {
-                    ofono_voicecall_cb_t cb = self->cb;
-                    void* cbdata = self->data;
-                    struct ofono_error err;
-
-                    self->cb = NULL;
-                    self->data = NULL;
-                    cb(binder_error_ok(&err), cbdata);
-                }
+                binder_voicecall_dial_done(self, TRUE);
             }
 
             n = n->next;
@@ -697,10 +714,14 @@ binder_voicecall_clcc_poll_cb(
 {
     BinderVoiceCall* self = user_data;
     GSList* list = NULL;
+    const gboolean for_dial = self->clcc_poll_for_dial;
+    const gboolean dial_again = self->clcc_poll_dial_again;
 
     GASSERT(self->clcc_poll_req == req);
     radio_request_unref(self->clcc_poll_req);
     self->clcc_poll_req = NULL;
+    self->clcc_poll_for_dial = FALSE;
+    self->clcc_poll_dial_again = FALSE;
 
     if (status != RADIO_TX_STATUS_OK) {
         DBG_(self, "getCurrentCalls tx failed");
@@ -734,6 +755,23 @@ binder_voicecall_clcc_poll_cb(
     /* Merge the ongoing ext calls since IRadio may not report them */
     binder_voicecall_set_calls(self,
         binder_voicecall_merge_ext_calls(self, list, TRUE));
+
+    /*
+     * A poll already in flight when dial completed describes the calls
+     * from before this dial. Query once more, then fail the dial if the
+     * call never shows up. The modem can accept the dial and drop the
+     * call before either list is delivered.
+     */
+    if (dial_again && self->cb) {
+        binder_voicecall_clcc_poll(self, TRUE);
+    } else if (for_dial && self->cb) {
+        if (status != RADIO_TX_STATUS_OK || error != RADIO_ERROR_NONE) {
+            ofono_error("call failed: unable to query calls");
+        } else {
+            ofono_error("call failed: no call after dial");
+        }
+        binder_voicecall_dial_done(self, FALSE);
+    }
 }
 
 static
@@ -761,16 +799,34 @@ binder_voicecall_clcc_retry(
 static
 void
 binder_voicecall_clcc_poll(
-    BinderVoiceCall* self)
+    BinderVoiceCall* self,
+    gboolean for_dial)
 {
-    if (!self->clcc_poll_req) {
-        RadioRequest* req = radio_request_new2(self->voice_g,
-            self->api->voice_get_current_calls_req, NULL,
-            binder_voicecall_clcc_poll_cb, NULL, self);
+    RadioRequest* req;
 
-        radio_request_set_retry(req, BINDER_RETRY_MS, -1);
-        radio_request_set_retry_func(req, binder_voicecall_clcc_retry);
-        self->clcc_poll_req = radio_request_try_submit(req);
+    if (self->clcc_poll_req) {
+        /*
+         * The in-flight query may have been issued before this dial.
+         * One more query after it returns sees this call.
+         */
+        if (for_dial && !self->clcc_poll_for_dial) {
+            self->clcc_poll_dial_again = TRUE;
+        }
+        return;
+    }
+
+    req = radio_request_new2(self->voice_g,
+        self->api->voice_get_current_calls_req, NULL,
+        binder_voicecall_clcc_poll_cb, NULL, self);
+    radio_request_set_retry(req, BINDER_RETRY_MS, -1);
+    radio_request_set_retry_func(req, binder_voicecall_clcc_retry);
+    self->clcc_poll_req = radio_request_try_submit(req);
+
+    if (self->clcc_poll_req) {
+        self->clcc_poll_for_dial = for_dial;
+    } else if (for_dial) {
+        ofono_error("call failed: unable to query calls");
+        binder_voicecall_dial_done(self, FALSE);
     }
 }
 
@@ -835,7 +891,7 @@ binder_voicecall_cbd_complete(
 {
     BinderVoiceCallCbData* data = user_data;
 
-    binder_voicecall_clcc_poll(data->self);
+    binder_voicecall_clcc_poll(data->self, FALSE);
     binder_voicecall_request_completed(data, status == RADIO_TX_STATUS_OK &&
         error == RADIO_ERROR_NONE);
 }
@@ -889,9 +945,10 @@ binder_voicecall_dial_cb(
         if (self->cb) {
             /*
              * CLCC will update the oFono call list with
-             * proper ids if it's not done yet.
+             * proper ids if it's not done yet. An empty list
+             * completes the dial with failure.
              */
-            binder_voicecall_clcc_poll(self);
+            binder_voicecall_clcc_poll(self, TRUE);
         }
         return;
     }
@@ -901,15 +958,7 @@ binder_voicecall_dial_cb(
      * successfully by binder_voicecall_clcc_poll_cb, dial request
      * may still fail.
      */
-    if (self->cb) {
-        struct ofono_error err;
-        ofono_voicecall_cb_t cb = self->cb;
-        void* cbdata = self->data;
-
-        self->cb = NULL;
-        self->data = NULL;
-        cb(binder_error_failure(&err), cbdata);
-    }
+    binder_voicecall_dial_done(self, FALSE);
 }
 
 static
@@ -922,19 +971,7 @@ binder_voicecall_ext_dial_cb(
     BinderVoiceCall* self = user_data;
 
     self->ext_req_id = 0;
-    if (self->cb) {
-        struct ofono_error err;
-        ofono_voicecall_cb_t cb = self->cb;
-        void* cbdata = self->data;
-
-        self->cb = NULL;
-        self->data = NULL;
-        if (result == BINDER_EXT_CALL_RESULT_OK) {
-            cb(binder_error_ok(&err), cbdata);
-        } else {
-            cb(binder_error_failure(&err), cbdata);
-        }
-    }
+    binder_voicecall_dial_done(self, result == BINDER_EXT_CALL_RESULT_OK);
 }
 
 static
@@ -1258,7 +1295,7 @@ binder_voicecall_call_state_changed_event(
     gpointer self)
 {
     /* Just need to request the call list again */
-    binder_voicecall_clcc_poll((BinderVoiceCall*) self);
+    binder_voicecall_clcc_poll((BinderVoiceCall*) self, FALSE);
 }
 
 static
@@ -1979,7 +2016,7 @@ binder_voicecall_register(
     ofono_voicecall_register(self->vc);
 
     /* Initialize call list */
-    binder_voicecall_clcc_poll(self);
+    binder_voicecall_clcc_poll(self, FALSE);
 
     /* Request supplementary service notifications*/
     binder_voicecall_enable_supp_svc(self);
