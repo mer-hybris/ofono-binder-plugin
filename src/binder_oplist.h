@@ -57,7 +57,15 @@ struct ofono_network_operator*
 binder_oplist_find(
     BinderOpList* oplist,
     const char* mcc,
-    const char* mnc)
+    const char* mnc,
+    enum ofono_access_technology tech)
+    BINDER_INTERNAL;
+
+/* Merge scan results by MCC, MNC and technology; src is not modified. */
+BinderOpList*
+binder_oplist_merge(
+    BinderOpList* dest,
+    const BinderOpList* src)
     BINDER_INTERNAL;
 
 struct ofono_network_operator*
