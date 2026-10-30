@@ -410,52 +410,53 @@ binder_network_set_registration_state(
     int lac,
     int ci)
 {
-    reg->status = OFONO_NETREG_STATUS_NONE;
-    reg->access_tech = binder_access_tech_from_radio_tech(rat);
-    reg->radio_tech = rat;
-    reg->em_enabled = FALSE;
-    reg->lac = lac;
-    reg->ci = ci;
-
     switch (reg_state) {
     case RADIO_REG_STATE_REG_HOME:
-        reg->em_enabled = TRUE;
         reg->status = OFONO_NETREG_STATUS_REGISTERED;
         break;
 
     case RADIO_REG_STATE_REG_ROAMING:
-        reg->em_enabled = TRUE;
         reg->status = OFONO_NETREG_STATUS_ROAMING;
         break;
 
     case RADIO_REG_STATE_NOT_REG_MT_NOT_SEARCHING_EM:
-        reg->em_enabled = TRUE;
         /* fallthrough */
     case RADIO_REG_STATE_NOT_REG_NOT_SEARCHING:
         reg->status = OFONO_NETREG_STATUS_NOT_REGISTERED;
         break;
 
     case RADIO_REG_STATE_NOT_REG_MT_SEARCHING_EM:
-        reg->em_enabled = TRUE;
         /* fallthrough */
     case RADIO_REG_STATE_NOT_REG_MT_SEARCHING:
         reg->status = OFONO_NETREG_STATUS_SEARCHING;
         break;
 
     case RADIO_REG_STATE_REG_DENIED_EM:
-        reg->em_enabled = TRUE;
         /* fallthrough */
     case RADIO_REG_STATE_REG_DENIED:
         reg->status = OFONO_NETREG_STATUS_DENIED;
         break;
 
     case RADIO_REG_STATE_UNKNOWN_EM:
-        reg->em_enabled = TRUE;
         /* fallthrough */
     case RADIO_REG_STATE_UNKNOWN:
-        reg->status = OFONO_NETREG_STATUS_UNKNOWN;
-        break;
+        /*
+         * Some modems sometimes (e.g. when IMS call is being dialed) issue
+         * data registration updates with the reg status 4 (unknown). The
+         * purpose of these updates isn't clear, reacting to them is causing
+         * all sorts of trouble e.g. dropping the active data call and/or
+         * the IMS registration.
+         *
+         * Let's just ignore those.
+         */
+        DBG("not updating the reg state");
+        return;
     }
+
+    reg->access_tech = binder_access_tech_from_radio_tech(rat);
+    reg->radio_tech = rat;
+    reg->lac = lac;
+    reg->ci = ci;
 }
 
 static
@@ -511,13 +512,13 @@ binder_network_poll_voice_state_cb(
         DBG_(self, "Failed get voice reg state, error %d", error);
     } else {
         GBinderReader reader;
-        BinderRegistrationState state;
+        BinderNetwork* net = &self->pub;
+        BinderRegistrationState state = net->voice;
         int reason = -1;
 
         gbinder_reader_copy(&reader, args);
         if (self->api->read_voice_registration_state(self, resp, &reader,
             &state, &reason)) {
-            BinderNetwork* net = &self->pub;
 
             DBG_(self, "%s,%s,%d,%d,%d,%d",
                 ofono_netreg_status_to_string(state.status),
@@ -555,7 +556,8 @@ binder_network_poll_data_state_cb(
         DBG_(self, "Failed get data reg state, error %d", error);
     } else {
         GBinderReader reader;
-        BinderRegistrationState state;
+        BinderNetwork* net = &self->pub;
+        BinderRegistrationState state = net->data;
         int reason = -1, max_data_calls = -1;
         gboolean nr_connected = FALSE;
 
@@ -563,7 +565,6 @@ binder_network_poll_data_state_cb(
         if (self->api->read_data_registration_state(self, resp, &reader,
             &state, &nr_connected, &reason, &max_data_calls)) {
             BinderBase* base = &self->base;
-            BinderNetwork* net = &self->pub;
 
             self->nr_connected = nr_connected;
             binder_network_fix_data_access_tech(self, &state, nr_connected);
@@ -2363,7 +2364,7 @@ binder_network_api_read_current_physical_channel_configs_aidl(
              * package android.hardware.radio.network;
              * parcelable PhysicalChannelConfig {
              *   CellConnectionStatus status;
-             *   android.hardware.radio.RadioTechnology rat;
+             *   RadioTechnology rat;
              *   int downlinkChannelNumber;
              *   int uplinkChannelNumber;
              *   int cellBandwidthDownlinkKhz;
@@ -2699,7 +2700,7 @@ binder_network_api_read_data_registration_state_aidl(
      * package android.hardware.radio.network;
      * parcelable RegStateResult {
      *   RegState regState;
-     *   android.hardware.radio.RadioTechnology rat;
+     *   RadioTechnology rat;
      *   RegistrationFailCause reasonForDenial;
      *   CellIdentity cellIdentity;
      *   String registeredPlmn;

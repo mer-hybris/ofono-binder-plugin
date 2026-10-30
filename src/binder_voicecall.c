@@ -372,6 +372,52 @@ binder_voicecall_merge_ext_calls(
 
 static
 gboolean
+binder_voicecall_is_ext_call(
+    BinderVoiceCall* self,
+    guint call_id)
+{
+    if (self->ext) {
+        /* binder_ext_call_get_calls never returns NULL */
+        const BinderExtCallInfo* const* ptr =
+            binder_ext_call_get_calls(self->ext);
+
+        for (; *ptr; ptr++) {
+            if ((*ptr)->call_id == call_id) {
+                return TRUE;
+            }
+        }
+    }
+    return FALSE;
+}
+
+static
+GSList*
+binder_voicecall_drop_ext_calls(
+    BinderVoiceCall* self,
+    GSList* list)
+{
+    GSList* l = list;
+
+    /*
+     * IRadio may also report the calls known to ext, including the
+     * multiparty calls hidden by ext. Ext has the full picture of
+     * those, its version is merged back later.
+     */
+    while (l) {
+        GSList* next = l->next;
+        BinderVoiceCallInfo* call = l->data;
+
+        if (binder_voicecall_is_ext_call(self, call->oc.id)) {
+            binder_voicecall_info_free(call);
+            list = g_slist_delete_link(list, l);
+        }
+        l = next;
+    }
+    return list;
+}
+
+static
+gboolean
 binder_voicecall_have_ext_call(
     BinderVoiceCall* self)
 {
@@ -680,8 +726,9 @@ binder_voicecall_clcc_poll_cb(
 
         /* Build sorted list */
         gbinder_reader_copy(&reader, args);
-        list = g_slist_sort(self->api->read_call_list(&reader, resp),
-            binder_voicecall_info_compare);
+        list = binder_voicecall_drop_ext_calls(self,
+            g_slist_sort(self->api->read_call_list(&reader, resp),
+            binder_voicecall_info_compare));
     }
 
     /* Merge the ongoing ext calls since IRadio may not report them */
@@ -1646,6 +1693,25 @@ binder_voicecall_hold_all_active(
 
 static
 void
+binder_voicecall_mark_local_release(
+    BinderVoiceCall* self,
+    enum ofono_call_status status)
+{
+    GSList* l;
+
+    for (l = self->calls; l; l = l->next) {
+        const BinderVoiceCallInfo* call = l->data;
+        const guint id = call->oc.id;
+
+        if (call->oc.status == status &&
+            !gutil_int_array_contains(self->local_release_ids, id)) {
+            gutil_int_array_append(self->local_release_ids, id);
+        }
+    }
+}
+
+static
+void
 binder_voicecall_release_all_active(
     struct ofono_voicecall* vc,
     ofono_voicecall_cb_t cb,
@@ -1654,6 +1720,7 @@ binder_voicecall_release_all_active(
     BinderVoiceCall* self = binder_voicecall_get_data(vc);
 
     DBG_(self, "");
+    binder_voicecall_mark_local_release(self, OFONO_CALL_STATUS_ACTIVE);
     binder_voicecall_swap_with_fallback(vc, BINDER_EXT_CALL_SWAP_FLAG_HANGUP,
         self->api->voice_hangup_foreground_resume_background_req, cb, data);
 }
@@ -1723,8 +1790,14 @@ binder_voicecall_release_all_held(
     void* data)
 {
     BinderVoiceCall* self = binder_voicecall_get_data(vc);
+    /* A waiting call gets released instead of the held ones */
+    const enum ofono_call_status released =
+        binder_voicecall_find_call_with_status(self,
+        OFONO_CALL_STATUS_WAITING) ? OFONO_CALL_STATUS_WAITING :
+        OFONO_CALL_STATUS_HELD;
 
     DBG_(self, "");
+    binder_voicecall_mark_local_release(self, released);
     binder_voicecall_hangup_with_fallback(vc,
         binder_voicecall_hangup_filter_held,
         BINDER_EXT_CALL_HANGUP_REJECT,

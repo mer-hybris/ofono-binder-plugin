@@ -37,7 +37,6 @@ typedef struct binder_registration_state {
     enum ofono_netreg_status status;
     enum ofono_access_technology access_tech;
     RADIO_TECH radio_tech;
-    gboolean em_enabled; /* TRUE is emergency calls are enabled */
     int lac;
     int ci;
 } BinderRegistrationState;
