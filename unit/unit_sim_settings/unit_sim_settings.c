@@ -125,8 +125,10 @@ test_basic(
     g_assert_cmpint(test.count[BINDER_SIM_SETTINGS_PROPERTY_IMSI], == ,1);
 
     /* Second time doesn't emit anything since the value doesn't change */
+    g_assert(!settings->pref_set);
     binder_sim_settings_set_pref(settings, pref);
     binder_sim_settings_set_pref(settings, pref);
+    g_assert(settings->pref_set);
     g_assert_cmpint(settings->pref, == ,pref);
     g_assert_cmpint(test.count[BINDER_SIM_SETTINGS_PROPERTY_ANY], == ,2);
     g_assert_cmpint(test.count[BINDER_SIM_SETTINGS_PROPERTY_PREF], == ,1);
@@ -141,6 +143,50 @@ test_basic(
 }
 
 /*==========================================================================*
+ * pref_initial
+ *
+ * The constructor fills pref with the supported mask. The first
+ * set_pref() is the stored mode and must be announced even then.
+ *==========================================================================*/
+
+static
+void
+test_pref_initial_cb(
+    BinderSimSettings* settings,
+    BINDER_SIM_SETTINGS_PROPERTY property,
+    void* user_data)
+{
+    int* count = user_data;
+
+    g_assert_cmpint(property, == ,BINDER_SIM_SETTINGS_PROPERTY_PREF);
+    (*count)++;
+}
+
+static
+void
+test_pref_initial(
+    void)
+{
+    const enum ofono_radio_access_mode mode = OFONO_RADIO_ACCESS_MODE_GSM;
+    BinderSimSettings* settings = binder_sim_settings_new("/test_0", mode);
+    int count = 0;
+    gulong id = binder_sim_settings_add_property_handler(settings,
+        BINDER_SIM_SETTINGS_PROPERTY_PREF, test_pref_initial_cb, &count);
+
+    g_assert(id);
+    g_assert(!settings->pref_set);
+    g_assert_cmpint(settings->pref, == ,mode);
+
+    binder_sim_settings_set_pref(settings, mode);
+    binder_sim_settings_set_pref(settings, mode);
+    g_assert(settings->pref_set);
+    g_assert_cmpint(count, == ,1);
+
+    binder_sim_settings_remove_handler(settings, id);
+    binder_sim_settings_unref(settings);
+}
+
+/*==========================================================================*
  * Common
  *==========================================================================*/
 
@@ -152,6 +198,7 @@ int main(int argc, char* argv[])
     g_test_init(&argc, &argv, NULL);
     g_test_add_func(TEST_("null"), test_null);
     g_test_add_func(TEST_("basic"), test_basic);
+    g_test_add_func(TEST_("pref_initial"), test_pref_initial);
 
     gutil_log_default.level = g_test_verbose() ?
         GLOG_LEVEL_VERBOSE : GLOG_LEVEL_NONE;

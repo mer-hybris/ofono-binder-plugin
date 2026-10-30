@@ -1150,6 +1150,16 @@ binder_network_check_pref_mode(
     BinderRadio* radio = self->radio;
 
     /*
+     * pref starts as every supported technology. The stored
+     * TechnologyPreference is applied by a later set_pref(). Pushing
+     * the initial mask first selects LTE and a following 2G-only
+     * correction sees a stale GSM mode and does not reach the modem.
+     */
+    if (!self->pub.settings->pref_set) {
+        return;
+    }
+
+    /*
      * On most dual-SIM phones only one slot at a time is allowed
      * to use LTE. On some phones, even if the slot which has been
      * using LTE gets powered off, we still need to explicitly set
