@@ -52,6 +52,7 @@ typedef struct binder_devmon_if_api {
     const char* name;
     RADIO_REQ set_indication_filter_req;
     RADIO_IND_FILTER ind_filter_all;
+    RADIO_IND_FILTER ind_filter_off;
 } DevMonApi;
 
 typedef struct binder_devmon_if {
@@ -85,19 +86,22 @@ typedef struct binder_devmon_if_io {
 static const DevMonApi binder_devmon_if_api_hidl = {
     "hidl",
     RADIO_REQ_SET_INDICATION_FILTER,
-    RADIO_IND_FILTER_ALL
+    RADIO_IND_FILTER_ALL,
+    RADIO_IND_FILTER_DATA_CALL_DORMANCY
 };
 
 static const DevMonApi binder_devmon_if_api_hidl_1_2 = {
     "hidl_1_2",
     RADIO_REQ_SET_INDICATION_FILTER_1_2,
-    RADIO_IND_FILTER_ALL_1_2
+    RADIO_IND_FILTER_ALL_1_2,
+    RADIO_IND_FILTER_DATA_CALL_DORMANCY
 };
 
 static const DevMonApi binder_devmon_if_api_hidl_1_5 = {
     "hidl_1_5",
     RADIO_REQ_SET_INDICATION_FILTER_1_5,
-    RADIO_IND_FILTER_ALL_1_5
+    RADIO_IND_FILTER_ALL_1_5,
+    RADIO_IND_FILTER_DATA_CALL_DORMANCY
 };
 
 static const DevMonApi binder_devmon_if_api_aidl = {
@@ -110,7 +114,8 @@ static const DevMonApi binder_devmon_if_api_aidl = {
     RADIO_IND_FILTER_LINK_CAPACITY_ESTIMATE |
     RADIO_IND_FILTER_PHYSICAL_CHANNEL_CONFIG |
     RADIO_IND_FILTER_REGISTRATION_FAILURE |
-    RADIO_IND_FILTER_BARRING_INFO
+    RADIO_IND_FILTER_BARRING_INFO,
+    RADIO_IND_FILTER_DATA_CALL_DORMANCY
 };
 
 #define DBG_(self,fmt,args...) \
@@ -167,6 +172,8 @@ binder_devmon_if_io_set_indication_filter(
     if (self->ind_filter_supported) {
         GBinderWriter args;
         const DevMonApi* api = self->api;
+        const RADIO_IND_FILTER filter = self->display_on ?
+            api->ind_filter_all : api->ind_filter_off;
         RadioRequest* req = radio_request_new(self->network_client,
             api->set_indication_filter_req, &args,
             binder_devmon_if_io_indication_filter_sent, NULL, self);
@@ -187,8 +194,8 @@ binder_devmon_if_io_set_indication_filter(
          * IRadioNetwork.aidl:
          * void setIndicationFilter(in int serial, in int indicationFilter);
          */
-        DBG_(self, "Setting indication filter: 0x%02x", api->ind_filter_all);
-        gbinder_writer_append_int32(&args, api->ind_filter_all);
+        DBG_(self, "Setting indication filter: 0x%02x", filter);
+        gbinder_writer_append_int32(&args, filter);
         radio_request_drop(self->req);
         self->req = radio_request_try_submit(req);
     }
