@@ -44,6 +44,14 @@
 #define BINDER_SMS_ACK_RETRY_MS    1000
 #define BINDER_SMS_ACK_RETRY_COUNT 10
 
+/*
+ * CMGS can stay outstanding for a whole circuit-switched call. The
+ * default 30s request timeout is reported as a failed send, and ofono
+ * then submits the same text again. The modem keeps the first command
+ * and transmits every queued copy once it completes.
+ */
+#define SMS_SEND_TIMEOUT_MS        G_MAXUINT32
+
 #define SIM_EFSMS_FILEID        0x6F3C
 #define EFSMS_LENGTH            176
 
@@ -574,6 +582,7 @@ binder_sms_send(
         /* Try to submit the request */
         cbd->flags |= BINDER_SMS_SEND_FLAG_TRIED_IRADIO_API;
         api->write_send_sms_args(&writer, smsc, tpdu);
+        radio_request_set_timeout(req, SMS_SEND_TIMEOUT_MS);
         submitted = radio_request_submit(req);
         radio_request_unref(req);
         return submitted;
