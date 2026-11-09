@@ -1744,6 +1744,19 @@ binder_network_api_write_set_data_profile_args_hidl(
 }
 
 static
+int
+binder_network_tracking_area(
+    int tac)
+{
+    /*
+     * Ofono has one location field, published as LocationAreaCode.
+     * For LTE and NR that field is the tracking area, and an invalid
+     * value from the modem (negative or INT_MAX) must stay unpublished.
+     */
+    return (tac >= 0 && tac <= 0xffff) ? tac : -1;
+}
+
+static
 void
 binder_network_location_1_5(
     const RadioCellIdentity_1_5* cell,
@@ -1774,14 +1787,14 @@ binder_network_location_1_5(
     case RADIO_CELL_IDENTITY_1_5_LTE: {
         const RadioCellIdentityLte_1_5* lte = &cell->identity.lte;
 
-        l->lac = -1;
+        l->lac = binder_network_tracking_area(lte->base.base.tac);
         l->ci = lte->base.base.ci;
         return;
     }
     case RADIO_CELL_IDENTITY_1_5_NR: {
         const RadioCellIdentityNr_1_5* nr = &cell->identity.nr;
 
-        l->lac = -1;
+        l->lac = binder_network_tracking_area(nr->base.tac);
         l->ci = nr->base.nci;
         return;
     }
@@ -1831,7 +1844,7 @@ binder_network_location_1_0(
         if (cell->lte.count > 0 && cell->lte.data.ptr) {
             const RadioCellIdentityLte* lte = cell->lte.data.ptr;
 
-            l->lac = -1;
+            l->lac = binder_network_tracking_area(lte->tac);
             l->ci = lte->ci;
             return;
         }
@@ -1882,7 +1895,7 @@ binder_network_location_1_2(
         if (cell->lte.count > 0 && cell->lte.data.ptr) {
             const RadioCellIdentityLte_1_2* lte = cell->lte.data.ptr;
 
-            l->lac = -1;
+            l->lac = binder_network_tracking_area(lte->base.tac);
             l->ci = lte->base.ci;
             return;
         }
@@ -2593,7 +2606,6 @@ binder_network_location_aidl(
             }
             return ok;
         case NETWORK_CELL_IDENTITY_LTE:
-        case NETWORK_CELL_IDENTITY_NR:
             /*
              * package android.hardware.radio.network;
              * parcelable CellIdentityLte {
@@ -2609,6 +2621,24 @@ binder_network_location_aidl(
              *   ClosedSubscriberGroupInfo csgInfo;
              *   EutranBands[] bands;
              * }
+             */
+            if (gbinder_reader_start_parcelable(reader, &parcel, NULL)) {
+                gint32 tac = -1;
+
+                if (gbinder_reader_skip_string16(&parcel) /* mcc */ &&
+                    gbinder_reader_skip_string16(&parcel) /* mnc */ &&
+                    gbinder_reader_read_int32(&parcel, &l->ci) &&
+                    gbinder_reader_read_int32(&parcel, NULL) /* pci */ &&
+                    gbinder_reader_read_int32(&parcel, &tac)) {
+                    l->lac = binder_network_tracking_area(tac);
+                    ok = TRUE;
+                }
+                gbinder_reader_finish_parcelable(&parcel);
+            }
+            return ok;
+        case NETWORK_CELL_IDENTITY_NR:
+            /*
+             * package android.hardware.radio.network;
              * parcelable CellIdentityNr {
              *   String mcc;
              *   String mnc;
@@ -2622,10 +2652,16 @@ binder_network_location_aidl(
              * }
              */
             if (gbinder_reader_start_parcelable(reader, &parcel, NULL)) {
+                gint64 nci;
+                gint32 tac = -1;
+
                 if (gbinder_reader_skip_string16(&parcel) /* mcc */ &&
                     gbinder_reader_skip_string16(&parcel) /* mnc */ &&
-                    gbinder_reader_read_int32(&parcel, &l->ci)) {
-                    l->lac = -1;
+                    gbinder_reader_read_int64(&parcel, &nci) &&
+                    gbinder_reader_read_int32(&parcel, NULL) /* pci */ &&
+                    gbinder_reader_read_int32(&parcel, &tac)) {
+                    l->ci = (int) nci;
+                    l->lac = binder_network_tracking_area(tac);
                     ok = TRUE;
                 }
                 gbinder_reader_finish_parcelable(&parcel);
