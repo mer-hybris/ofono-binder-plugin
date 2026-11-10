@@ -2153,7 +2153,7 @@ binder_data_call_new_aidl(
 
     if (gbinder_reader_start_parcelable(reader, &parcel, NULL)) {
         gint64 retry_time;
-        gint32 n;
+        guint n;
 
         call = binder_data_call_new();
         gbinder_reader_read_int32(&parcel, &call->status);
@@ -2174,9 +2174,9 @@ binder_data_call_new_aidl(
         call->ifname = gbinder_reader_read_string16(&parcel);
 
         /* addresses */
-        if (gbinder_reader_read_int32(&parcel, &n)) {
-            char** ptr = (call->addresses = g_new(char*, MAX(n, 0) + 1));
-            int i;
+        if (binder_read_array_count(&parcel, &n)) {
+            char** ptr = (call->addresses = g_new(char*, n + 1));
+            guint i;
 
             for (i = 0; i < n; i++) {
                 GBinderReader address;
@@ -2226,9 +2226,9 @@ GSList*
 binder_data_call_list_aidl(
     GBinderReader* reader)
 {
-    gint32 n;
-    gbinder_reader_read_int32(reader, &n);
-    if (n > 0) {
+    guint n;
+
+    if (binder_read_array_count(reader, &n) && n > 0) {
         gsize i;
         GSList* l = NULL;
 

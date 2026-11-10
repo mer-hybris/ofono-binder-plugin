@@ -2464,10 +2464,10 @@ binder_netreg_api_read_oplist_aidl(
     BinderNetReg* self,
     GBinderReader* reader)
 {
-    guint32 count;
+    guint count;
 
     /* OperatorInfo[] */
-    if (gbinder_reader_read_uint32(reader, &count)) {
+    if (binder_read_array_count(reader, &count)) {
         BinderOpList* oplist = binder_oplist_sized_new(count);
         guint i;
 
@@ -3009,12 +3009,13 @@ binder_netreg_api_read_network_scan_aidl(
      * }
      */
     if (gbinder_reader_start_parcelable(reader, &parcel, NULL)) {
-        gint32 status, error, count;
+        gint32 status, error;
+        guint count;
 
         if (gbinder_reader_read_int32(&parcel, &status) &&
             gbinder_reader_read_int32(&parcel, &error) &&
-            gbinder_reader_read_int32(&parcel, &count)) {
-            int i;
+            binder_read_array_count(&parcel, &count)) {
+            guint i;
 
             oplist = binder_oplist_sized_new(count);
             DBG_(self, "status=%d, error=%d, %u networks",

@@ -10,6 +10,7 @@ all:
 	@$(MAKE) -C unit_ext_slot $*
 	@$(MAKE) -C unit_oplist $*
 	@$(MAKE) -C unit_sim_settings $*
+	@$(MAKE) -C unit_util $*
 
 clean: unitclean
 	rm -f coverage/*.gcov

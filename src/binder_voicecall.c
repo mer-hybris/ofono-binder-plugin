@@ -2504,14 +2504,14 @@ binder_voicecall_api_read_call_list_aidl(
     GBinderReader* reader,
     RADIO_RESP resp)
 {
-    gint32 i, count = 0;
+    guint i, count = 0;
     GSList* list = NULL;
 
     /*
      * IRadioVoiceResponse.aidl:
      * void getCurrentCallsResponse(in RadioResponseInfo info, in Call[] calls);
      */
-    gbinder_reader_read_int32(reader, &count);
+    binder_read_array_count(reader, &count);
     for (i = 0; i < count; i++) {
         BinderVoiceCallInfo* call = binder_voicecall_info_new_aidl(reader);
 
@@ -2530,9 +2530,9 @@ binder_voicecall_api_read_ecclist_aidl(
     GBinderReader* reader)
 {
     char** ecclist = NULL;
-    guint32 count;
+    guint count;
 
-    if (gbinder_reader_read_uint32(reader, &count)) {
+    if (binder_read_array_count(reader, &count)) {
         char** ptr = ecclist = g_new(char*, count + 1);
         guint i;
 
