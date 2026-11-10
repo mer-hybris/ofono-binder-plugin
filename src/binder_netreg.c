@@ -1456,6 +1456,8 @@ binder_netreg_modem_reset_notify(
     BinderNetReg* self = user_data;
     GBinderReader reader;
     char* arg = NULL;
+    ofono_netreg_register_cb_t register_cb = NULL;
+    gpointer register_data = NULL;
 
     /*
      * IRadioIndication.hal:
@@ -1469,7 +1471,17 @@ binder_netreg_modem_reset_notify(
     DBG_(self, "%s", self->api->read_string_arg(&reader, &arg));
     g_free(arg);
 
-    /* Drop pending requests */
+    /*
+     * Drop pending requests. oFono core doesn't send another Register
+     * until the pending one completes, so that one has to be completed
+     * (below, once our state is consistent again).
+     */
+    if (self->register_req) {
+        BinderNetRegCbData* cbd = radio_request_user_data(self->register_req);
+
+        register_cb = cbd->cb.reg;
+        register_data = cbd->data;
+    }
     radio_request_drop(self->register_req);
     radio_request_drop(self->strength_req);
     self->register_req = NULL;
@@ -1485,6 +1497,12 @@ binder_netreg_modem_reset_notify(
         } else {
             binder_netreg_scan_free(self, scan);
         }
+    }
+
+    if (register_cb) {
+        struct ofono_error err;
+
+        register_cb(binder_error_failure(&err), register_data);
     }
 }
 
