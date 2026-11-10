@@ -981,7 +981,7 @@ binder_netreg_scan_result_notify(
 
     if (scan) {
         GBinderReader reader;
-        RADIO_SCAN_STATUS scan_status;
+        RADIO_SCAN_STATUS scan_status = RADIO_SCAN_COMPLETE;
         BinderOpList* oplist;
 
         gbinder_reader_copy(&reader, args);
@@ -1665,7 +1665,6 @@ binder_netreg_api_read_oplist_hidl(
                 dest->name, dest->mcc, dest->mnc,
                 binder_ofono_access_technology_string(dest->tech),
                 binder_radio_op_status_string(src->status));
-                binder_oplist_set_count(oplist, oplist->count + 1);
         }
         return oplist;
     }
@@ -2044,6 +2043,7 @@ binder_netreg_api_read_network_scan_hidl(
     if (result) {
         guint i;
 
+        *scan_status = result->status;
         oplist = binder_oplist_sized_new(result->networkInfos.count);
         DBG_(self, "status=%d, error=%d, %u networks",
             result->status, result->error, result->networkInfos.count);
