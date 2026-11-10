@@ -951,7 +951,7 @@ binder_radio_caps_new(
         self->data = binder_data_ref(data);
         caps->mgr = binder_radio_caps_manager_ref(mgr);
         self->api = binder_radio_caps_api_for_client(client);
-        self->radio = binder_radio_ref(radio);
+        self->client = radio_client_ref(client);
         self->radio_event_id[RADIO_EVENT_STATE] =
             binder_radio_add_property_handler(radio,
                 BINDER_RADIO_PROPERTY_STATE,
