@@ -893,7 +893,6 @@ binder_netreg_get_available_networks_cb(
               binder_radio_error_string(error));
     } else {
         GBinderReader reader;
-        const BinderNetRegApi* api = self->api;
 
         gbinder_reader_copy(&reader, args);
         if ((scan->oplist = api->read_oplist(self, &reader)) != NULL) {

@@ -479,6 +479,10 @@ binder_ofono_access_technology_string(
     case OFONO_ACCESS_TECHNOLOGY_NG_RAN:
     case OFONO_ACCESS_TECHNOLOGY_EUTRA_NR:
         return "nr";
+    case OFONO_ACCESS_TECHNOLOGY_NB_IOT_M1:
+        return "nbiot-m1";
+    case OFONO_ACCESS_TECHNOLOGY_NB_IOT_NB1:
+        return "nbiot-nb1";
     }
     return binder_pool_string(g_strdup_printf("%d (?)", act));
 }

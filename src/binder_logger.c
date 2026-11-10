@@ -26,6 +26,8 @@
 
 #include <gutil_log.h>
 
+#include <string.h>
+
 enum binder_logger_events {
     EVENT_REQ,
     EVENT_RESP,
@@ -83,7 +85,10 @@ binder_logger_trace_req(
     /* Use writer API to fetch the raw data and extract the serial */
     gbinder_local_request_init_writer(args, &writer);
     data = gbinder_writer_get_data(&writer, &size);
-    serial = (size >= header_size + 4) ? *(guint32*)(data + header_size) : 0;
+    serial = 0;
+    if (size >= header_size + sizeof(serial)) {
+        memcpy(&serial, data + header_size, sizeof(serial));
+    }
 
     if (serial) {
         gutil_log(log, GLOG_LEVEL_VERBOSE, "%s< [%08x] %u %s",

@@ -1754,12 +1754,12 @@ binder_radio_caps_tx_wait_cb(
 
     /* Check if all channels are ours */
     for (i = 0; i < list->len && can_start; i++) {
-        const BinderRadioCapsObject* caps = list->pdata[i];
+        const BinderRadioCapsObject* other = list->pdata[i];
 
-        if (caps->tx_id == self->tx_id &&
-            radio_request_group_block_status(caps->g) != RADIO_BLOCK_ACQUIRED) {
+        if (other->tx_id == self->tx_id &&
+            radio_request_group_block_status(other->g) != RADIO_BLOCK_ACQUIRED) {
             /* Still waiting for this one */
-            DBG_(caps, "still waiting");
+            DBG_(other, "still waiting");
             can_start = FALSE;
         }
     }
