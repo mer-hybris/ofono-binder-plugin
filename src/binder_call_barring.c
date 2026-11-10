@@ -207,7 +207,7 @@ binder_call_barring_query(
      * void getFacilityLockForApp(in int serial, in String facility,
      *     in String password, in int serviceClass, in String appId);
      */
-    binder_append_hidl_string(&args, lock);   /* facility */
+    api->write_string_arg(&args, lock);       /* facility */
     api->write_string_arg(&args, "");         /* password */
     gbinder_writer_append_int32(&args, cls);  /* serviceClass */
     api->write_string_arg(&args,              /* appId */
