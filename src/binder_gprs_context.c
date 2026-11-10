@@ -74,8 +74,7 @@ binder_gprs_context_netmask(
         const char* str;
         struct in_addr in;
 
-        in.s_addr = htonl((nbits == 32) ? 0xffffffff :
-            ((1u << nbits)-1) << (32-nbits));
+        in.s_addr = htonl(nbits ? (0xffffffffu << (32 - nbits)) : 0);
         str = inet_ntoa(in);
         if (str) {
             return g_strdup(str);
