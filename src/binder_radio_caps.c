@@ -472,7 +472,7 @@ binder_radio_caps_access_mode(
         int i;
 
         /* Return the highest matched mode */
-        for (i = G_N_ELEMENTS(binder_access_mode_raf_map); i >= 0; i--) {
+        for (i = G_N_ELEMENTS(binder_access_mode_raf_map) - 1; i >= 0; i--) {
             if (raf & binder_access_mode_raf_map[i].raf) {
                 return binder_access_mode_raf_map[i].mode;
             }
