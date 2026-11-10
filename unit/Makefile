@@ -5,6 +5,7 @@
 all:
 %:
 	@$(MAKE) -C unit_base $*
+	@$(MAKE) -C unit_ext_call $*
 	@$(MAKE) -C unit_ext_ims $*
 	@$(MAKE) -C unit_ext_plugin $*
 	@$(MAKE) -C unit_ext_slot $*

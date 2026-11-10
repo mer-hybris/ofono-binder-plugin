@@ -100,6 +100,7 @@ typedef struct binder_voicecall_cb_data {
     int ref_count;
     int pending_call_count;
     int success;
+    gboolean submitted;
     BinderVoiceCall* self;
     ofono_voicecall_cb_t cb;
     gpointer data;
@@ -199,6 +200,12 @@ binder_voicecall_cbd_unref(
     BinderVoiceCallCbData* cbd)
 {
     if (!--cbd->ref_count) {
+        if (!cbd->submitted && cbd->cb) {
+            struct ofono_error err;
+
+            /* Nothing was sent, oFono core is still waiting for an answer */
+            cbd->cb(binder_error_failure(&err), cbd->data);
+        }
         gutil_slice_free(cbd);
     }
 }
@@ -220,7 +227,7 @@ binder_voicecall_clear_dtmf_queue(
 }
 
 static
-enum ofono_call_mode
+enum ofono_call_status
 binder_voicecall_ext_call_state_to_ofono(
     BINDER_EXT_CALL_STATE state)
 {
@@ -789,6 +796,7 @@ binder_voicecall_request_submitted(
 {
     cbd->ref_count++;
     cbd->pending_call_count++;
+    cbd->submitted = TRUE;
 }
 
 static
@@ -1059,7 +1067,7 @@ binder_voicecall_submit_hangup_req(
 }
 
 static
-BINDER_EXT_CALL_DISCONNECT_REASON
+BINDER_EXT_CALL_HANGUP_REASON
 binder_voicecall_ext_disconnect_reason(
     const BinderVoiceCallInfo* call)
 {
@@ -1220,11 +1228,12 @@ binder_voicecall_release_specific(
     void* data)
 {
     BinderVoiceCall* self = binder_voicecall_get_data(vc);
-    BinderVoiceCallCbData* cbd = binder_voicecall_cbd_new(self, cb, data);
     const BinderVoiceCallInfo* call =
         binder_voicecall_find_call_with_id(self, id);
 
     if (call) {
+        BinderVoiceCallCbData* cbd = binder_voicecall_cbd_new(self, cb, data);
+
         if (call->ext) {
             DBG_(self, "hanging up ext call with id %u", id);
             if (binder_ext_call_hangup(call->ext, id,
@@ -1235,6 +1244,7 @@ binder_voicecall_release_specific(
                 binder_voicecall_cbd_ext_complete,
                 binder_voicecall_cbd_destroy, cbd)) {
                 binder_voicecall_request_submitted(cbd);
+                binder_voicecall_cbd_unref(cbd);
                 return;
             }
         }
