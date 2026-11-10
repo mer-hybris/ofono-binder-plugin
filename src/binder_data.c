@@ -662,6 +662,7 @@ binder_data_restricted_state_changed(
             DBG_(data, "restricted state 0x%02x", state);
             data->restricted_state = state;
             binder_data_check_allowed(data, was_allowed);
+            binder_base_emit_queued_signals(&data->base);
         }
     }
 }
@@ -1433,6 +1434,7 @@ binder_data_allow_cb(
     }
 
     binder_data_request_finish(dr);
+    binder_base_emit_queued_signals(&data->base);
 }
 
 static
@@ -2767,6 +2769,27 @@ binder_data_max_speed_cb(
 
 static
 void
+binder_data_manager_emit_queued_signals(
+    BinderDataManager* dm)
+{
+    /* Handlers may change the list, walk a referenced copy of it */
+    GSList* list = g_slist_copy(dm->data_list);
+    GSList* l;
+
+    for (l = list; l; l = l->next) {
+        g_object_ref(l->data);
+    }
+    for (l = list; l; l = l->next) {
+        BinderDataObject* obj = THIS(l->data);
+
+        binder_base_emit_queued_signals(&obj->base);
+        g_object_unref(obj);
+    }
+    g_slist_free(list);
+}
+
+static
+void
 binder_data_disallow_cb(
     gpointer data,
     gpointer allowed)
@@ -2827,6 +2850,12 @@ binder_data_allow(
             binder_data_disallow(self);
             binder_data_manager_check_data(dm);
         }
+
+        /*
+         * Emit the ALLOWED changes queued above, for this slot and the
+         * ones that lost the data role.
+         */
+        binder_data_manager_emit_queued_signals(dm);
     }
 }
 
