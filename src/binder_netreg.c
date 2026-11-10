@@ -981,7 +981,7 @@ binder_netreg_scan_result_notify(
 
     if (scan) {
         GBinderReader reader;
-        RADIO_SCAN_STATUS scan_status;
+        RADIO_SCAN_STATUS scan_status = RADIO_SCAN_COMPLETE;
         BinderOpList* oplist;
 
         gbinder_reader_copy(&reader, args);
@@ -1076,7 +1076,7 @@ binder_netreg_query_register_auto_cb(
         DBG_(self, "getNetworkSelectionMode tx failed");
     } else if (error != RADIO_ERROR_NONE) {
         ofono_warn("Failed to query network selection mode: %s",
-            binder_radio_error_string(status));
+            binder_radio_error_string(error));
     } else {
         GBinderReader reader;
         gboolean manual;
@@ -1347,7 +1347,7 @@ binder_netreg_strength_cb(
         DBG_(self, "getSignalStrength tx failed");
     } else if (error != RADIO_ERROR_NONE) {
         ofono_warn("Failed to retrive the signal strength: %s",
-            binder_radio_error_string(status));
+            binder_radio_error_string(error));
     } else {
         GBinderReader reader;
         BinderSs ss;
@@ -1456,6 +1456,8 @@ binder_netreg_modem_reset_notify(
     BinderNetReg* self = user_data;
     GBinderReader reader;
     char* arg = NULL;
+    ofono_netreg_register_cb_t register_cb = NULL;
+    gpointer register_data = NULL;
 
     /*
      * IRadioIndication.hal:
@@ -1469,7 +1471,17 @@ binder_netreg_modem_reset_notify(
     DBG_(self, "%s", self->api->read_string_arg(&reader, &arg));
     g_free(arg);
 
-    /* Drop pending requests */
+    /*
+     * Drop pending requests. oFono core doesn't send another Register
+     * until the pending one completes, so that one has to be completed
+     * (below, once our state is consistent again).
+     */
+    if (self->register_req) {
+        BinderNetRegCbData* cbd = radio_request_user_data(self->register_req);
+
+        register_cb = cbd->cb.reg;
+        register_data = cbd->data;
+    }
     radio_request_drop(self->register_req);
     radio_request_drop(self->strength_req);
     self->register_req = NULL;
@@ -1485,6 +1497,12 @@ binder_netreg_modem_reset_notify(
         } else {
             binder_netreg_scan_free(self, scan);
         }
+    }
+
+    if (register_cb) {
+        struct ofono_error err;
+
+        register_cb(binder_error_failure(&err), register_data);
     }
 }
 
@@ -1665,7 +1683,6 @@ binder_netreg_api_read_oplist_hidl(
                 dest->name, dest->mcc, dest->mnc,
                 binder_ofono_access_technology_string(dest->tech),
                 binder_radio_op_status_string(src->status));
-                binder_oplist_set_count(oplist, oplist->count + 1);
         }
         return oplist;
     }
@@ -2044,6 +2061,7 @@ binder_netreg_api_read_network_scan_hidl(
     if (result) {
         guint i;
 
+        *scan_status = result->status;
         oplist = binder_oplist_sized_new(result->networkInfos.count);
         DBG_(self, "status=%d, error=%d, %u networks",
             result->status, result->error, result->networkInfos.count);
