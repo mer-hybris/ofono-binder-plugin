@@ -100,6 +100,7 @@ typedef struct binder_voicecall_cb_data {
     int ref_count;
     int pending_call_count;
     int success;
+    gboolean submitted;
     BinderVoiceCall* self;
     ofono_voicecall_cb_t cb;
     gpointer data;
@@ -199,6 +200,12 @@ binder_voicecall_cbd_unref(
     BinderVoiceCallCbData* cbd)
 {
     if (!--cbd->ref_count) {
+        if (!cbd->submitted && cbd->cb) {
+            struct ofono_error err;
+
+            /* Nothing was sent, oFono core is still waiting for an answer */
+            cbd->cb(binder_error_failure(&err), cbd->data);
+        }
         gutil_slice_free(cbd);
     }
 }
@@ -789,6 +796,7 @@ binder_voicecall_request_submitted(
 {
     cbd->ref_count++;
     cbd->pending_call_count++;
+    cbd->submitted = TRUE;
 }
 
 static
