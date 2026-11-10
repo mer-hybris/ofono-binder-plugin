@@ -2220,7 +2220,6 @@ binder_sim_logical_access_get_results_cb(
     BinderSim* self = cbd->self;
     struct ofono_error err;
 
-    cbd->req_id = 0;
     if (status != RADIO_TX_STATUS_OK) {
         DBG_(self, "iccTransmitApduLogicalChannel tx failed");
     } else if (error != RADIO_ERROR_NONE) {
@@ -2288,7 +2287,6 @@ binder_sim_logical_access_cb(
     BinderSim* self = cbd->self;
     struct ofono_error err;
 
-    cbd->req_id = 0;
     if (status != RADIO_TX_STATUS_OK) {
         DBG_(self, "iccTransmitApduLogicalChannel tx failed");
     } else if (error != RADIO_ERROR_NONE) {
