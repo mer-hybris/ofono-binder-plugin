@@ -472,7 +472,7 @@ binder_radio_caps_access_mode(
         int i;
 
         /* Return the highest matched mode */
-        for (i = G_N_ELEMENTS(binder_access_mode_raf_map); i >= 0; i--) {
+        for (i = G_N_ELEMENTS(binder_access_mode_raf_map) - 1; i >= 0; i--) {
             if (raf & binder_access_mode_raf_map[i].raf) {
                 return binder_access_mode_raf_map[i].mode;
             }
@@ -951,7 +951,7 @@ binder_radio_caps_new(
         self->data = binder_data_ref(data);
         caps->mgr = binder_radio_caps_manager_ref(mgr);
         self->api = binder_radio_caps_api_for_client(client);
-        self->radio = binder_radio_ref(radio);
+        self->client = radio_client_ref(client);
         self->radio_event_id[RADIO_EVENT_STATE] =
             binder_radio_add_property_handler(radio,
                 BINDER_RADIO_PROPERTY_STATE,
@@ -1406,12 +1406,11 @@ binder_radio_caps_manager_abort_cb(
     } else if (error != RADIO_ERROR_NONE) {
         DBG_(self, "Failed to abort radio caps switch, error %s",
             binder_radio_error_string(error));
-    } else {
-        GASSERT(self->tx_pending > 0);
-        self->tx_pending--;
-        DBG_(self, "tx_pending=%d", self->tx_pending);
     }
 
+    GASSERT(self->tx_pending > 0);
+    self->tx_pending--;
+    DBG_(self, "tx_pending=%d", self->tx_pending);
     if (!binder_radio_caps_manager_tx_pending(mgr)) {
         DBG("transaction aborted");
         binder_radio_caps_manager_transaction_done(mgr);
@@ -1545,7 +1544,9 @@ binder_radio_caps_manager_next_phase(
             BinderRadioCapsObject* caps = list->pdata[i];
 
             if (caps->tx_id == self->tx_id) {
+                g_free(caps->cap);
                 caps->cap = caps->new_cap;
+                caps->new_cap = NULL;
                 /* Better bump refs to make sure BinderRadioCapsObject
                  * don't get freed by a signal handler */
                 binder_radio_caps_object_ref(caps);
