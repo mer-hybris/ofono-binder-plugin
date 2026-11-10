@@ -5,6 +5,7 @@
 
 TESTS="\
 unit_base \
+unit_ext_call \
 unit_ext_ims \
 unit_ext_plugin \
 unit_ext_slot \
