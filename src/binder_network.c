@@ -622,7 +622,7 @@ binder_network_poll_and_retry(
         radio_request_drop(req);
         req = radio_request_new2(self->g, code, NULL, complete, NULL, self);
         radio_request_set_retry_func(req, binder_network_retry);
-        radio_request_set_retry(req, BINDER_RETRY_MS * 1000, -1);
+        radio_request_set_retry(req, BINDER_RETRY_MS, -1);
         radio_request_set_timeout(req, INFINITE_TIMEOUT);
         radio_request_submit(req);
     }
