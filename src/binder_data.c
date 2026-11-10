@@ -1741,7 +1741,7 @@ binder_data_api_write_deactivate_data_call_args_hidl_1_2(
      *     DataRequestReason reason);
      */
     gbinder_writer_append_int32(args, cid);
-    gbinder_writer_append_bool(args, FALSE);
+    gbinder_writer_append_int32(args, RADIO_DATA_REQUEST_REASON_NORMAL);
 }
 
 static const BinderDataApi binder_data_api_hidl_1_2 = {
