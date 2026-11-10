@@ -508,7 +508,7 @@ binder_connman_new()
         DBusConnection* connection;
 
         dbus_error_init(&error);
-        connection = dbus_bus_get(CONNMAN_BUS, NULL);
+        connection = dbus_bus_get(CONNMAN_BUS, &error);
 
         if (connection) {
             instance = g_object_new(THIS_TYPE, NULL);
