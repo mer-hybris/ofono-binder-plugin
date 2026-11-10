@@ -78,7 +78,7 @@ typedef struct binder_cell_info {
 
 struct binder_cell_info_api {
     const char* name;
-    RADIO_REQ cell_info_list_ind[CELL_INFO_EVENT_COUNT];
+    RADIO_IND cell_info_list_ind[CELL_INFO_EVENT_COUNT];
     GPtrArray* (*read_cell_info_list_ind)(
         BinderCellInfo* self,
         RADIO_IND ind,

@@ -220,7 +220,7 @@ binder_voicecall_clear_dtmf_queue(
 }
 
 static
-enum ofono_call_mode
+enum ofono_call_status
 binder_voicecall_ext_call_state_to_ofono(
     BINDER_EXT_CALL_STATE state)
 {
@@ -1059,7 +1059,7 @@ binder_voicecall_submit_hangup_req(
 }
 
 static
-BINDER_EXT_CALL_DISCONNECT_REASON
+BINDER_EXT_CALL_HANGUP_REASON
 binder_voicecall_ext_disconnect_reason(
     const BinderVoiceCallInfo* call)
 {
