@@ -251,7 +251,7 @@ binder_ext_call_add_calls_changed_handler(
         BinderExtCallInterface* iface = GET_IFACE(self);
 
         if (iface->add_calls_changed_handler) {
-            iface->add_calls_changed_handler(self, handler, user_data);
+            return iface->add_calls_changed_handler(self, handler, user_data);
         }
     }
     return 0;
@@ -267,7 +267,7 @@ binder_ext_call_add_disconnect_handler(
         BinderExtCallInterface* iface = GET_IFACE(self);
 
         if (iface->add_disconnect_handler) {
-            iface->add_disconnect_handler(self, handler, user_data);
+            return iface->add_disconnect_handler(self, handler, user_data);
         }
     }
     return 0;
@@ -283,7 +283,7 @@ binder_ext_call_add_ring_handler(
         BinderExtCallInterface* iface = GET_IFACE(self);
 
         if (iface->add_ring_handler) {
-            iface->add_ring_handler(self, handler, user_data);
+            return iface->add_ring_handler(self, handler, user_data);
         }
     }
     return 0;
@@ -299,7 +299,7 @@ binder_ext_call_add_ssn_handler(
         BinderExtCallInterface* iface = GET_IFACE(self);
 
         if (iface->add_ssn_handler) {
-            iface->add_ssn_handler(self, handler, user_data);
+            return iface->add_ssn_handler(self, handler, user_data);
         }
     }
     return 0;
@@ -329,7 +329,7 @@ binder_ext_call_add_ringback_tone_handler(
         BinderExtCallInterface* iface = GET_IFACE(self);
 
         if (iface->add_ringback_tone_handler) {
-            iface->add_ringback_tone_handler(self, handler, user_data);
+            return iface->add_ringback_tone_handler(self, handler, user_data);
         }
     }
     return 0;
