@@ -1406,12 +1406,11 @@ binder_radio_caps_manager_abort_cb(
     } else if (error != RADIO_ERROR_NONE) {
         DBG_(self, "Failed to abort radio caps switch, error %s",
             binder_radio_error_string(error));
-    } else {
-        GASSERT(self->tx_pending > 0);
-        self->tx_pending--;
-        DBG_(self, "tx_pending=%d", self->tx_pending);
     }
 
+    GASSERT(self->tx_pending > 0);
+    self->tx_pending--;
+    DBG_(self, "tx_pending=%d", self->tx_pending);
     if (!binder_radio_caps_manager_tx_pending(mgr)) {
         DBG("transaction aborted");
         binder_radio_caps_manager_transaction_done(mgr);
