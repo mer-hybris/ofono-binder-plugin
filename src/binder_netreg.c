@@ -1076,7 +1076,7 @@ binder_netreg_query_register_auto_cb(
         DBG_(self, "getNetworkSelectionMode tx failed");
     } else if (error != RADIO_ERROR_NONE) {
         ofono_warn("Failed to query network selection mode: %s",
-            binder_radio_error_string(status));
+            binder_radio_error_string(error));
     } else {
         GBinderReader reader;
         gboolean manual;
@@ -1347,7 +1347,7 @@ binder_netreg_strength_cb(
         DBG_(self, "getSignalStrength tx failed");
     } else if (error != RADIO_ERROR_NONE) {
         ofono_warn("Failed to retrive the signal strength: %s",
-            binder_radio_error_string(status));
+            binder_radio_error_string(error));
     } else {
         GBinderReader reader;
         BinderSs ss;
