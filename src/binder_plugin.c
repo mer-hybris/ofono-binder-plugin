@@ -78,6 +78,8 @@
 #include <sys/syscall.h>
 #include <sys/prctl.h>
 #include <sys/stat.h>
+#include <dirent.h>
+#include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
 #include <pwd.h>
@@ -2377,55 +2379,102 @@ binder_plugin_load_config(
 static
 void
 binder_plugin_set_perm(
+    int fd,
     const char* path,
     mode_t mode,
     const BinderPluginIdentity* id)
 {
-    if (chmod(path, mode)) {
+    if (fchmod(fd, mode)) {
         ofono_error("chmod(%s,%o) failed: %s", path, mode, strerror(errno));
     }
-    if (chown(path, id->uid, id->gid)) {
+    if (fchown(fd, id->uid, id->gid)) {
         ofono_error("chown(%s,%d,%d) failed: %s", path, id->uid, id->gid,
             strerror(errno));
     }
 }
 
-/* Recursively updates file and directory ownership and permissions */
+/*
+ * Recursively updates file and directory ownership and permissions.
+ *
+ * This runs as root on a directory that the unprivileged identity owns,
+ * so nothing in it is trusted: symbolic links are never followed, every
+ * entry is re-checked through the descriptor it's changed through (so
+ * it can't be swapped for something else in between), and anything
+ * other than a directory or a regular file with a single link (a hard
+ * link could point anywhere on the same file system) is left alone.
+ */
+static
+void
+binder_plugin_set_storage_perm_fd(
+    int dfd,
+    const char* path,
+    const BinderPluginIdentity* id)
+{
+    const mode_t dir_mode = S_IRUSR | S_IWUSR | S_IXUSR;
+    const mode_t file_mode = S_IRUSR | S_IWUSR;
+    const int dup_fd = dup(dfd);
+    DIR* d = (dup_fd >= 0) ? fdopendir(dup_fd) : NULL;
+
+    binder_plugin_set_perm(dfd, path, dir_mode, id);
+    if (d) {
+        const struct dirent* p;
+
+        while ((p = readdir(d)) != NULL) {
+            const char* name = p->d_name;
+            struct stat st;
+
+            if (!strcmp(name, ".") || !strcmp(name, "..") ||
+                fstatat(dfd, name, &st, AT_SYMLINK_NOFOLLOW)) {
+                continue;
+            }
+
+            if (S_ISDIR(st.st_mode) || S_ISREG(st.st_mode)) {
+                const int dir = S_ISDIR(st.st_mode);
+                const int fd = openat(dfd, name, O_RDONLY | O_NOFOLLOW |
+                    O_NONBLOCK | O_NOCTTY | O_CLOEXEC |
+                    (dir ? O_DIRECTORY : 0));
+
+                if (fd >= 0) {
+                    char* buf = g_build_filename(path, name, NULL);
+
+                    if (fstat(fd, &st)) {
+                        ofono_error("stat(%s) failed: %s", buf,
+                            strerror(errno));
+                    } else if (dir && S_ISDIR(st.st_mode)) {
+                        binder_plugin_set_storage_perm_fd(fd, buf, id);
+                    } else if (!dir && S_ISREG(st.st_mode) &&
+                        st.st_nlink == 1) {
+                        binder_plugin_set_perm(fd, buf, file_mode, id);
+                    } else {
+                        ofono_warn("Not touching %s", buf);
+                    }
+                    g_free(buf);
+                    close(fd);
+                }
+            } else {
+                DBG("skipping %s/%s", path, name);
+            }
+        }
+        closedir(d);
+    } else if (dup_fd >= 0) {
+        close(dup_fd);
+    }
+}
+
 static
 void
 binder_plugin_set_storage_perm(
     const char* path,
     const BinderPluginIdentity* id)
 {
-    DIR* d;
-    const mode_t dir_mode = S_IRUSR | S_IWUSR | S_IXUSR;
-    const mode_t file_mode = S_IRUSR | S_IWUSR;
+    /* The storage directory itself is ours to configure, follow it */
+    const int fd = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
 
-    binder_plugin_set_perm(path, dir_mode, id);
-    d = opendir(path);
-    if (d) {
-        const struct dirent* p;
-
-        while ((p = readdir(d)) != NULL) {
-            if (strcmp(p->d_name, ".") && strcmp(p->d_name, "..")) {
-                char* buf = g_build_filename(path, p->d_name, NULL);
-                struct stat st;
-
-                if (!stat(buf, &st)) {
-                    mode_t mode;
-
-                    if (S_ISDIR(st.st_mode)) {
-                        binder_plugin_set_storage_perm(buf, id);
-                        mode = dir_mode;
-                    } else {
-                        mode = file_mode;
-                    }
-                    binder_plugin_set_perm(buf, mode, id);
-                }
-                g_free(buf);
-            }
-        }
-        closedir(d);
+    if (fd >= 0) {
+        binder_plugin_set_storage_perm_fd(fd, path, id);
+        close(fd);
+    } else {
+        ofono_error("Can't open %s: %s", path, strerror(errno));
     }
 }
 
