@@ -1220,11 +1220,12 @@ binder_voicecall_release_specific(
     void* data)
 {
     BinderVoiceCall* self = binder_voicecall_get_data(vc);
-    BinderVoiceCallCbData* cbd = binder_voicecall_cbd_new(self, cb, data);
     const BinderVoiceCallInfo* call =
         binder_voicecall_find_call_with_id(self, id);
 
     if (call) {
+        BinderVoiceCallCbData* cbd = binder_voicecall_cbd_new(self, cb, data);
+
         if (call->ext) {
             DBG_(self, "hanging up ext call with id %u", id);
             if (binder_ext_call_hangup(call->ext, id,
@@ -1235,6 +1236,7 @@ binder_voicecall_release_specific(
                 binder_voicecall_cbd_ext_complete,
                 binder_voicecall_cbd_destroy, cbd)) {
                 binder_voicecall_request_submitted(cbd);
+                binder_voicecall_cbd_unref(cbd);
                 return;
             }
         }
