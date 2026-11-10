@@ -1545,7 +1545,9 @@ binder_radio_caps_manager_next_phase(
             BinderRadioCapsObject* caps = list->pdata[i];
 
             if (caps->tx_id == self->tx_id) {
+                g_free(caps->cap);
                 caps->cap = caps->new_cap;
+                caps->new_cap = NULL;
                 /* Better bump refs to make sure BinderRadioCapsObject
                  * don't get freed by a signal handler */
                 binder_radio_caps_object_ref(caps);
