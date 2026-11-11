@@ -100,7 +100,7 @@ typedef struct binder_sms_submit_cbd {
     int ref_count;
     BINDER_SMS_SEND_FLAGS flags;
     BinderSms* self;
-    void* pdu;
+    guint8* pdu;
     int pdu_len;
     int tpdu_len;
     ofono_sms_submit_cb_t cb;

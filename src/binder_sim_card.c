@@ -511,12 +511,12 @@ binder_sim_card_status_cb(
         DBG("getIccCardStatus error %s", binder_radio_error_string(error));
     } else {
         GBinderReader reader;
-        BinderSimCardStatus* status;
+        BinderSimCardStatus* card_status;
 
         gbinder_reader_copy(&reader, args);
-        status = self->api->read_icc_card_status(&reader, resp);
-        if (status) {
-            binder_sim_card_update_status(self, status);
+        card_status = self->api->read_icc_card_status(&reader, resp);
+        if (card_status) {
+            binder_sim_card_update_status(self, card_status);
         }
     }
     binder_sim_card_tx_check(self);

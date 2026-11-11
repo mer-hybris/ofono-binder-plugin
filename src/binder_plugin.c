@@ -1785,18 +1785,18 @@ binder_plugin_create_slot(
     if (sval) {
         GHashTable* params = g_hash_table_new_full(g_str_hash, g_str_equal,
             g_free, g_free);
-        char* name = binder_plugin_parse_spec_params(sval, params);
+        char* ext_name = binder_plugin_parse_spec_params(sval, params);
 
-        if (name) {
-            slot->ext_plugin = binder_ext_plugin_get(name);
+        if (ext_name) {
+            slot->ext_plugin = binder_ext_plugin_get(ext_name);
             if (slot->ext_plugin) {
                 DBG("%s: " BINDER_CONF_SLOT_EXT_PLUGIN " %s", group, sval);
                 slot->ext_params = g_hash_table_ref(params);
                 binder_ext_plugin_ref(slot->ext_plugin);
             } else {
-                ofono_warn("Unknown extension plugin '%s'", name);
+                ofono_warn("Unknown extension plugin '%s'", ext_name);
             }
-            g_free(name);
+            g_free(ext_name);
         } else {
             ofono_warn("Failed to parse extension spec '%s'", sval);
         }
@@ -2603,12 +2603,12 @@ binder_plugin_slot_driver_init(
 
         /* Auto-assign paths */
         if (!slot->path) {
-            guint i = 0;
+            guint n = 0;
 
             do {
                 g_free(slot->path);
                 slot->path = g_strdup_printf("/%s_%u",
-                    BINDER_DEFAULT_SLOT_PATH_PREFIX, i++);
+                    BINDER_DEFAULT_SLOT_PATH_PREFIX, n++);
             } while (g_hash_table_contains(slot_paths, slot->path));
             DBG("assigned %s => %s", slot->name, slot->path);
             g_hash_table_insert(slot_paths,

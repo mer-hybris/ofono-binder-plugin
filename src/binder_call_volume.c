@@ -173,8 +173,6 @@ binder_call_volume_query_mute_cb(
          */
         gbinder_reader_copy(&reader, args);
         if (gbinder_reader_read_bool(&reader, &muted)) {
-            BinderCallVolume* self = user_data;
-
             DBG_(self, "%d", muted);
             ofono_call_volume_set_muted(self->v, muted);
         }
