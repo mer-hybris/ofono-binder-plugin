@@ -2353,7 +2353,11 @@ binder_data_api_write_setup_data_call_args_aidl(
     gbinder_writer_append_int32(args, 0);        /* dnses [0] */
     gbinder_writer_append_int32(args, 0);        /* pduSessionId */
     gbinder_writer_append_null_parcelable(args); /* sliceInfo */
-    gbinder_writer_append_bool(args, FALSE);     /* matchAllRuleAllowed */
+    /* 5G rejects the default PDN unless the match-all URSP rule is allowed
+     * (MATCH_ALL_RULE_NOT_ALLOWED); allow it for the default APN only */
+    gbinder_writer_append_bool(args,             /* matchAllRuleAllowed */
+        (binder_radio_apn_types_for_profile(setup->profile_id, config) &
+            RADIO_APN_TYPE_DEFAULT) != 0);
 }
 
 static
