@@ -10,7 +10,8 @@ unit_ext_ims \
 unit_ext_plugin \
 unit_ext_slot \
 unit_oplist \
-unit_sim_settings"
+unit_sim_settings \
+unit_util"
 
 function err() {
     echo "*** ERROR!" $1
