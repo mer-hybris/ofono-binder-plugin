@@ -972,8 +972,13 @@ binder_copy_hidl_string_impl(
     dest->owns_buffer = TRUE;
     if (len > 0) {
         /* GBinderWriter takes ownership of the string contents */
+        char* str = gbinder_writer_malloc(writer, len + 1);
+
+        /* src isn't necessarily NULL-terminated at len */
+        memcpy(str, src, len);
+        str[len] = 0;
         dest->len = (guint32) len;
-        dest->data.str = gbinder_writer_memdup(writer, src, len + 1);
+        dest->data.str = str;
     } else {
         /* Replace NULL strings with empty strings */
         dest->data.str = binder_empty_str;
@@ -997,8 +1002,8 @@ binder_copy_hidl_string_len(
     const char* src,
     gssize len)
 {
-    binder_copy_hidl_string_impl(writer, dest, src, (src && len < 0) ?
-        strlen(src) : 0);
+    binder_copy_hidl_string_impl(writer, dest, src, !src ? 0 :
+        (len < 0) ? (gssize) strlen(src) : len);
 }
 
 void
