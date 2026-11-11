@@ -121,7 +121,7 @@ binder_call_settings_req_new(
 }
 
 static
-void
+gboolean
 binder_call_settings_call(
     BinderCallSettings* self,
     RADIO_REQ code,
@@ -132,9 +132,10 @@ binder_call_settings_call(
     /* Simple call with no arguments (other than the mandatory serial) */
     RadioRequest* req = binder_call_settings_req_new(self, code, NULL,
         complete, cb, data);
+    const gboolean ok = radio_request_submit(req);
 
-    radio_request_submit(req);
     radio_request_unref(req);
+    return ok;
 }
 
 static
@@ -202,7 +203,11 @@ binder_call_settings_cw_set(
     gbinder_writer_append_bool(&args, mode);  /* enable */
     gbinder_writer_append_int32(&args, cls);  /* serviceClass */
 
-    radio_request_submit(req);
+    if (!radio_request_submit(req)) {
+        struct ofono_error err;
+
+        cb(binder_error_failure(&err), data);
+    }
     radio_request_unref(req);
 }
 
@@ -296,7 +301,11 @@ void binder_call_settings_cw_query(
      */
     gbinder_writer_append_int32(&args, cls); /* serviceClass */
 
-    radio_request_submit(req);
+    if (!radio_request_submit(req)) {
+        struct ofono_error err;
+
+        cb(binder_error_failure(&err), -1, data);
+    }
     radio_request_unref(req);
 }
 
@@ -354,8 +363,12 @@ binder_call_settings_clip_query(
 
     DBG_(self, "");
     /* getClip(int32_t serial); */
-    binder_call_settings_call(self, self->api->get_clip_req,
-        binder_call_settings_clip_query_cb, BINDER_CB(cb), data);
+    if (!binder_call_settings_call(self, self->api->get_clip_req,
+        binder_call_settings_clip_query_cb, BINDER_CB(cb), data)) {
+        struct ofono_error err;
+
+        cb(binder_error_failure(&err), -1, data);
+    }
 }
 
 static
@@ -414,8 +427,12 @@ binder_call_settings_clir_query(
 
     DBG_(self, "");
     /* getClir(int32_t serial); */
-    binder_call_settings_call(self, self->api->get_clir_req,
-       binder_call_settings_clir_cb , BINDER_CB(cb), data);
+    if (!binder_call_settings_call(self, self->api->get_clir_req,
+        binder_call_settings_clir_cb, BINDER_CB(cb), data)) {
+        struct ofono_error err;
+
+        cb(binder_error_failure(&err), -1, -1, data);
+    }
 }
 
 static
@@ -443,7 +460,11 @@ binder_call_settings_clir_set(
      */
     gbinder_writer_append_int32(&args, mode); /* status */
 
-    radio_request_submit(req);
+    if (!radio_request_submit(req)) {
+        struct ofono_error err;
+
+        cb(binder_error_failure(&err), data);
+    }
     radio_request_unref(req);
 }
 

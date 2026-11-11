@@ -189,7 +189,11 @@ binder_call_forwarding_set(
      */
     api->write_call_forward_info_arg(&args, action, reason, cls, number, time);
 
-    radio_request_submit(req);
+    if (!radio_request_submit(req)) {
+        struct ofono_error err;
+
+        cb(binder_error_failure(&err), data);
+    }
     radio_request_unref(req);
 }
 
@@ -325,7 +329,11 @@ binder_call_forwarding_query(
     api->write_call_forward_info_arg(&args, RADIO_CALL_FORWARD_INTERROGATE,
         type, cls, NULL, CF_TIME_DEFAULT);
 
-    radio_request_submit(req);
+    if (!radio_request_submit(req)) {
+        struct ofono_error err;
+
+        cb(binder_error_failure(&err), 0, NULL, data);
+    }
     radio_request_unref(req);
 }
 

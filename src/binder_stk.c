@@ -160,7 +160,11 @@ binder_stk_envelope(
     DBG("envelope %s", hex);
     api->take_string_arg(&args, hex);
 
-    radio_request_submit(req);
+    if (!radio_request_submit(req)) {
+        struct ofono_error err;
+
+        cb(binder_error_failure(&err), NULL, 0, data);
+    }
     radio_request_unref(req);
 }
 
@@ -219,7 +223,11 @@ binder_stk_terminal_response(
     DBG_(self, "terminal response: %s", hex);
     api->take_string_arg(&args, hex);
 
-    radio_request_submit(req);
+    if (!radio_request_submit(req)) {
+        struct ofono_error err;
+
+        cb(binder_error_failure(&err), data);
+    }
     radio_request_unref(req);
 }
 

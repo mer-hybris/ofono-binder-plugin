@@ -139,7 +139,11 @@ binder_call_volume_mute(
      */
     gbinder_writer_append_bool(&writer, muted); /* enable */
 
-    radio_request_submit(req);
+    if (!radio_request_submit(req)) {
+        struct ofono_error err;
+
+        cb(binder_error_failure(&err), data);
+    }
     radio_request_unref(req);
 }
 
