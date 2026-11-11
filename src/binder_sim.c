@@ -84,7 +84,7 @@ typedef struct binder_sim {
     const BinderSimApi* api;
     BinderSimCard* card;
     RadioRequestGroup* g;
-    RadioClient* network_client;
+    RadioRequestGroup* network_g;
     RadioRequest* query_pin_retries_req;
     GList* pin_cbd_list;
     int retries[OFONO_SIM_PASSWORD_INVALID];
@@ -2220,7 +2220,6 @@ binder_sim_logical_access_get_results_cb(
     BinderSim* self = cbd->self;
     struct ofono_error err;
 
-    cbd->req_id = 0;
     if (status != RADIO_TX_STATUS_OK) {
         DBG_(self, "iccTransmitApduLogicalChannel tx failed");
     } else if (error != RADIO_ERROR_NONE) {
@@ -2288,7 +2287,6 @@ binder_sim_logical_access_cb(
     BinderSim* self = cbd->self;
     struct ofono_error err;
 
-    cbd->req_id = 0;
     if (status != RADIO_TX_STATUS_OK) {
         DBG_(self, "iccTransmitApduLogicalChannel tx failed");
     } else if (error != RADIO_ERROR_NONE) {
@@ -2493,7 +2491,7 @@ binder_sim_probe(
     self->empty_pin_query_allowed = modem->config.empty_pin_query;
     self->card = binder_sim_card_ref(modem->sim_card);
     self->g = radio_request_group_new(sim_client);
-    self->network_client = radio_client_ref(modem->clients.network_client);
+    self->network_g = radio_request_group_new(modem->clients.network_client);
     self->watch = ofono_watch_new(binder_modem_get_path(modem));
     self->sim = sim;
     self->api = api;
@@ -2518,7 +2516,8 @@ static void binder_sim_remove(struct ofono_sim *sim)
     radio_request_drop(self->query_pin_retries_req);
     radio_request_group_cancel(self->g);
     radio_request_group_unref(self->g);
-    radio_client_unref(self->network_client);
+    radio_request_group_cancel(self->network_g);
+    radio_request_group_unref(self->network_g);
 
     gutil_source_remove(self->list_apps_id);
     gutil_source_remove(self->idle_id);
@@ -2807,7 +2806,7 @@ binder_sim_create_supply_network_depersonalization_req_aidl(
 {
     BinderSim* self = cbd->self;
     GBinderWriter writer;
-    RadioRequest* req = radio_request_new(self->network_client,
+    RadioRequest* req = radio_request_new2(self->network_g,
         RADIO_NETWORK_REQ_SUPPLY_NETWORK_DEPERSONALIZATION, &writer,
         cb, binder_sim_pin_req_done, cbd);
 
