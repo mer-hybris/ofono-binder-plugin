@@ -559,11 +559,15 @@ binder_sms_send(
         /* binder_sms_submit_cbd_destroy will drop this ref */
         cbd->ref_count++;
 
-        /* If smsc_len == 1 then zero-length SMSC was specified */
+        /*
+         * If smsc_len == 1 then zero-length SMSC was specified. Otherwise
+         * it's the length byte followed by the address in BCD format which,
+         * like the PDU, is sent as an ASCII hex string. The raw bytes may
+         * contain zeros and aren't valid UTF-8.
+         */
         if (smsc_len > 1) {
-            smsc = gbinder_writer_malloc(&writer, smsc_len + 1);
-            memcpy(smsc, cbd->pdu, smsc_len);
-            smsc[smsc_len] = 0;
+            smsc = gbinder_writer_malloc(&writer, smsc_len * 2 + 1);
+            ofono_encode_hex(cbd->pdu, smsc_len, smsc);
         }
 
         /* PDU is sent as an ASCII hex string */
