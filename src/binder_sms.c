@@ -1002,6 +1002,7 @@ binder_sms_remove(
     radio_request_group_unref(self->g);
 
     binder_ims_reg_unref(self->ims_reg);
+    ofono_watch_unref(self->watch);
     g_free(self->log_prefix);
     g_free(self);
 
