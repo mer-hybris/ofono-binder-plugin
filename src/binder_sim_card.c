@@ -720,7 +720,7 @@ binder_sim_card_api_read_icc_card_status_aidl(
             gbinder_reader_read_int32(&parcel, &gsm_umts_index) &&
             gbinder_reader_read_int32(&parcel, NULL /* cdma_index */) &&
             gbinder_reader_read_int32(&parcel, &ims_index) &&
-            gbinder_reader_read_uint32(&parcel, &num_apps)) {
+            binder_read_array_count(&parcel, &num_apps)) {
             DBG("card_state=%d, universal_pin_state=%d, gsm_umts_index=%d, "
                 "ims_index=%d, num_apps=%d", card_state, pin_state,
                 gsm_umts_index,  ims_index, num_apps);

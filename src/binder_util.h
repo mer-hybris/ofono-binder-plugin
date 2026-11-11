@@ -237,6 +237,12 @@ binder_strv_from_string16_array(
     BINDER_INTERNAL;
 
 gboolean
+binder_read_array_count(
+    GBinderReader* reader,
+    guint* count)
+    BINDER_INTERNAL;
+
+gboolean
 binder_read_string16_parse_int(
     GBinderReader* reader,
     gint32* value)

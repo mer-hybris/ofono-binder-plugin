@@ -864,16 +864,43 @@ binder_read_string16_parse_int(
     return ret;
 }
 
+/*
+ * Reads the length of an AIDL array. A null array (-1) reads as empty.
+ * Any other negative length, and one that the rest of the parcel can't
+ * possibly hold (every element takes at least 4 bytes), is rejected so
+ * that the caller doesn't size anything by it.
+ */
+gboolean
+binder_read_array_count(
+    GBinderReader* reader,
+    guint* count)
+{
+    gint32 n;
+
+    *count = 0;
+    if (gbinder_reader_read_int32(reader, &n)) {
+        if (n == -1) {
+            return TRUE;
+        } else if (n >= 0 &&
+            (gsize)n <= gbinder_reader_bytes_remaining(reader) / 4) {
+            *count = n;
+            return TRUE;
+        }
+        ofono_warn("Invalid array length %d", n);
+    }
+    return FALSE;
+}
+
 char**
 binder_strv_from_string16_array(
     GBinderReader* reader)
 {
-    gint32 count;
+    guint count;
 
-    if (gbinder_reader_read_int32(reader, &count)) {
-        char** out = g_new(char*, MAX(count, 0) + 1);
+    if (binder_read_array_count(reader, &count)) {
+        char** out = g_new(char*, count + 1);
         char** ptr = out;
-        int i;
+        guint i;
 
         for (i = 0; i < count; i++, ptr++) {
             char* str = gbinder_reader_read_string16(reader);

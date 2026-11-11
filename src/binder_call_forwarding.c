@@ -507,7 +507,7 @@ binder_call_forwarding_api_read_call_forwarding_conditions_aidl(
     guint* count)
 {
     /* CallForwardInfo[] */
-    if (gbinder_reader_read_uint32(reader, count)) {
+    if (binder_read_array_count(reader, count)) {
         guint i;
         struct ofono_call_forwarding_condition* list =
             g_new0(struct ofono_call_forwarding_condition, *count);
@@ -536,6 +536,7 @@ binder_call_forwarding_api_read_call_forwarding_conditions_aidl(
                 g_free(number);
             }
             g_free(list);
+            *count = 0;
             return NULL;
         }
         return list;

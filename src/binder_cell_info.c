@@ -1378,12 +1378,11 @@ GPtrArray*
 binder_cell_info_array_new_aidl(
     GBinderReader* reader)
 {
-    gsize i;
-    gint32 count = 0;
+    guint i, count;
     GPtrArray* l;
 
     /* Expecting the reader to point to CellInfo[] */
-    gbinder_reader_read_int32(reader, &count);
+    binder_read_array_count(reader, &count);
     l = g_ptr_array_sized_new(count + 1);
 
     for (i = 0; i < count; i++) {
