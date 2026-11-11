@@ -1,6 +1,7 @@
 /*
  *  oFono - Open Source Telephony - binder based adaptation
  *
+ *  Copyright (C) 2026 Jolla Mobile Ltd
  *  Copyright (C) 2026 Herman van Hazendonk <github.com@herrie.org>
  *
  *  This program is free software; you can redistribute it and/or modify
@@ -138,24 +139,16 @@ test_call_add_ringback_tone_handler(
 
 static
 void
-test_call_remove_handler(
-    BinderExtCall* ext,
-    gulong id)
-{
-    g_signal_handler_disconnect(TEST_CALL(ext), id);
-}
-
-static
-void
 test_call_iface_init(
     BinderExtCallInterface* iface)
 {
     iface->version = BINDER_EXT_CALL_INTERFACE_VERSION;
+    iface->flags = BINDER_EXT_CALL_INTERFACE_FLAG_IMS_SUPPORT;
     iface->add_calls_changed_handler = test_call_add_calls_changed_handler;
     iface->add_disconnect_handler = test_call_add_disconnect_handler;
     iface->add_ring_handler = test_call_add_ring_handler;
     iface->add_ssn_handler = test_call_add_ssn_handler;
-    iface->remove_handler = test_call_remove_handler;
+    /* can use the base remove_handler implementation */
     iface->add_ringback_tone_handler = test_call_add_ringback_tone_handler;
 }
 
@@ -173,6 +166,60 @@ test_call_class_init(
 {
     g_signal_new(TEST_SIGNAL_NAME, G_OBJECT_CLASS_TYPE(klass),
         G_SIGNAL_RUN_FIRST, 0, NULL, NULL, NULL, G_TYPE_NONE, 0);
+}
+
+/*==========================================================================*
+ * null
+ *==========================================================================*/
+
+static
+void
+test_null(
+    void)
+{
+    g_assert_cmpint(binder_ext_call_get_interface_flags(NULL), == ,0);
+    g_assert_null(binder_ext_call_get_calls(NULL)[0]);
+    g_assert_cmpint(binder_ext_call_dial(NULL,
+        NULL, 0, 0, 0, NULL, NULL, NULL), == ,0);
+    g_assert_cmpint(binder_ext_call_deflect(NULL,
+        NULL, 0, 0, NULL, NULL, NULL), == ,0);
+    g_assert_cmpint(binder_ext_call_answer(NULL,
+        0, NULL, NULL, NULL), == ,0);
+    g_assert_cmpint(binder_ext_call_swap(NULL,
+        0, 0, NULL, NULL, NULL), == ,0);
+    g_assert_cmpint(binder_ext_call_transfer(NULL,
+        0, NULL, NULL, NULL), == ,0);
+    g_assert_cmpint(binder_ext_call_conference(NULL,
+        0, NULL, NULL, NULL), == ,0);
+    g_assert_cmpint(binder_ext_call_send_dtmf(NULL,
+        NULL, NULL, NULL, NULL), == ,0);
+    g_assert_cmpint(binder_ext_call_hangup(NULL,
+        0, 0, 0, NULL, NULL, NULL), == ,0);
+    g_assert_null(binder_ext_call_ref(NULL));
+    binder_ext_call_remove_handlers(NULL, NULL, 0);
+    binder_ext_call_remove_handler(NULL, 0);
+    binder_ext_call_cancel(NULL, 0);
+    binder_ext_call_unref(NULL);
+}
+
+/*==========================================================================*
+ * basic
+ *==========================================================================*/
+
+static
+void
+test_basic(
+    void)
+{
+    TestCall* test = g_object_new(TEST_TYPE_CALL, NULL);
+    BinderExtCall* ext = BINDER_EXT_CALL(test);
+
+    g_assert_cmpint(binder_ext_call_get_interface_flags(ext), == ,
+        BINDER_EXT_CALL_INTERFACE_FLAG_IMS_SUPPORT);
+
+    g_assert(binder_ext_call_ref(ext) == ext);
+    binder_ext_call_unref(ext);
+    binder_ext_call_unref(ext);
 }
 
 /*==========================================================================*
@@ -284,6 +331,7 @@ test_dummy(
         g_assert(!id[i]);
     }
     binder_ext_call_remove_all_handlers(ext, id);
+    binder_ext_call_remove_handlers(ext, NULL, 0);
     binder_ext_call_remove_handler(ext, 0);
 
     /* NULL object */
@@ -304,6 +352,8 @@ test_dummy(
 int main(int argc, char* argv[])
 {
     g_test_init(&argc, &argv, NULL);
+    g_test_add_func(TEST_("null"), test_null);
+    g_test_add_func(TEST_("basic"), test_basic);
     g_test_add_func(TEST_("handlers"), test_handlers);
     g_test_add_func(TEST_("dummy"), test_dummy);
 
