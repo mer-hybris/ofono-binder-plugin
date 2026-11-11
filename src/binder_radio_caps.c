@@ -1652,8 +1652,13 @@ binder_radio_caps_manager_data_off(
     BinderRadioCapsManager* self,
     BinderRadioCapsObject* caps)
 {
+    /*
+     * In the transaction's request group: where binder_data shares the
+     * radio client with us (HIDL), the block we're holding keeps its own
+     * group's requests from being sent until the transaction is over.
+     */
     RadioRequest* req = binder_data_set_data_allowed_request_new(caps->data,
-        FALSE, binder_radio_caps_manager_data_disallowed,
+        caps->g, FALSE, binder_radio_caps_manager_data_disallowed,
         g_object_unref, g_object_ref(caps));
 
     radio_request_set_timeout(req, DATA_OFF_TIMEOUT_MS);
@@ -1723,8 +1728,9 @@ binder_radio_caps_deactivate_data_call(
     BinderRadioCapsObject* caps,
     int cid)
 {
+    /* In the transaction's request group, see data_off above */
     RadioRequest* req = binder_data_deactivate_data_call_request_new(caps->data,
-        cid, binder_radio_caps_manager_deactivate_data_call_done,
+        caps->g, cid, binder_radio_caps_manager_deactivate_data_call_done,
         g_object_unref, g_object_ref(caps));
 
     radio_request_set_blocking(req, TRUE);

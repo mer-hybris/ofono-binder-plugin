@@ -43,6 +43,7 @@ typedef enum test_req_kind {
 struct radio_request {
     int refcount;
     TEST_REQ_KIND kind;
+    RadioRequestGroup* group;
     RadioRequestCompleteFunc complete;
     GDestroyNotify destroy;
     gpointer user_data;
@@ -480,25 +481,33 @@ binder_data_poll_call_state(
 RadioRequest*
 binder_data_set_data_allowed_request_new(
     BinderData* data,
+    RadioRequestGroup* group,
     gboolean allow,
     RadioRequestCompleteFunc complete,
     GDestroyNotify destroy,
     void* user_data)
 {
-    return test_request_new(TEST_REQ_DATA_ALLOWED, complete, destroy,
-        user_data);
+    RadioRequest* req = test_request_new(TEST_REQ_DATA_ALLOWED, complete,
+        destroy, user_data);
+
+    req->group = group;
+    return req;
 }
 
 RadioRequest*
 binder_data_deactivate_data_call_request_new(
     BinderData* data,
+    RadioRequestGroup* group,
     int cid,
     RadioRequestCompleteFunc complete,
     GDestroyNotify destroy,
     void* user_data)
 {
-    return test_request_new(TEST_REQ_DEACTIVATE, complete, destroy,
-        user_data);
+    RadioRequest* req = test_request_new(TEST_REQ_DEACTIVATE, complete,
+        destroy, user_data);
+
+    req->group = group;
+    return req;
 }
 
 BinderDataManager*
@@ -850,6 +859,42 @@ test_setup_deinit(
     test.allocs = NULL;
 }
 
+/*
+ * The requests of this kind must be in a transaction's request group,
+ * the one holding the block. In binder_data's own group they would wait
+ * for the block to go away, which only happens when the transaction ends.
+ */
+static
+void
+test_assert_in_tx_group(
+    TestSetup* setup,
+    TEST_REQ_KIND kind)
+{
+    guint i;
+    int n = 0;
+
+    for (i = 0; i < test.pending->len; i++) {
+        const RadioRequest* req = test.pending->pdata[i];
+
+        if (req->kind == kind) {
+            guint k;
+            gboolean found = FALSE;
+
+            for (k = 0; k < G_N_ELEMENTS(setup->slot) && !found; k++) {
+                BinderRadioCapsObject* caps =
+                    binder_radio_caps_cast(setup->slot[k].caps);
+
+                found = (req->group == caps->g);
+            }
+            g_assert(found);
+            g_assert_cmpint(radio_request_group_block_status(req->group), ==,
+                RADIO_BLOCK_ACQUIRED);
+            n++;
+        }
+    }
+    g_assert_cmpint(n, > ,0);
+}
+
 static
 void
 test_assert_unblocked(
@@ -886,6 +931,7 @@ test_start(
     test_setup_start(&setup);
     g_assert_cmpint(test_pending_count(TEST_REQ_DATA_ALLOWED), ==, 2);
     g_assert_cmpint(test_pending_count(TEST_REQ_SET_CAPS), ==, 0);
+    test_assert_in_tx_group(&setup, TEST_REQ_DATA_ALLOWED);
 
     test_complete(TEST_REQ_DATA_ALLOWED, RADIO_TX_STATUS_OK);
     g_assert_cmpint(test_pending_count(TEST_REQ_SET_CAPS), ==, 2);
@@ -930,6 +976,32 @@ test_data_off_failed(
     g_assert_cmpint(test.aborted, ==, 1);
     g_assert_cmpint(test.data_on, ==, 1);
     test_assert_unblocked(&setup);
+    test_setup_deinit(&setup);
+}
+
+/*==========================================================================*
+ * deactivate
+ *
+ * The active data call is deactivated first, then setDataAllowed(false)
+ * goes to both modems. Both in the transaction's request groups.
+ *==========================================================================*/
+
+static
+void
+test_deactivate(
+    void)
+{
+    TestSetup setup;
+
+    test_setup_init(&setup, TRUE);
+    test_setup_start(&setup);
+    g_assert_cmpint(test_pending_count(TEST_REQ_DEACTIVATE), ==, 1);
+    g_assert_cmpint(test_pending_count(TEST_REQ_DATA_ALLOWED), ==, 0);
+    test_assert_in_tx_group(&setup, TEST_REQ_DEACTIVATE);
+
+    test_complete(TEST_REQ_DEACTIVATE, RADIO_TX_STATUS_OK);
+    g_assert_cmpint(test_pending_count(TEST_REQ_DATA_ALLOWED), ==, 2);
+    test_assert_in_tx_group(&setup, TEST_REQ_DATA_ALLOWED);
     test_setup_deinit(&setup);
 }
 
@@ -1054,6 +1126,7 @@ int main(int argc, char* argv[])
         GINT_TO_POINTER(1), test_data_off_failed);
     g_test_add_data_func(TEST_("data_off_failed/all"),
         GINT_TO_POINTER(2), test_data_off_failed);
+    g_test_add_func(TEST_("deactivate"), test_deactivate);
     g_test_add_func(TEST_("deactivate_failed"), test_deactivate_failed);
     g_test_add_func(TEST_("phase_failed"), test_phase_failed);
     g_test_add_func(TEST_("phase_partly_failed"), test_phase_partly_failed);
