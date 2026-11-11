@@ -335,7 +335,6 @@ binder_sim_session_cbd_start(
         cbd->req_id = 0;
     }
     binder_sim_card_sim_io_finished(cbd->card, finished_req);
-    radio_request_unref(req);
     return ok;
 }
 

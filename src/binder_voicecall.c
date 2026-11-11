@@ -790,13 +790,35 @@ binder_voicecall_cbd_destroy(
 }
 
 static
+BinderVoiceCallCbData*
+binder_voicecall_cbd_ref(
+    BinderVoiceCallCbData* cbd)
+{
+    cbd->ref_count++;
+    return cbd;
+}
+
+/*
+ * A radio request gets its reference when it's created, because it drops
+ * it (calls the destroy notify) whether or not it was submitted.
+ */
+static
+void
+binder_voicecall_request_started(
+    BinderVoiceCallCbData* cbd)
+{
+    cbd->pending_call_count++;
+    cbd->submitted = TRUE;
+}
+
+/* An extension request holds a reference only once it has been accepted */
+static
 void
 binder_voicecall_request_submitted(
     BinderVoiceCallCbData* cbd)
 {
-    cbd->ref_count++;
-    cbd->pending_call_count++;
-    cbd->submitted = TRUE;
+    binder_voicecall_cbd_ref(cbd);
+    binder_voicecall_request_started(cbd);
 }
 
 static
@@ -872,8 +894,8 @@ binder_voicecall_request_submit(
     /* Request data will be unref'ed when the request is done */
     if (binder_submit_request2(self->voice_g, code,
         binder_voicecall_cbd_complete,
-        binder_voicecall_cbd_destroy, cbd)) {
-        binder_voicecall_request_submitted(cbd);
+        binder_voicecall_cbd_destroy, binder_voicecall_cbd_ref(cbd))) {
+        binder_voicecall_request_started(cbd);
     }
 }
 
@@ -1045,13 +1067,15 @@ binder_voicecall_submit_hangup_req(
         /* hangupWaitingOrBackground(int32_t serial) */
         req = radio_request_new2(self->voice_g,
             api->voice_hangup_waiting_or_background_req, NULL,
-            binder_voicecall_cbd_complete, binder_voicecall_cbd_destroy, cbd);
+            binder_voicecall_cbd_complete, binder_voicecall_cbd_destroy,
+            binder_voicecall_cbd_ref(cbd));
     } else {
         GBinderWriter writer;
 
         /* hangup(int32 serial, int32 index) */
         req = radio_request_new2(self->voice_g, api->voice_hangup_req, &writer,
-            binder_voicecall_cbd_complete, binder_voicecall_cbd_destroy, cbd);
+            binder_voicecall_cbd_complete, binder_voicecall_cbd_destroy,
+            binder_voicecall_cbd_ref(cbd));
         gbinder_writer_append_int32(&writer, cid);
     }
 
@@ -1061,7 +1085,7 @@ binder_voicecall_submit_hangup_req(
 
     /* Request data will be unref'ed when the request is done */
     if (radio_request_submit(req)) {
-        binder_voicecall_request_submitted(cbd);
+        binder_voicecall_request_started(cbd);
     }
     radio_request_unref(req);
 }
@@ -1618,14 +1642,16 @@ binder_voicecall_private_chat(
     GBinderWriter writer;
     RadioRequest* req = radio_request_new2(self->voice_g,
         self->api->voice_separate_connection_req, &writer,
-        binder_voicecall_cbd_complete, binder_voicecall_cbd_destroy, cbd);
+        binder_voicecall_cbd_complete, binder_voicecall_cbd_destroy,
+        binder_voicecall_cbd_ref(cbd));
 
     DBG_(self, "Private chat with id %d", cid);
     gbinder_writer_append_int32(&writer, cid);
     if (radio_request_submit(req)) {
-        binder_voicecall_request_submitted(cbd);
+        binder_voicecall_request_started(cbd);
     }
     radio_request_unref(req);
+    binder_voicecall_cbd_unref(cbd);
 }
 
 static
