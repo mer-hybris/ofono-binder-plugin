@@ -2444,32 +2444,32 @@ binder_netreg_scan_op_read_info_aidl(
      */
 
     if (gbinder_reader_start_parcelable(reader, &info, NULL)) {
-        char* name = gbinder_reader_read_string16(&info); /* alphaLong */
+        char* alpha_long = gbinder_reader_read_string16(&info);
+        char* alpha_short = gbinder_reader_read_string16(&info);
+        char* numeric = gbinder_reader_read_string16(&info);
         gint32 status;
 
         /* Prefer long name, then short, fallback to numeric */
-        if (name) {
-            gbinder_reader_skip_string16(&info); /* alphaShort */
-            gbinder_reader_skip_string16(&info); /* operatorNumeric */
-        } else {
-            name = gbinder_reader_read_string16(&info); /* alphaShort */
-            /* operatorNumeric */
-            if (name) {
-                gbinder_reader_skip_string16(&info);
-            } else {
-                name = gbinder_reader_read_string16(&info);
-            }
+        if (alpha_long && alpha_long[0]) {
+            g_strlcpy(op->name, alpha_long, sizeof(op->name));
+        } else if (alpha_short && alpha_short[0]) {
+            g_strlcpy(op->name, alpha_short, sizeof(op->name));
+        } else if (numeric) {
+            g_strlcpy(op->name, numeric, sizeof(op->name));
         }
 
-        if (name) {
-            g_strlcpy(op->name, name, sizeof(op->name));
-            g_free(name);
+        /* Cell identity parsers overwrite MCC/MNC with their own */
+        binder_parse_mcc_mnc(numeric, op);
 
-            if (gbinder_reader_read_int32(&info, &status)) {
-                op->status = status;
-                ok = TRUE;
-            }
+        if (gbinder_reader_read_int32(&info, &status)) {
+            /* enum ofono_operator_status and RADIO_OP_STATUS match */
+            op->status = status;
+            ok = TRUE;
         }
+
+        g_free(alpha_long);
+        g_free(alpha_short);
+        g_free(numeric);
         gbinder_reader_finish_parcelable(&info);
     }
     return ok;
@@ -2489,13 +2489,21 @@ binder_netreg_api_read_oplist_aidl(
         guint i;
 
         for (i = 0; i < count; i++) {
+            struct ofono_network_operator* op;
+
             binder_oplist_set_count(oplist, oplist->count + 1);
-            if (!binder_netreg_scan_op_read_info_aidl(reader,
-                binder_oplist_last(oplist))) {
+            op = binder_oplist_last(oplist);
+
+            /* MCC/MNC may be followed by +tech, which overrides this */
+            op->tech = self->network->voice.access_tech;
+            if (!binder_netreg_scan_op_read_info_aidl(reader, op)) {
                 DBG("Failed to parse OperatorInfo[]");
                 binder_oplist_free(oplist);
                 return NULL;
             }
+            DBG("[operator=%s, %s, %s, %s, %s]", op->name, op->mcc, op->mnc,
+                binder_ofono_access_technology_string(op->tech),
+                binder_radio_op_status_string(op->status));
         }
         return oplist;
     }
@@ -3080,6 +3088,10 @@ binder_netreg_api_read_network_scan_aidl(
                                         binder_oplist_append(oplist, NULL));
 
                                 if (parse(&data, op)) {
+                                    /* Same as in the HIDL case */
+                                    op->status = registered ?
+                                        OFONO_OPERATOR_STATUS_CURRENT :
+                                        OFONO_OPERATOR_STATUS_AVAILABLE;
                                     DBG_(self, "[registered=%d, operator=%s, "
                                         "%s, %s, %s, %s]", registered,
                                         op->name, op->mcc, op->mnc,
