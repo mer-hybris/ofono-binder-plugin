@@ -1381,6 +1381,15 @@ binder_radio_caps_manager_cancel_cb(
 
 static
 void
+binder_radio_caps_manager_power_on_cb(
+    BinderRadioCapsManager* self,
+    BinderRadioCapsObject* caps)
+{
+    binder_radio_confirm_power_on(caps->radio);
+}
+
+static
+void
 binder_radio_caps_manager_transaction_done(
     BinderRadioCapsManager* self)
 {
@@ -1388,6 +1397,18 @@ binder_radio_caps_manager_transaction_done(
     binder_data_manager_assert_data_on(self->data_manager);
     binder_radio_caps_manager_foreach(self,
         binder_radio_caps_manager_cancel_cb);
+
+    /*
+     * Modems may switch the radio off while applying (or rolling back)
+     * a new capability, and nothing else is going to switch it back on:
+     * BinderRadio only repeats a power request when the modem misbehaves
+     * while the request is pending. Ask for the state that the slots
+     * want (which is a no-op for the ones that are supposed to be off).
+     * This is done after unblocking our request groups, otherwise the
+     * request would be queued behind our own block.
+     */
+    binder_radio_caps_manager_foreach(self,
+        binder_radio_caps_manager_power_on_cb);
 }
 
 static

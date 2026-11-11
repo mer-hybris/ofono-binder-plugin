@@ -72,6 +72,7 @@ static struct test_state {
     int aborted;
     int done;
     int data_on;
+    int power_on;
 } test;
 
 typedef struct test_slot {
@@ -530,6 +531,19 @@ binder_data_manager_assert_data_on(
     test.data_on++;
 }
 
+void
+binder_radio_confirm_power_on(
+    BinderRadio* radio)
+{
+    TestSlot* slot = G_CAST(radio, TestSlot, radio);
+    BinderRadioCapsObject* caps = binder_radio_caps_cast(slot->caps);
+
+    /* Otherwise setRadioPower would be queued behind our own block */
+    g_assert_cmpint(radio_request_group_block_status(caps->g), ==,
+        RADIO_BLOCK_NONE);
+    test.power_on++;
+}
+
 BinderRadio*
 binder_radio_ref(
     BinderRadio* radio)
@@ -941,10 +955,12 @@ test_start(
     test_complete(TEST_REQ_SET_CAPS, RADIO_TX_STATUS_OK);
     test_complete(TEST_REQ_SET_CAPS, RADIO_TX_STATUS_OK);
     g_assert_cmpint(test.done, ==, 0);
+    g_assert_cmpint(test.power_on, ==, 0);
     test_complete(TEST_REQ_SET_CAPS, RADIO_TX_STATUS_OK);
     g_assert_cmpint(test.pending->len, ==, 0);
     g_assert_cmpint(test.submitted[TEST_REQ_SET_CAPS], ==, 6);
     g_assert_cmpint(test.done, ==, 1);
+    g_assert_cmpint(test.power_on, ==, 2);
     g_assert_cmpint(test.aborted, ==, 0);
     g_assert_cmpint(test.data_on, ==, 1);
     test_assert_unblocked(&setup);
@@ -975,6 +991,7 @@ test_data_off_failed(
     g_assert_cmpint(test_pending_count(TEST_REQ_SET_CAPS), ==, 0);
     g_assert_cmpint(test.aborted, ==, 1);
     g_assert_cmpint(test.data_on, ==, 1);
+    g_assert_cmpint(test.power_on, ==, 0);
     test_assert_unblocked(&setup);
     test_setup_deinit(&setup);
 }
@@ -1023,6 +1040,7 @@ test_deactivate_failed(
     test_setup_start(&setup);
     g_assert_cmpint(test.pending->len, ==, 0);
     g_assert_cmpint(test.submitted[TEST_REQ_DATA_ALLOWED], ==, 0);
+    g_assert_cmpint(test.power_on, ==, 0);
     test_assert_unblocked(&setup);
     test_setup_deinit(&setup);
 }
@@ -1051,9 +1069,11 @@ test_phase_failed(
     g_assert_cmpint(test_pending_count(TEST_REQ_SET_CAPS), ==, 2);
     g_assert_cmpint(test.data_on, ==, 0);
 
+    g_assert_cmpint(test.power_on, ==, 0);
     test_complete(TEST_REQ_SET_CAPS, RADIO_TX_STATUS_OK);
     g_assert_cmpint(test.data_on, ==, 1);
     g_assert_cmpint(test.done, ==, 0);
+    g_assert_cmpint(test.power_on, ==, 2);
     test_assert_unblocked(&setup);
     test_setup_deinit(&setup);
 }
@@ -1110,6 +1130,7 @@ test_abort_failed(
     g_assert_cmpint(test.pending->len, ==, 0);
     g_assert_cmpint(test.aborted, ==, 1);
     g_assert_cmpint(test.data_on, ==, 1);
+    g_assert_cmpint(test.power_on, ==, 2);
     test_assert_unblocked(&setup);
     test_setup_deinit(&setup);
 }
