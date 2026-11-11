@@ -2479,6 +2479,27 @@ binder_plugin_set_storage_perm(
 }
 
 static
+int
+binder_plugin_set_groups(
+    const BinderPluginIdentity* id)
+{
+    const struct passwd* pw;
+
+    /*
+     * Only root can change the supplementary groups, and only root
+     * has any to shed. Without this the daemon would keep the groups
+     * of whoever started it as root after switching to the radio user.
+     */
+    if (geteuid()) {
+        return 0;
+    }
+
+    /* The target user's own groups, or none if it has no passwd entry */
+    pw = getpwuid(id->uid);
+    return pw ? initgroups(pw->pw_name, id->gid) : setgroups(0, NULL);
+}
+
+static
 void
 binder_plugin_switch_identity(
     const BinderPluginIdentity* id)
@@ -2487,6 +2508,8 @@ binder_plugin_switch_identity(
     binder_plugin_set_storage_perm(ofono_storage_dir(), id);
     if (prctl(PR_SET_KEEPCAPS, 1, 0, 0, 0) < 0) {
         ofono_error("prctl(PR_SET_KEEPCAPS) failed: %s", strerror(errno));
+    } else if (binder_plugin_set_groups(id) < 0) {
+        ofono_error("Failed to set supplementary groups: %s", strerror(errno));
     } else if (setgid(id->gid) < 0) {
         ofono_error("setgid(%d) failed: %s", id->gid, strerror(errno));
     } else if (setuid(id->uid) < 0) {
