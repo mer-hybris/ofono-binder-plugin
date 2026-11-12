@@ -1662,7 +1662,7 @@ binder_sim_pin_send(
         cb, data));
 
     if (radio_request_submit(req)) {
-        DBG_(self, "%s,aid=%s", passwd, binder_sim_card_app_aid(self->card));
+        DBG_(self, "aid=%s", binder_sim_card_app_aid(self->card));
     } else {
         struct ofono_error err;
 
@@ -1752,7 +1752,7 @@ binder_sim_pin_change_state(
     const char* fac = binder_sim_facility_code(pwtype);
     gboolean ok = FALSE;
 
-    DBG_(self, "%d,%s,%d,%s,0,aid=%s", pwtype, fac, enable, passwd, aid);
+    DBG_(self, "%d,%s,%d,0,aid=%s", pwtype, fac, enable, aid);
 
     if (pwtype == OFONO_SIM_PASSWORD_PHNET_PIN) {
         ok = binder_perso_change_state(sim, pwtype, enable, passwd, cb, data);
@@ -1811,8 +1811,7 @@ binder_sim_pin_send_puk(
         cb, data));
 
     if (radio_request_submit(req)) {
-        DBG_(self, "puk=%s,pin=%s,aid=%s", puk, pin,
-            binder_sim_card_app_aid(self->card));
+        DBG_(self, "aid=%s", binder_sim_card_app_aid(self->card));
     } else {
         struct ofono_error err;
 
@@ -1868,7 +1867,7 @@ binder_sim_change_passwd(
          * void changeIccPinForApp(in int serial,
          * in String oldPin, in String newPin, in String aid);
          */
-        DBG_(self, "old=%s,new=%s,aid=%s", old_passwd, new_passwd, aid);
+        DBG_(self, "aid=%s", aid);
         api->write_string_arg(&writer, old_passwd);
         api->write_string_arg(&writer, new_passwd);
         api->write_string_arg(&writer, aid);

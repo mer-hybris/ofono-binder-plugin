@@ -89,6 +89,7 @@ typedef struct binder_voicecall {
     RadioRequest* clcc_poll_req;
     guint ext_send_dtmf_id;
     guint ext_req_id;
+    GSList* ext_hangups;
     gulong ext_event[VOICECALL_EXT_EVENT_COUNT];
     gulong voice_event[VOICECALL_EVENT_COUNT];
     gulong network_event[VOICECALL_NETWORK_EVENT_COUNT];
@@ -105,6 +106,12 @@ typedef struct binder_voicecall_cb_data {
     ofono_voicecall_cb_t cb;
     gpointer data;
 } BinderVoiceCallCbData;
+
+typedef struct binder_voicecall_ext_hangup {
+    BinderVoiceCall* self;
+    BinderVoiceCallCbData* cbd;
+    guint id;
+} BinderVoiceCallExtHangup;
 
 typedef struct binder_voicecall_lastcause_data {
     BinderVoiceCall* self;
@@ -886,6 +893,70 @@ binder_voicecall_cbd_ext_complete(
 
 static
 void
+binder_voicecall_ext_hangup_complete(
+    BinderExtCall* ext,
+    BINDER_EXT_CALL_RESULT result,
+    void* user_data)
+{
+    BinderVoiceCallExtHangup* hangup = user_data;
+    BinderVoiceCall* self = hangup->self;
+
+    /* Unlike binder_voicecall_cbd_ext_complete, leave ext_req_id alone */
+    if (self) {
+        hangup->self = NULL;
+        self->ext_hangups = g_slist_remove(self->ext_hangups, hangup);
+    }
+    binder_voicecall_request_completed(hangup->cbd,
+        result == BINDER_EXT_CALL_RESULT_OK);
+}
+
+static
+void
+binder_voicecall_ext_hangup_destroy(
+    gpointer user_data)
+{
+    BinderVoiceCallExtHangup* hangup = user_data;
+    BinderVoiceCall* self = hangup->self;
+
+    if (self) {
+        self->ext_hangups = g_slist_remove(self->ext_hangups, hangup);
+    }
+    binder_voicecall_cbd_unref(hangup->cbd);
+    g_slice_free(BinderVoiceCallExtHangup, hangup);
+}
+
+static
+gboolean
+binder_voicecall_ext_hangup(
+    BinderVoiceCall* self,
+    const BinderVoiceCallInfo* call,
+    BINDER_EXT_CALL_HANGUP_REASON reason,
+    BinderVoiceCallCbData* cbd)
+{
+    BinderVoiceCallExtHangup* hangup = g_slice_new0(BinderVoiceCallExtHangup);
+
+    /*
+     * Track the request so that it can be cancelled when the voicecall
+     * object is removed. The extension may live longer than us.
+     */
+    hangup->self = self;
+    hangup->cbd = cbd;
+    self->ext_hangups = g_slist_prepend(self->ext_hangups, hangup);
+    hangup->id = binder_ext_call_hangup(call->ext, call->oc.id, reason,
+        BINDER_EXT_CALL_HANGUP_NO_FLAGS, binder_voicecall_ext_hangup_complete,
+        binder_voicecall_ext_hangup_destroy, hangup);
+    if (hangup->id) {
+        binder_voicecall_request_submitted(cbd);
+        return TRUE;
+    } else {
+        self->ext_hangups = g_slist_remove(self->ext_hangups, hangup);
+        g_slice_free(BinderVoiceCallExtHangup, hangup);
+        return FALSE;
+    }
+}
+
+static
+void
 binder_voicecall_request_submit(
     BinderVoiceCall* self,
     RADIO_REQ code,
@@ -1195,12 +1266,8 @@ binder_voicecall_hangup(
             /* Send request to the modem */
             if (call->ext) {
                 DBG_(self, "hanging up ext call id %u", id);
-                if (binder_ext_call_hangup(call->ext, id,
-                    binder_voicecall_ext_disconnect_reason(call),
-                    BINDER_EXT_CALL_HANGUP_NO_FLAGS,
-                    binder_voicecall_cbd_ext_complete,
-                    binder_voicecall_cbd_destroy, cbd)) {
-                    binder_voicecall_request_submitted(cbd);
+                if (binder_voicecall_ext_hangup(self, call,
+                    binder_voicecall_ext_disconnect_reason(call), cbd)) {
                     continue;
                 }
             }
@@ -1260,14 +1327,10 @@ binder_voicecall_release_specific(
 
         if (call->ext) {
             DBG_(self, "hanging up ext call with id %u", id);
-            if (binder_ext_call_hangup(call->ext, id,
+            if (binder_voicecall_ext_hangup(self, call,
                 binder_voicecall_hangup_filter_incoming_waiting(call) ?
                 BINDER_EXT_CALL_HANGUP_REJECT :
-                BINDER_EXT_CALL_HANGUP_TERMINATE,
-                BINDER_EXT_CALL_HANGUP_NO_FLAGS,
-                binder_voicecall_cbd_ext_complete,
-                binder_voicecall_cbd_destroy, cbd)) {
-                binder_voicecall_request_submitted(cbd);
+                BINDER_EXT_CALL_HANGUP_TERMINATE, cbd)) {
                 binder_voicecall_cbd_unref(cbd);
                 return;
             }
@@ -1791,11 +1854,7 @@ binder_voicecall_hangup_with_fallback(
 
                 if (call->ext) {
                     DBG_(self, "hanging up ext call id %u", id);
-                    if (binder_ext_call_hangup(call->ext, id, reason,
-                        BINDER_EXT_CALL_HANGUP_NO_FLAGS,
-                        binder_voicecall_cbd_ext_complete,
-                        binder_voicecall_cbd_destroy, cbd)) {
-                        binder_voicecall_request_submitted(cbd);
+                    if (binder_voicecall_ext_hangup(self, call, reason, cbd)) {
                         continue;
                     }
                 } else {
@@ -2142,9 +2201,22 @@ binder_voicecall_remove(
     gutil_idle_queue_free(self->idleq);
 
     if (self->ext) {
+        GSList* hangups = self->ext_hangups;
+        GSList* l;
+
         binder_ext_call_remove_all_handlers(self->ext, self->ext_event);
         binder_ext_call_cancel(self->ext, self->ext_send_dtmf_id);
         binder_ext_call_cancel(self->ext, self->ext_req_id);
+
+        /* Cancelling the request frees it */
+        self->ext_hangups = NULL;
+        for (l = hangups; l; l = l->next) {
+            BinderVoiceCallExtHangup* hangup = l->data;
+
+            hangup->self = NULL;
+            binder_ext_call_cancel(self->ext, hangup->id);
+        }
+        g_slist_free(hangups);
         binder_ext_call_unref(self->ext);
     }
 
