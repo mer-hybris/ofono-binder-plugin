@@ -20,6 +20,7 @@
 #include <ofono/radio-settings.h>
 
 #include <gbinder_reader.h>
+#include <gbinder_writer.h>
 
 #include <gutil_log.h>
 
@@ -76,6 +77,32 @@ gbinder_reader_bytes_remaining(
     const TestReader* r = (const TestReader*)reader;
 
     return (r->end - r->ptr) * sizeof(gint32);
+}
+
+/*
+ * The writer only needs to hand out memory which it would free together
+ * with the parcel. Keep track of it here and free it after each test.
+ */
+static GSList* test_writer_blocks = NULL;
+
+void*
+gbinder_writer_malloc(
+    GBinderWriter* writer,
+    gsize size)
+{
+    void* ptr = g_malloc(size);
+
+    test_writer_blocks = g_slist_prepend(test_writer_blocks, ptr);
+    return ptr;
+}
+
+static
+void
+test_writer_free(
+    void)
+{
+    g_slist_free_full(test_writer_blocks, g_free);
+    test_writer_blocks = NULL;
 }
 
 void ofono_dbg(const struct ofono_debug_desc* desc, const char* format, ...) {}
@@ -145,6 +172,56 @@ test_array_count(
 }
 
 /*==========================================================================*
+ * copy_hidl_string
+ *==========================================================================*/
+
+static
+void
+test_copy_hidl_string(
+    void)
+{
+    /* No NULL terminator after the first 3 characters */
+    static const char abc[] = { 'a', 'b', 'c', 'X' };
+    GBinderWriter writer;
+    GBinderHidlString str;
+
+    memset(&writer, 0, sizeof(writer));
+
+    binder_copy_hidl_string(&writer, &str, "test");
+    g_assert_cmpuint(str.len, == ,4);
+    g_assert_cmpstr(str.data.str, == ,"test");
+    g_assert(str.owns_buffer);
+
+    binder_copy_hidl_string(&writer, &str, NULL);
+    g_assert_cmpuint(str.len, == ,0);
+    g_assert_cmpstr(str.data.str, == ,"");
+
+    /* Explicit length must be honored and the copy terminated */
+    binder_copy_hidl_string_len(&writer, &str, abc, 3);
+    g_assert_cmpuint(str.len, == ,3);
+    g_assert_cmpstr(str.data.str, == ,"abc");
+
+    binder_copy_hidl_string_len(&writer, &str, "test", 2);
+    g_assert_cmpuint(str.len, == ,2);
+    g_assert_cmpstr(str.data.str, == ,"te");
+
+    /* Negative length means NULL-terminated */
+    binder_copy_hidl_string_len(&writer, &str, "test", -1);
+    g_assert_cmpuint(str.len, == ,4);
+    g_assert_cmpstr(str.data.str, == ,"test");
+
+    binder_copy_hidl_string_len(&writer, &str, "test", 0);
+    g_assert_cmpuint(str.len, == ,0);
+    g_assert_cmpstr(str.data.str, == ,"");
+
+    binder_copy_hidl_string_len(&writer, &str, NULL, 5);
+    g_assert_cmpuint(str.len, == ,0);
+    g_assert_cmpstr(str.data.str, == ,"");
+
+    test_writer_free();
+}
+
+/*==========================================================================*
  * Common
  *==========================================================================*/
 
@@ -155,6 +232,7 @@ int main(int argc, char* argv[])
 {
     g_test_init(&argc, &argv, NULL);
     g_test_add_func(TEST_("array_count"), test_array_count);
+    g_test_add_func(TEST_("copy_hidl_string"), test_copy_hidl_string);
 
     gutil_log_default.level = g_test_verbose() ?
         GLOG_LEVEL_VERBOSE : GLOG_LEVEL_NONE;
