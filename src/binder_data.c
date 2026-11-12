@@ -170,6 +170,7 @@ struct binder_data_request {
     RadioRequest* radio_req;
     BINDER_DATA_REQUEST_FLAGS flags;
     const char* name;
+    guint fail_id;
 };
 
 typedef struct binder_data_request_setup {
@@ -743,6 +744,7 @@ void
 binder_data_request_free(
     BinderDataRequest* dr)
 {
+    gutil_source_clear(&dr->fail_id);
     if (dr->free) {
         dr->free(dr);
     } else {
@@ -791,6 +793,33 @@ binder_data_request_cancel_io(
     }
 }
 
+static void binder_data_request_finish(BinderDataRequest* dr);
+
+static
+gboolean
+binder_data_request_failed(
+    gpointer user_data)
+{
+    BinderDataRequest* dr = user_data;
+    BinderDataObject* data = dr->data;
+
+    GASSERT(dr == data->pending_req);
+    dr->fail_id = 0;
+    DBG_(data, "%s request %p failed", dr->name, dr);
+
+    /*
+     * The cancel callback completes the caller's callback with an
+     * error. Mark the request completed first, so that cancelling
+     * it from that callback doesn't free it under our feet.
+     */
+    dr->flags |= DATA_REQUEST_FLAG_COMPLETED;
+    if (dr->cancel) {
+        dr->cancel(dr);
+    }
+    binder_data_request_finish(dr);
+    return G_SOURCE_REMOVE;
+}
+
 static
 void
 binder_data_request_submit_next(
@@ -810,6 +839,19 @@ binder_data_request_submit_next(
             data->pending_req = dr;
             if (dr->submit(dr)) {
                 DBG_(data, "submitted %s request %p", dr->name, dr);
+                break;
+            } else if ((dr->flags & DATA_REQUEST_FLAG_SUBMISSION_FAILURE) &&
+                dr->cb.ptr) {
+                /*
+                 * The caller is still holding the pointer returned by
+                 * binder_data_call_setup() or binder_data_call_deactivate()
+                 * and is waiting for its callback. Don't free the request
+                 * and don't invoke the callback from here, the caller
+                 * hasn't even received the pointer yet. Complete it from
+                 * an idle callback instead.
+                 */
+                DBG_(data, "%s request %p submission failed", dr->name, dr);
+                dr->fail_id = g_idle_add(binder_data_request_failed, dr);
                 break;
             } else {
                 DBG_(data, "%s request %p done (or failed)", dr->name, dr);
@@ -974,7 +1016,20 @@ binder_data_call_setup_retry(
     setup->retry_count++;
     DBG("silent retry %u out of %u", setup->retry_count,
         dr->data->options.data_call_retry_limit);
-    dr->submit(dr);
+    if (!dr->submit(dr)) {
+        BinderDataObject* data = dr->data;
+
+        /* Nothing is going to complete this request, fail it now */
+        DBG_(data, "%s request %p retry failed", dr->name, dr);
+        binder_data_request_completed(dr);
+        if (dr->cb.setup) {
+            BinderDataCallSetupFunc cb = dr->cb.setup;
+
+            dr->cb.setup = NULL;
+            cb(&data->pub, RADIO_ERROR_GENERIC_FAILURE, NULL, dr->arg);
+        }
+        binder_data_request_finish(dr);
+    }
     return G_SOURCE_REMOVE;
 }
 
@@ -994,7 +1049,10 @@ binder_data_call_retry(
             setup->retry_count++;
             DBG("silent retry %u out of %u", setup->retry_count,
                 options->data_call_retry_limit);
-            dr->submit(dr);
+            if (!dr->submit(dr)) {
+                /* Let the caller complete the request */
+                return FALSE;
+            }
         } else {
             const guint ms = options->data_call_retry_delay_ms;
 

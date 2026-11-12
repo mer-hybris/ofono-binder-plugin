@@ -213,7 +213,11 @@ binder_call_barring_query(
     api->write_string_arg(&args,              /* appId */
         binder_sim_card_app_aid(self->card));
 
-    radio_request_submit(req);
+    if (!radio_request_submit(req)) {
+        struct ofono_error err;
+
+        cb(binder_error_failure(&err), 0, data);
+    }
     radio_request_unref(req);
 }
 
@@ -281,7 +285,11 @@ binder_call_barring_set(
     api->write_string_arg(&args,                /* appId */
         binder_sim_card_app_aid(self->card));
 
-    radio_request_submit(req);
+    if (!radio_request_submit(req)) {
+        struct ofono_error err;
+
+        cb(binder_error_failure(&err), data);
+    }
     radio_request_unref(req);
 }
 
@@ -348,7 +356,11 @@ binder_call_barring_set_passwd(
     api->write_string_arg(&args, old_passwd);   /* oldPassword */
     api->write_string_arg(&args, new_passwd);   /* newPassword */
 
-    radio_request_submit(req);
+    if (!radio_request_submit(req)) {
+        struct ofono_error err;
+
+        cb(binder_error_failure(&err), data);
+    }
     radio_request_unref(req);
 }
 

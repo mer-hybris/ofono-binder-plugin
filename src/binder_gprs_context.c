@@ -154,6 +154,13 @@ binder_gprs_context_set_disconnected(
             BinderGprsContextCall deact = self->deactivate;
 
             memset(&self->deactivate, 0, sizeof(self->deactivate));
+            /*
+             * Detach first, otherwise cancelling the request invokes
+             * binder_gprs_context_deactivate_primary_cb() which would
+             * call us recursively and report the context as deactivated
+             * before the deactivation request is completed.
+             */
+            binder_data_request_detach(deact.req);
             binder_data_request_cancel(deact.req);
             if (deact.cb) {
                 struct ofono_error err;

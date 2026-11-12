@@ -170,7 +170,11 @@ binder_cbs_activate(
 
     radio_request_set_retry_func(req, binder_cbs_retry);
     radio_request_set_retry(req, CBS_CHECK_RETRY_MS, CBS_CHECK_RETRY_COUNT);
-    radio_request_submit(req);
+    if (!radio_request_submit(req)) {
+        struct ofono_error err;
+
+        cb(binder_error_failure(&err), data);
+    }
     radio_request_unref(req);
 }
 
@@ -253,7 +257,11 @@ binder_cbs_set_config(
     DBG_(self, "configuring CB");
     radio_request_set_retry_func(req, binder_cbs_retry);
     radio_request_set_retry(req, CBS_CHECK_RETRY_MS, CBS_CHECK_RETRY_COUNT);
-    radio_request_submit(req);
+    if (!radio_request_submit(req)) {
+        struct ofono_error err;
+
+        cb(binder_error_failure(&err), data);
+    }
     radio_request_unref(req);
 }
 
