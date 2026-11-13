@@ -232,6 +232,11 @@ binder_strv_from_hidl_string_vec(
     BINDER_INTERNAL;
 
 char**
+binder_strv_from_hidl_link_address_vec(
+    const GBinderHidlVec* vec)
+    BINDER_INTERNAL;
+
+char**
 binder_strv_from_string16_array(
     GBinderReader* reader)
     BINDER_INTERNAL;

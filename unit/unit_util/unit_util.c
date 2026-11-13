@@ -221,6 +221,51 @@ test_copy_hidl_string(
     test_writer_free();
 }
 
+static
+void
+test_strv_from_hidl_link_address_vec(
+    void)
+{
+    static const char v4[] = "192.0.2.1/24";
+    static const char v6[] = "2001:db8::1/64";
+    RadioLinkAddress addrs[2];
+    GBinderHidlVec vec;
+    char** strv;
+
+    memset(addrs, 0, sizeof(addrs));
+    addrs[0].address.data.str = v4;
+    addrs[0].address.len = sizeof(v4) - 1;
+    addrs[1].address.data.str = v6;
+    addrs[1].address.len = sizeof(v6) - 1;
+
+    memset(&vec, 0, sizeof(vec));
+    vec.data.ptr = addrs;
+    vec.count = G_N_ELEMENTS(addrs);
+
+    /* Every entry, not just the first */
+    strv = binder_strv_from_hidl_link_address_vec(&vec);
+    g_assert_cmpuint(g_strv_length(strv), == ,2);
+    g_assert_cmpstr(strv[0], == ,v4);
+    g_assert_cmpstr(strv[1], == ,v6);
+    g_strfreev(strv);
+
+    /* Missing address string */
+    addrs[1].address.data.str = NULL;
+    addrs[1].address.len = 0;
+    strv = binder_strv_from_hidl_link_address_vec(&vec);
+    g_assert_cmpstr(strv[1], == ,"");
+    g_strfreev(strv);
+
+    vec.count = 0;
+    vec.data.ptr = NULL;
+    strv = binder_strv_from_hidl_link_address_vec(&vec);
+    g_assert(strv);
+    g_assert(!strv[0]);
+    g_strfreev(strv);
+
+    g_assert(!binder_strv_from_hidl_link_address_vec(NULL));
+}
+
 /*==========================================================================*
  * Common
  *==========================================================================*/
@@ -233,6 +278,8 @@ int main(int argc, char* argv[])
     g_test_init(&argc, &argv, NULL);
     g_test_add_func(TEST_("array_count"), test_array_count);
     g_test_add_func(TEST_("copy_hidl_string"), test_copy_hidl_string);
+    g_test_add_func(TEST_("strv_from_hidl_link_address_vec"),
+        test_strv_from_hidl_link_address_vec);
 
     gutil_log_default.level = g_test_verbose() ?
         GLOG_LEVEL_VERBOSE : GLOG_LEVEL_NONE;
