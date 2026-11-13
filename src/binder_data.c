@@ -3142,6 +3142,24 @@ static const BinderDataManagerApi binder_data_manager_api_hidl_1_1 = {
  *==========================================================================*/
 
 static
+gboolean
+binder_data_modem_ids_unique(
+    const guint8* ids,
+    gsize count)
+{
+    gsize i, j;
+
+    for (i = 0; i < count; i++) {
+        for (j = i + 1; j < count; j++) {
+            if (ids[i] == ids[j]) {
+                return FALSE;
+            }
+        }
+    }
+    return TRUE;
+}
+
+static
 GUtilInts*
 binder_data_manager_api_read_get_phone_capability_resp_aidl(
     GBinderReader* args,
@@ -3189,7 +3207,16 @@ binder_data_manager_api_read_get_phone_capability_resp_aidl(
                 g_string_free(str, TRUE);
             }
 
-            out = gutil_int_array_free_to_ints(modem_ids);
+            if (binder_data_modem_ids_unique(ids, count)) {
+                out = gutil_int_array_free_to_ints(modem_ids);
+            } else {
+                /*
+                 * Each slot must map to a distinct modem. A list with
+                 * duplicates is broken, fall back to using slot indices.
+                 */
+                ofono_warn("Ignoring logicalModemIds with duplicates");
+                gutil_int_array_free(modem_ids, TRUE);
+            }
         }
 
         gbinder_reader_finish_parcelable(&parcel);
