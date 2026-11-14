@@ -3141,94 +3141,11 @@ static const BinderDataManagerApi binder_data_manager_api_hidl_1_1 = {
  * AIDL DataManager API flavor
  *==========================================================================*/
 
-static
-gboolean
-binder_data_modem_ids_unique(
-    const guint8* ids,
-    gsize count)
-{
-    gsize i, j;
-
-    for (i = 0; i < count; i++) {
-        for (j = i + 1; j < count; j++) {
-            if (ids[i] == ids[j]) {
-                return FALSE;
-            }
-        }
-    }
-    return TRUE;
-}
-
-static
-GUtilInts*
-binder_data_manager_api_read_get_phone_capability_resp_aidl(
-    GBinderReader* args,
-    RADIO_CONFIG_RESP resp)
-{
-    GUtilInts* out = NULL;
-    GBinderReader parcel;
-
-    /*
-     * package android.hardware.radio.config;
-     * parcelable PhoneCapability {
-     *   byte maxActiveData;
-     *   byte maxActiveInternetData;
-     *   boolean isInternetLingeringSupported;
-     *   byte[] logicalModemIds;
-     *   byte maxActiveVoice;
-     * }
-     */
-    if (gbinder_reader_start_parcelable(args, &parcel, NULL)) {
-        guint32 maxActiveData, maxActiveInternetData;
-        gsize count;
-        const guint8* ids;
-
-        if (gbinder_reader_read_uint32(&parcel, &maxActiveData) &&
-            gbinder_reader_read_uint32(&parcel, &maxActiveInternetData) &&
-            gbinder_reader_read_bool(&parcel, NULL) &&
-            (ids = gbinder_reader_read_byte_array(&parcel, &count))) {
-            GUtilIntArray* modem_ids = gutil_int_array_sized_new(count);
-            gsize i;
-
-            for (i = 0; i < count; i++) {
-                gutil_int_array_append(modem_ids, ids[i]);
-            }
-
-            if (binder_data_debug_desc.flags & OFONO_DEBUG_FLAG_PRINT) {
-                GString* str = g_string_new(NULL);
-
-                for (i = 0; i < modem_ids->count; i++) {
-                    if (i > 0) g_string_append_c(str, ',');
-                    g_string_append_printf(str, "%u", modem_ids->data[i]);
-                }
-                DBG("maxActiveData=%u, maxActiveInternetData=%u, "
-                    "logicalModemList=[%s]", maxActiveData,
-                    maxActiveInternetData, str->str);
-                g_string_free(str, TRUE);
-            }
-
-            if (binder_data_modem_ids_unique(ids, count)) {
-                out = gutil_int_array_free_to_ints(modem_ids);
-            } else {
-                /*
-                 * Each slot must map to a distinct modem. A list with
-                 * duplicates is broken, fall back to using slot indices.
-                 */
-                ofono_warn("Ignoring logicalModemIds with duplicates");
-                gutil_int_array_free(modem_ids, TRUE);
-            }
-        }
-
-        gbinder_reader_finish_parcelable(&parcel);
-        GASSERT(gbinder_reader_at_end(args));
-    }
-    return out;
-}
-
 static const BinderDataManagerApi binder_data_manager_api_aidl = {
     "aidl",
-    RADIO_CONFIG_AIDL_REQ_GET_PHONE_CAPABILITY,
-    binder_data_manager_api_read_get_phone_capability_resp_aidl,
+    /* Use the logical slot index for setPreferredDataModem, as AOSP does. */
+    RADIO_CONFIG_REQ_NONE,
+    NULL,
     RADIO_CONFIG_AIDL_REQ_SET_PREFERRED_DATA_MODEM
 };
 
