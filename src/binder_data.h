@@ -236,6 +236,7 @@ binder_data_call_find(
 RadioRequest*
 binder_data_deactivate_data_call_request_new(
     BinderData* data,
+    RadioRequestGroup* group, /* Used if on the same client */
     int cid,
     RadioRequestCompleteFunc complete,
     GDestroyNotify destroy,
@@ -245,6 +246,7 @@ binder_data_deactivate_data_call_request_new(
 RadioRequest*
 binder_data_set_data_allowed_request_new(
     BinderData* data,
+    RadioRequestGroup* group, /* Used if on the same client */
     gboolean allow,
     RadioRequestCompleteFunc complete,
     GDestroyNotify destroy,

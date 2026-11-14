@@ -368,9 +368,25 @@ binder_data_modem_id(
 }
 
 static
+RadioRequestGroup*
+binder_data_object_request_group(
+    BinderDataObject* self,
+    RadioRequestGroup* group)
+{
+    /*
+     * A request can only go into a group of the client it's sent to.
+     * Over HIDL there is one IRadio client per slot, shared with the
+     * other parts of the plugin; over AIDL the data requests go to their
+     * own IRadioData client.
+     */
+    return (group && group->client == self->g->client) ? group : self->g;
+}
+
+static
 RadioRequest*
 binder_data_object_deactivate_data_call_request_new(
     BinderDataObject* self,
+    RadioRequestGroup* group,
     int cid,
     RadioRequestCompleteFunc complete,
     GDestroyNotify destroy,
@@ -378,7 +394,7 @@ binder_data_object_deactivate_data_call_request_new(
 {
     const BinderDataApi* api = self->api;
     GBinderWriter args;
-    RadioRequest* req = radio_request_new2(self->g,
+    RadioRequest* req = radio_request_new2(group,
         api->deactivate_data_call_req, &args, complete, destroy, user_data);
 
     api->write_deactivate_data_call_args(&args, cid);
@@ -389,13 +405,14 @@ static
 RadioRequest*
 binder_data_object_set_data_allowed_request_new(
     BinderDataObject* self,
+    RadioRequestGroup* group,
     gboolean allow,
     RadioRequestCompleteFunc complete,
     GDestroyNotify destroy,
     void* user_data)
 {
     GBinderWriter args;
-    RadioRequest* req = radio_request_new2(self->g,
+    RadioRequest* req = radio_request_new2(group,
         self->api->set_data_allowed_req, &args, complete, destroy, user_data);
 
     /*
@@ -1325,7 +1342,7 @@ binder_data_call_deact_submit(
 
     return binder_data_request_call(dr,
         binder_data_object_deactivate_data_call_request_new(dr->data,
-            deact->cid, binder_data_call_deact_cb, NULL, deact));
+            dr->data->g, deact->cid, binder_data_call_deact_cb, NULL, deact));
 }
 
 static
@@ -1504,7 +1521,7 @@ binder_data_allow_submit(
         G_CAST(dr, BinderDataRequestAllowData, req);
     RadioRequest* req =
         binder_data_object_set_data_allowed_request_new(dr->data,
-            ad->allow, binder_data_allow_cb, NULL, ad);
+            dr->data->g, ad->allow, binder_data_allow_cb, NULL, ad);
 
     radio_request_set_retry(req, BINDER_RETRY_SECS*1000, -1);
     radio_request_set_blocking(req, TRUE);
@@ -2959,6 +2976,7 @@ binder_data_call_deactivate(
 RadioRequest*
 binder_data_deactivate_data_call_request_new(
     BinderData* data,
+    RadioRequestGroup* group,
     int cid,
     RadioRequestCompleteFunc complete,
     GDestroyNotify destroy,
@@ -2967,12 +2985,14 @@ binder_data_deactivate_data_call_request_new(
     BinderDataObject* self = binder_data_cast(data);
 
     return self ? binder_data_object_deactivate_data_call_request_new(self,
-        cid, complete, destroy, user_data) : NULL;
+        binder_data_object_request_group(self, group), cid, complete,
+        destroy, user_data) : NULL;
 }
 
 RadioRequest*
 binder_data_set_data_allowed_request_new(
     BinderData* data,
+    RadioRequestGroup* group,
     gboolean allow,
     RadioRequestCompleteFunc complete,
     GDestroyNotify destroy,
@@ -2980,8 +3000,9 @@ binder_data_set_data_allowed_request_new(
 {
     BinderDataObject* self = binder_data_cast(data);
 
-    return self ? binder_data_object_set_data_allowed_request_new(self, allow,
-        complete, destroy, user_data) : NULL;
+    return self ? binder_data_object_set_data_allowed_request_new(self,
+        binder_data_object_request_group(self, group), allow, complete,
+        destroy, user_data) : NULL;
 }
 
 gboolean
