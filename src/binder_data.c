@@ -1173,10 +1173,25 @@ binder_data_call_setup_submit(
     GBinderWriter args;
     RadioRequest* req = radio_request_new2(data->g, api->setup_data_call_req,
         &args, binder_data_call_setup_cb, NULL, setup);
+    RADIO_TECH tech = data->network->data.radio_tech;
+
+    /*
+     * In legacy IWLAN mode the modem can report IWLAN as the data
+     * technology while IMS is on Wi-Fi. Like Android, don't set up the
+     * internet data call on IWLAN: use the cellular network, if known.
+     */
+    if (tech == RADIO_TECH_IWLAN &&
+        (binder_radio_apn_types_for_profile(setup->profile_id,
+            &data->profile_config) & RADIO_APN_TYPE_DEFAULT)) {
+        const RADIO_TECH cell = data->network->voice.radio_tech;
+
+        if (cell != RADIO_TECH_IWLAN && cell != RADIO_TECH_UNKNOWN) {
+            tech = cell;
+        }
+    }
 
     api->write_setup_data_call_args(&args, setup, &data->profile_config,
-        (setup->profile_id == RADIO_DATA_PROFILE_IMS) ? RADIO_TECH_LTE :
-        data->network->data.radio_tech);
+        (setup->profile_id == RADIO_DATA_PROFILE_IMS) ? RADIO_TECH_LTE : tech);
     return binder_data_request_call(dr, req);
 }
 
