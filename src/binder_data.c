@@ -2020,7 +2020,7 @@ binder_data_call_new_1_5(
     call->ifname = g_strdup(dc->ifname.data.str);
     call->dnses = binder_strv_from_hidl_string_vec(&dc->dnses);
     call->gateways = binder_strv_from_hidl_string_vec(&dc->gateways);
-    call->addresses = binder_strv_from_hidl_string_vec(&dc->addresses);
+    call->addresses = binder_strv_from_hidl_link_address_vec(&dc->addresses);
     call->pcscf = binder_strv_from_hidl_string_vec(&dc->pcscf);
 
     DBG("[status=%d,retry=%d,cid=%d,active=%d,type=%d,ifname=%s,"

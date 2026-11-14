@@ -853,6 +853,29 @@ binder_strv_from_hidl_string_vec(
     return NULL;
 }
 
+/* vec<LinkAddress> (radio 1.5+), whose entries start with the address */
+char**
+binder_strv_from_hidl_link_address_vec(
+    const GBinderHidlVec* vec)
+{
+    if (vec) {
+        const RadioLinkAddress* addrs = vec->data.ptr;
+        char** out = g_new(char*, vec->count + 1);
+        char** ptr = out;
+        guint i;
+
+        for (i = 0; i < vec->count; i++, ptr++) {
+            const GBinderHidlString* addr = &addrs[i].address;
+            const char* str = addr->data.str;
+
+            *ptr = str ? gutil_memdup(str, addr->len + 1) : g_strdup("");
+        }
+        *ptr = NULL;
+        return out;
+    }
+    return NULL;
+}
+
 gboolean
 binder_read_string16_parse_int(
     GBinderReader* reader,
