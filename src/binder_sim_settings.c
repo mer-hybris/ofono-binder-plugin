@@ -130,8 +130,13 @@ binder_sim_settings_set_pref(
 {
     BinderSimSettingsObject* self = binder_sim_settings_cast(settings);
 
-    if (G_LIKELY(self) && settings->pref != pref) {
+    /*
+     * The first call publishes the stored mode even when it equals the
+     * initial mask. Later calls notify only when the mode changes.
+     */
+    if (G_LIKELY(self) && (!settings->pref_set || settings->pref != pref)) {
         settings->pref = pref;
+        settings->pref_set = TRUE;
         binder_base_emit_property_change(&self->base,
             BINDER_SIM_SETTINGS_PROPERTY_PREF);
     }
