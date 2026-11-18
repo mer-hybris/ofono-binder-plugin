@@ -1144,7 +1144,8 @@ binder_slot_sim_presence(
             case RADIO_CARD_STATE_ABSENT:
                 return OFONO_SLOT_SIM_ABSENT;
             case RADIO_CARD_STATE_PRESENT:
-                return OFONO_SLOT_SIM_PRESENT;
+                return status->num_apps ? OFONO_SLOT_SIM_PRESENT :
+                    OFONO_SLOT_SIM_ABSENT;
             case RADIO_CARD_STATE_ERROR:
             case RADIO_CARD_STATE_RESTRICTED:
                 break;
