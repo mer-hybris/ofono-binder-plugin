@@ -1150,22 +1150,23 @@ binder_sim_status_changed_cb(
 
     GASSERT(self->card == sim);
     if (sim->status && sim->status->card_state == RADIO_CARD_STATE_PRESENT) {
+        enum ofono_sim_password_type ps;
+
         if (sim->app) {
-            enum ofono_sim_password_type ps;
-
             binder_sim_check_perm_lock(self);
-            if (!self->inserted) {
-                self->inserted = TRUE;
-                ofono_info("SIM card OK");
-                ofono_sim_inserted_notify(self->sim, TRUE);
-            }
-
-            ps = binder_sim_passwd_state(self);
-            if (ps != OFONO_SIM_PASSWORD_INVALID) {
-                binder_sim_finish_passwd_state_query(self, ps);
-            }
         } else {
             binder_sim_invalidate_passwd_state(self);
+        }
+
+        if (!self->inserted) {
+            self->inserted = TRUE;
+            ofono_info("SIM card OK");
+            ofono_sim_inserted_notify(self->sim, TRUE);
+        }
+
+        ps = binder_sim_passwd_state(self);
+        if (ps != OFONO_SIM_PASSWORD_INVALID) {
+            binder_sim_finish_passwd_state_query(self, ps);
         }
     } else {
         binder_sim_invalidate_passwd_state(self);
