@@ -41,10 +41,12 @@
 #include <gutil_intarray.h>
 #include <gutil_ints.h>
 #include <gutil_macros.h>
+#include <gutil_misc.h>
 #include <gutil_ring.h>
 #include <gutil_strv.h>
 
 #define VOICECALL_BLOCK_TIMEOUT_MS (5*1000)
+#define VOICECALL_DIAL_TIMEOUT_MS (300* 1000)
 
 enum binder_voicecall_events {
     VOICECALL_EVENT_CALL_STATE_CHANGED,
@@ -67,6 +69,61 @@ enum binder_voicecall_ext_events {
     VOICECALL_EXT_EVENT_COUNT
 };
 
+/*
+ * The dialing state machine
+ *
+ * +===========+
+ * | DIAL_IDLE | <------------------------+
+ * +===========+                          |
+ *      |                                 |
+ *    dial()                              |
+ *      |                                 |
+ *      v                                 |
+ * +-----------+                          |
+ * | ask modem |                          |
+ * | to dial   |                          |
+ * +-----------+                          |
+ *      |                            +------------+
+ *      v                            | complete   |
+ * +==============+     modem dial   | the dial() |
+ * | DIAL_STARTED | --- request ---> | request    |
+ * +==============+     fails        +------------+
+ *      |         \                    ^        ^
+ *  modem dial   new call              |        |
+ *  request      spontaneously      modem dial  |
+ *  succeeds     appears            request     |
+ *      |             \             completes   |
+ *      |              v               |        |
+ *      |        +----------------+    |        |
+ *      |        | notify ofono   |    |   +----------------+
+ *      |        | about new call |    |   | notify ofono   |
+ *      |        +----------------+    |   | about new call |
+ *      |                |             |   +----------------+
+ *      |                v             |        ^
+ *      |            +====================+     |
+ *      |            | DIAL_CALL_APPEARED |   new call
+ *      |            +====================+   appears
+ *      v                                       |
+ * +---------------+                    +===============+
+ * | ask modem for | -----------------> | DIAL_FINISHED |
+ * | list of calls |                    +===============+
+ * +---------------+
+ *
+ * ofono core must be notified about the new call (and its id assigned by
+ * the modem) before the dial() request gets completed. Otherwise ofono
+ * generates its own id for the new call (but doesn't tell us what it is).
+ *
+ * There's overall timeout VOICECALL_DIAL_TIMEOUT_MS for the whole sequence.
+ * If the timeout is triggered, the state gets reset back to DIAL_IDLE and
+ * the* dial() request is completed with a generic error.
+ */
+enum binder_voicecall_dial_state {
+    VOICECALL_DIAL_IDLE,
+    VOICECALL_DIAL_STARTED,
+    VOICECALL_DIAL_CALL_APPEARED,
+    VOICECALL_DIAL_FINISHED
+};
+
 typedef struct binder_voicecall_api BinderVoiceCallApi;
 
 typedef struct binder_voicecall {
@@ -78,8 +135,11 @@ typedef struct binder_voicecall {
     BinderImsReg* ims_reg;
     RadioRequestGroup* voice_g;
     RadioRequestGroup* network_g;
-    ofono_voicecall_cb_t cb;
-    void* data;
+    ofono_voicecall_cb_t dial_cb;
+    void* dial_data;
+    guint dial_timeout_id;
+    enum binder_voicecall_dial_state dial_state;
+    GUtilIntArray* dial_ids;
     GUtilIntArray* local_release_ids;
     GUtilIdleQueue* idleq;
     GUtilRing* dtmf_queue;
@@ -254,6 +314,27 @@ binder_voicecall_ext_call_state_to_ofono(
     }
     DBG("unexpected call state %d", state);
     return OFONO_CALL_STATUS_DISCONNECTED;
+}
+
+static
+gboolean
+binder_voicecall_is_dialed_call(
+    const struct ofono_call* oc)
+{
+    /* which calls ofono will recognize as "dialed" */
+    switch (oc->status) {
+    case OFONO_CALL_STATUS_DIALING:
+    case OFONO_CALL_STATUS_ALERTING:
+        return TRUE;
+    case OFONO_CALL_STATUS_ACTIVE:
+        return (oc->direction == OFONO_CALL_DIRECTION_MOBILE_ORIGINATED);
+    case OFONO_CALL_STATUS_HELD:
+    case OFONO_CALL_STATUS_INCOMING:
+    case OFONO_CALL_STATUS_WAITING:
+    case OFONO_CALL_STATUS_DISCONNECTED:
+        break;
+    }
+    return FALSE;
 }
 
 static
@@ -636,6 +717,11 @@ binder_voicecall_set_calls(
     struct ofono_voicecall* vc = self->vc;
     GSList* n = list;
     GSList* o = self->calls;
+    ofono_voicecall_cb_t dial_cb = NULL;
+    void* dial_data = NULL;
+    struct ofono_error dial_error;
+
+    binder_error_init_failure(&dial_error);
 
     /* Note: the lists are sorted by id */
     while (n || o) {
@@ -646,6 +732,7 @@ binder_voicecall_set_calls(
             const guint id = oc->oc.id;
 
             /* old call is gone */
+            gutil_int_array_remove_all_fast(self->dial_ids, id);
             if (gutil_int_array_remove_all_fast(self->local_release_ids, id)) {
                 ofono_voicecall_disconnected(vc, id,
                     OFONO_DISCONNECT_REASON_LOCAL_HANGUP, NULL);
@@ -667,25 +754,52 @@ binder_voicecall_set_calls(
             o = o->next;
 
         } else if (nc && (!oc || (nc->oc.id < oc->oc.id))) {
-            /* new call, signal it */
             if (nc->oc.type == OFONO_CALL_MODE_VOICE) {
-                ofono_voicecall_notify(vc, &nc->oc);
-                if (self->cb) {
-                    ofono_voicecall_cb_t cb = self->cb;
-                    void* cbdata = self->data;
-                    struct ofono_error err;
-
-                    self->cb = NULL;
-                    self->data = NULL;
-                    cb(binder_error_ok(&err), cbdata);
+                /* new voice call */
+                if (nc->oc.status != OFONO_CALL_STATUS_INCOMING) {
+                    if (self->dial_state == VOICECALL_DIAL_FINISHED) {
+                        /*
+                         * Will signal the dial completion after ofono
+                         * records the id of the dialed call.
+                         */
+                        if (nc->oc.status == OFONO_CALL_STATUS_DISCONNECTED) {
+                            /*
+                             * Interpret a new call appearing in the
+                             * DISCONNECTED state as a failure to dial.
+                             */
+                            DBG_(self, "new disconnected call");
+                            if (self->dial_cb) {
+                                dial_cb = self->dial_cb;
+                                dial_data = self->dial_data;
+                                self->dial_cb = NULL;
+                                self->dial_data = NULL;
+                            }
+                        } else if (binder_voicecall_is_dialed_call(&nc->oc)) {
+                            /* That's a success */
+                            DBG_(self, "dial ok");
+                            binder_error_init_ok(&dial_error);
+                            if (self->dial_cb) {
+                                dial_cb = self->dial_cb;
+                                dial_data = self->dial_data;
+                                self->dial_cb = NULL;
+                                self->dial_data = NULL;
+                            }
+                        }
+                    } else if (self->dial_state == VOICECALL_DIAL_STARTED) {
+                        DBG_(self, "waiting for modem to finish dialing");
+                        gutil_int_array_append(self->dial_ids, nc->oc.id);
+                        self->dial_state = VOICECALL_DIAL_CALL_APPEARED;
+                    }
                 }
+                ofono_voicecall_notify(vc, &nc->oc);
             }
 
             n = n->next;
 
         } else {
             /* Both old and new call exist */
-            if (!binder_voicecall_ofono_call_equal(&nc->oc, &oc->oc)) {
+            if (!binder_voicecall_ofono_call_equal(&nc->oc, &oc->oc) &&
+                nc->oc.type == OFONO_CALL_MODE_VOICE) {
                 ofono_voicecall_notify(vc, &nc->oc);
             }
             n = n->next;
@@ -695,6 +809,14 @@ binder_voicecall_set_calls(
 
     g_slist_free_full(self->calls, binder_voicecall_info_free);
     self->calls = list;
+
+    if (dial_cb) {
+        DBG_(self, "completing the dial request");
+        self->dial_state = VOICECALL_DIAL_IDLE;
+        gutil_int_array_set_count(self->dial_ids, 0);
+        gutil_source_clear(&self->dial_timeout_id);
+        dial_cb(&dial_error, dial_data);
+    }
 }
 
 static
@@ -970,6 +1092,83 @@ binder_voicecall_request_submit(
 
 static
 void
+binder_voicecall_dial_ok(
+    BinderVoiceCall* self)
+{
+    if (self->dial_state == VOICECALL_DIAL_CALL_APPEARED) {
+        /* We have (or had) a new call, the dial is to be completed */
+        guint i;
+        struct ofono_error dial_error;
+        ofono_voicecall_cb_t dial_cb = self->dial_cb;
+        void* dial_data = self->dial_data;
+
+        binder_error_init_failure(&dial_error);
+
+        /* Examine the calls before resetting dial_ids */
+        for (i = 0; i < self->dial_ids->count; i++) {
+            /*
+             * The call must be there. Removed calls are removed from
+             * dial_ids as well.
+             */
+            const BinderVoiceCallInfo* call =
+                binder_voicecall_find_call_with_id(self,
+                    self->dial_ids->data[i]);
+
+            if (binder_voicecall_is_dialed_call(&call->oc)) {
+                DBG_(self, "dial ok");
+                binder_error_init_ok(&dial_error);
+                break;
+            }
+        }
+
+        self->dial_cb = NULL;
+        self->dial_data = NULL;
+        self->dial_state = VOICECALL_DIAL_IDLE;
+        gutil_source_clear(&self->dial_timeout_id);
+        gutil_int_array_set_count(self->dial_ids, 0);
+
+        if (dial_cb) {
+            DBG_(self, "completing the dial request");
+            dial_cb(&dial_error, dial_data);
+        }
+    } else if (self->dial_state == VOICECALL_DIAL_STARTED) {
+        /*
+         * CLCC will update the oFono call list with proper ids.
+         * It also may be that it will report the call initiated
+         * by the extension.
+         */
+        DBG_(self, "modem finished dialing, requesting call list");
+        binder_voicecall_clcc_poll(self);
+
+        /* Wait for new call to appear (or for timeout to expire) */
+        self->dial_state = VOICECALL_DIAL_FINISHED;
+    }
+}
+
+static
+void
+binder_voicecall_dial_failed(
+    BinderVoiceCall* self)
+{
+    ofono_voicecall_cb_t cb = self->dial_cb;
+    void* cbdata = self->dial_data;
+
+    self->dial_cb = NULL;
+    self->dial_data = NULL;
+    self->dial_state = VOICECALL_DIAL_IDLE;
+    gutil_source_clear(&self->dial_timeout_id);
+    gutil_int_array_set_count(self->dial_ids, 0);
+
+    if (self->dial_cb) {
+        struct ofono_error err;
+
+        DBG_(self, "failing the dial request");
+        cb(binder_error_failure(&err), cbdata);
+    }
+}
+
+static
+void
 binder_voicecall_dial_cb(
     RadioRequest* req,
     RADIO_TX_STATUS status,
@@ -985,30 +1184,11 @@ binder_voicecall_dial_cb(
     } else if (error != RADIO_ERROR_NONE) {
         ofono_error("call failed: %s", binder_radio_error_string(error));
     } else {
-        if (self->cb) {
-            /*
-             * CLCC will update the oFono call list with
-             * proper ids if it's not done yet.
-             */
-            binder_voicecall_clcc_poll(self);
-        }
+        binder_voicecall_dial_ok(self);
         return;
     }
 
-    /*
-     * Even though this dial request may have already been completed
-     * successfully by binder_voicecall_clcc_poll_cb, dial request
-     * may still fail.
-     */
-    if (self->cb) {
-        struct ofono_error err;
-        ofono_voicecall_cb_t cb = self->cb;
-        void* cbdata = self->data;
-
-        self->cb = NULL;
-        self->data = NULL;
-        cb(binder_error_failure(&err), cbdata);
-    }
+    binder_voicecall_dial_failed(self);
 }
 
 static
@@ -1021,18 +1201,11 @@ binder_voicecall_ext_dial_cb(
     BinderVoiceCall* self = user_data;
 
     self->ext_req_id = 0;
-    if (self->cb) {
-        struct ofono_error err;
-        ofono_voicecall_cb_t cb = self->cb;
-        void* cbdata = self->data;
 
-        self->cb = NULL;
-        self->data = NULL;
-        if (result == BINDER_EXT_CALL_RESULT_OK) {
-            cb(binder_error_ok(&err), cbdata);
-        } else {
-            cb(binder_error_failure(&err), cbdata);
-        }
+    if (result == BINDER_EXT_CALL_RESULT_OK) {
+        binder_voicecall_dial_ok(self);
+    } else {
+        binder_voicecall_dial_failed(self);
     }
 }
 
@@ -1064,6 +1237,37 @@ binder_voicecall_ext_clir(
 }
 
 static
+gboolean
+binder_voicecall_dial_timeout_cb(
+    gpointer user_data)
+{
+    BinderVoiceCall* self = user_data;
+
+    self->dial_timeout_id = 0;
+    binder_voicecall_dial_failed(self);
+    return G_SOURCE_REMOVE;
+}
+
+static
+void
+binder_voicecall_dial_started(
+    BinderVoiceCall* self,
+    ofono_voicecall_cb_t cb,
+    void* data)
+{
+    DBG_(self, "started dialing");
+    self->dial_cb = cb;
+    self->dial_data = data;
+    self->dial_state = VOICECALL_DIAL_STARTED;
+    gutil_int_array_set_count(self->dial_ids, 0);
+
+    /* Reset the timeout */
+    gutil_source_remove(self->dial_timeout_id);
+    self->dial_timeout_id = g_timeout_add(VOICECALL_DIAL_TIMEOUT_MS,
+        binder_voicecall_dial_timeout_cb, self);
+}
+
+static
 void
 binder_voicecall_dial(
     struct ofono_voicecall* vc,
@@ -1080,16 +1284,23 @@ binder_voicecall_dial(
     RadioRequest* req;
 
     ofono_info("dialing \"%s\"", phstr);
-    DBG_(self, "%s,%d,0", phstr, clir);
 
+    /* Reset the state, just in case */
+    self->dial_cb = NULL;
+    self->dial_data = NULL;
+    self->dial_state = VOICECALL_DIAL_IDLE;
+    gutil_int_array_set_count(self->dial_ids, 0);
+    gutil_source_clear(&self->dial_timeout_id);
+
+    /* Try the ext first */
     binder_ext_call_cancel(self->ext, self->ext_req_id);
     if (binder_voicecall_can_ext_dial(self)) {
+        DBG_(self, "ext %s,%d,0", phstr, clir);
         self->ext_req_id = binder_ext_call_dial(self->ext, phstr, ph->type,
             binder_voicecall_ext_clir(clir), BINDER_EXT_CALL_DIAL_FLAGS_NONE,
             binder_voicecall_ext_dial_cb, NULL, self);
         if (self->ext_req_id) {
-            self->cb = cb;
-            self->data = data;
+            binder_voicecall_dial_started(self, cb, data);
             return;
         }
     } else {
@@ -1097,16 +1308,17 @@ binder_voicecall_dial(
     }
 
     /* Default action */
+    DBG_(self, "%s,%d,0", phstr, clir);
     req = radio_request_new2(self->voice_g, api->voice_dial_req, &args,
         binder_voicecall_dial_cb, NULL, self);
     api->write_dial_args(&args, phstr, clir);
 
     if (radio_request_submit(req)) {
-        self->cb = cb;
-        self->data = data;
+        binder_voicecall_dial_started(self, cb, data);
     } else {
         struct ofono_error err;
 
+        DBG_(self, "failing the dial request");
         cb(binder_error_failure(&err), data);
     }
     radio_request_unref(req);
@@ -2153,6 +2365,7 @@ binder_voicecall_probe(
     self->local_hangup_reasons = gutil_ints_ref(cfg->local_hangup_reasons);
     self->remote_hangup_reasons = gutil_ints_ref(cfg->remote_hangup_reasons);
     self->local_release_ids = gutil_int_array_new();
+    self->dial_ids = gutil_int_array_new();
     self->idleq = gutil_idle_queue_new();
     self->ims_reg = binder_ims_reg_ref(modem->ims);
 
@@ -2196,6 +2409,8 @@ binder_voicecall_remove(
     gutil_ints_unref(self->local_hangup_reasons);
     gutil_ints_unref(self->remote_hangup_reasons);
     gutil_int_array_free(self->local_release_ids, TRUE);
+    gutil_int_array_free(self->dial_ids, TRUE);
+    gutil_source_remove(self->dial_timeout_id);
     gutil_idle_queue_free(self->idleq);
 
     if (self->ext) {
