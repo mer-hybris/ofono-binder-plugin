@@ -1371,7 +1371,6 @@ binder_slot_check(
     BinderSlot* slot)
 {
     BinderPlugin* plugin = slot->plugin;
-    struct ofono_slot* ofono_slot = slot->handle;
     const gboolean connected = binder_slot_all_clients_connected(slot) &&
         (plugin->radio_config || !(plugin->flags &
             BINDER_PLUGIN_NEED_CONFIG_SERVICE));
@@ -1380,8 +1379,8 @@ binder_slot_check(
 
     /* IMEI related logic */
     if (slot->imei) {
-        if (!ofono_slot && slot->imei) {
-            ofono_slot = binder_slot_register(slot);
+        if (!slot->handle) {
+            binder_slot_register(slot);
         }
     } else if (connected) {
         if (!slot->imei_req) {
