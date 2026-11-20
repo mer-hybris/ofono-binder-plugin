@@ -93,8 +93,6 @@ typedef struct binder_voicecall {
     gulong ext_event[VOICECALL_EXT_EVENT_COUNT];
     gulong voice_event[VOICECALL_EVENT_COUNT];
     gulong network_event[VOICECALL_NETWORK_EVENT_COUNT];
-    gulong supp_svc_notification_id;
-    gulong ringback_tone_event_id;
 } BinderVoiceCall;
 
 typedef struct binder_voicecall_cb_data {
@@ -655,14 +653,14 @@ binder_voicecall_set_calls(
                 /* Get disconnect cause before informing oFono core */
                 BinderVoiceCallLastCauseData* reqdata =
                     g_new0(BinderVoiceCallLastCauseData, 1);
-                RadioRequest* req2 = radio_request_new2(self->voice_g,
+                RadioRequest* req = radio_request_new2(self->voice_g,
                     self->api->voice_get_last_call_fail_cause_req, NULL,
                     binder_voicecall_lastcause_cb, g_free, reqdata);
 
                 reqdata->self = self;
                 reqdata->cid = id;
-                radio_request_submit(req2);
-                radio_request_unref(req2);
+                radio_request_submit(req);
+                radio_request_unref(req);
             }
 
             binder_voicecall_clear_dtmf_queue(self);

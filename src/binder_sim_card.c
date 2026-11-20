@@ -404,7 +404,7 @@ binder_sim_card_update_status(
         BinderSimCardStatus* old_status = card->status;
 
         card->status = status;
-        if (diff & BINDER_SIMCARD_STATE_CHANGED &&
+        if ((diff & BINDER_SIMCARD_STATE_CHANGED) &&
             status->card_state == RADIO_CARD_STATE_PRESENT) {
 
             /*
