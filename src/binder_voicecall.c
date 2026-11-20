@@ -41,10 +41,12 @@
 #include <gutil_intarray.h>
 #include <gutil_ints.h>
 #include <gutil_macros.h>
+#include <gutil_misc.h>
 #include <gutil_ring.h>
 #include <gutil_strv.h>
 
 #define VOICECALL_BLOCK_TIMEOUT_MS (5*1000)
+#define VOICECALL_DIAL_TIMEOUT_MS (300* 1000)
 
 enum binder_voicecall_events {
     VOICECALL_EVENT_CALL_STATE_CHANGED,
@@ -78,8 +80,9 @@ typedef struct binder_voicecall {
     BinderImsReg* ims_reg;
     RadioRequestGroup* voice_g;
     RadioRequestGroup* network_g;
-    ofono_voicecall_cb_t cb;
-    void* data;
+    ofono_voicecall_cb_t dial_cb;
+    void* dial_data;
+    guint dial_timeout_id;
     GUtilIntArray* local_release_ids;
     GUtilIdleQueue* idleq;
     GUtilRing* dtmf_queue;
@@ -93,8 +96,6 @@ typedef struct binder_voicecall {
     gulong ext_event[VOICECALL_EXT_EVENT_COUNT];
     gulong voice_event[VOICECALL_EVENT_COUNT];
     gulong network_event[VOICECALL_NETWORK_EVENT_COUNT];
-    gulong supp_svc_notification_id;
-    gulong ringback_tone_event_id;
 } BinderVoiceCall;
 
 typedef struct binder_voicecall_cb_data {
@@ -638,6 +639,11 @@ binder_voicecall_set_calls(
     struct ofono_voicecall* vc = self->vc;
     GSList* n = list;
     GSList* o = self->calls;
+    ofono_voicecall_cb_t dial_cb = NULL;
+    void* dial_data = NULL;
+    struct ofono_error dial_error;
+
+    binder_error_init_ok(&dial_error);
 
     /* Note: the lists are sorted by id */
     while (n || o) {
@@ -669,25 +675,39 @@ binder_voicecall_set_calls(
             o = o->next;
 
         } else if (nc && (!oc || (nc->oc.id < oc->oc.id))) {
-            /* new call, signal it */
             if (nc->oc.type == OFONO_CALL_MODE_VOICE) {
-                ofono_voicecall_notify(vc, &nc->oc);
-                if (self->cb) {
-                    ofono_voicecall_cb_t cb = self->cb;
-                    void* cbdata = self->data;
-                    struct ofono_error err;
-
-                    self->cb = NULL;
-                    self->data = NULL;
-                    cb(binder_error_ok(&err), cbdata);
+                /* New voice call, signal it */
+                if (self->dial_cb &&
+                    nc->oc.status != OFONO_CALL_STATUS_INCOMING) {
+                    if (nc->oc.status == OFONO_CALL_STATUS_DISCONNECTED) {
+                        binder_error_init_failure(&dial_error);
+                    }
+                    dial_cb = self->dial_cb;
+                    dial_data = self->dial_data;
+                    self->dial_cb = NULL;
+                    self->dial_data = NULL;
+                    gutil_source_clear(&self->dial_timeout_id);
                 }
+                ofono_voicecall_notify(vc, &nc->oc);
             }
 
             n = n->next;
 
         } else {
             /* Both old and new call exist */
-            if (!binder_voicecall_ofono_call_equal(&nc->oc, &oc->oc)) {
+            if (!binder_voicecall_ofono_call_equal(&nc->oc, &oc->oc) &&
+                nc->oc.type == OFONO_CALL_MODE_VOICE) {
+                if (self->dial_cb &&
+                    nc->oc.status != OFONO_CALL_STATUS_INCOMING) {
+                    if (nc->oc.status == OFONO_CALL_STATUS_DISCONNECTED) {
+                        binder_error_init_failure(&dial_error);
+                    }
+                    dial_cb = self->dial_cb;
+                    dial_data = self->dial_data;
+                    self->dial_cb = NULL;
+                    self->dial_data = NULL;
+                    gutil_source_clear(&self->dial_timeout_id);
+                }
                 ofono_voicecall_notify(vc, &nc->oc);
             }
             n = n->next;
@@ -697,6 +717,9 @@ binder_voicecall_set_calls(
 
     g_slist_free_full(self->calls, binder_voicecall_info_free);
     self->calls = list;
+    if (dial_cb) {
+        dial_cb(&dial_error, dial_data);
+    }
 }
 
 static
@@ -972,6 +995,36 @@ binder_voicecall_request_submit(
 
 static
 void
+binder_voicecall_dial_ok(
+    BinderVoiceCall* self)
+{
+    if (self->dial_cb) {
+        /*
+         * CLCC will update the oFono call list with proper ids
+         * if it's not done yet.
+         */
+        binder_voicecall_clcc_poll(self);
+    }
+}
+
+static
+void
+binder_voicecall_dial_failed(
+    BinderVoiceCall* self)
+{
+    if (self->dial_cb) {
+        struct ofono_error err;
+        ofono_voicecall_cb_t cb = self->dial_cb;
+        void* cbdata = self->dial_data;
+
+        self->dial_cb = NULL;
+        self->dial_data = NULL;
+        cb(binder_error_failure(&err), cbdata);
+    }
+}
+
+static
+void
 binder_voicecall_dial_cb(
     RadioRequest* req,
     RADIO_TX_STATUS status,
@@ -987,30 +1040,11 @@ binder_voicecall_dial_cb(
     } else if (error != RADIO_ERROR_NONE) {
         ofono_error("call failed: %s", binder_radio_error_string(error));
     } else {
-        if (self->cb) {
-            /*
-             * CLCC will update the oFono call list with
-             * proper ids if it's not done yet.
-             */
-            binder_voicecall_clcc_poll(self);
-        }
+        binder_voicecall_dial_ok(self);
         return;
     }
 
-    /*
-     * Even though this dial request may have already been completed
-     * successfully by binder_voicecall_clcc_poll_cb, dial request
-     * may still fail.
-     */
-    if (self->cb) {
-        struct ofono_error err;
-        ofono_voicecall_cb_t cb = self->cb;
-        void* cbdata = self->data;
-
-        self->cb = NULL;
-        self->data = NULL;
-        cb(binder_error_failure(&err), cbdata);
-    }
+    binder_voicecall_dial_failed(self);
 }
 
 static
@@ -1023,18 +1057,10 @@ binder_voicecall_ext_dial_cb(
     BinderVoiceCall* self = user_data;
 
     self->ext_req_id = 0;
-    if (self->cb) {
-        struct ofono_error err;
-        ofono_voicecall_cb_t cb = self->cb;
-        void* cbdata = self->data;
-
-        self->cb = NULL;
-        self->data = NULL;
-        if (result == BINDER_EXT_CALL_RESULT_OK) {
-            cb(binder_error_ok(&err), cbdata);
-        } else {
-            cb(binder_error_failure(&err), cbdata);
-        }
+    if (result == BINDER_EXT_CALL_RESULT_OK) {
+        binder_voicecall_dial_ok(self);
+    } else {
+        binder_voicecall_dial_failed(self);
     }
 }
 
@@ -1066,6 +1092,18 @@ binder_voicecall_ext_clir(
 }
 
 static
+gboolean
+binder_voicecall_dial_timeout_cb(
+    gpointer user_data)
+{
+    BinderVoiceCall* self = user_data;
+
+    self->dial_timeout_id = 0;
+    binder_voicecall_dial_failed(self);
+    return G_SOURCE_REMOVE;
+}
+
+static
 void
 binder_voicecall_dial(
     struct ofono_voicecall* vc,
@@ -1082,16 +1120,19 @@ binder_voicecall_dial(
     RadioRequest* req;
 
     ofono_info("dialing \"%s\"", phstr);
-    DBG_(self, "%s,%d,0", phstr, clir);
 
+    gutil_source_clear(&self->dial_timeout_id);
     binder_ext_call_cancel(self->ext, self->ext_req_id);
     if (binder_voicecall_can_ext_dial(self)) {
+        DBG_(self, "ext %s,%d,0", phstr, clir);
         self->ext_req_id = binder_ext_call_dial(self->ext, phstr, ph->type,
             binder_voicecall_ext_clir(clir), BINDER_EXT_CALL_DIAL_FLAGS_NONE,
             binder_voicecall_ext_dial_cb, NULL, self);
         if (self->ext_req_id) {
-            self->cb = cb;
-            self->data = data;
+            self->dial_cb = cb;
+            self->dial_data = data;
+            self->dial_timeout_id = g_timeout_add(VOICECALL_DIAL_TIMEOUT_MS,
+                binder_voicecall_dial_timeout_cb, self);
             return;
         }
     } else {
@@ -1099,13 +1140,16 @@ binder_voicecall_dial(
     }
 
     /* Default action */
+    DBG_(self, "%s,%d,0", phstr, clir);
     req = radio_request_new2(self->voice_g, api->voice_dial_req, &args,
         binder_voicecall_dial_cb, NULL, self);
     api->write_dial_args(&args, phstr, clir);
 
     if (radio_request_submit(req)) {
-        self->cb = cb;
-        self->data = data;
+        self->dial_cb = cb;
+        self->dial_data = data;
+        self->dial_timeout_id = g_timeout_add(VOICECALL_DIAL_TIMEOUT_MS,
+            binder_voicecall_dial_timeout_cb, self);
     } else {
         struct ofono_error err;
 
@@ -2221,6 +2265,7 @@ binder_voicecall_remove(
     }
 
     binder_ims_reg_unref(self->ims_reg);
+    gutil_source_remove(self->dial_timeout_id);
     g_free(self->log_prefix);
     g_free(self);
 
