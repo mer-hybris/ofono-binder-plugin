@@ -25,7 +25,7 @@ all: debug release pkgconfig
 
 VERSION_MAJOR = 1
 VERSION_MINOR = 1
-VERSION_RELEASE = 41
+VERSION_RELEASE = 42
 
 # Version for pkg-config
 PCVERSION = $(VERSION_MAJOR).$(VERSION_MINOR).$(VERSION_RELEASE)
@@ -158,16 +158,7 @@ clean:
 	rm -f *~ $(SRC_DIR)/*~ $(INCLUDE_DIR)/*~
 	rm -fr $(BUILD_DIR)
 
-$(BUILD_DIR):
-	mkdir -p $@
-
-$(DEBUG_BUILD_DIR):
-	mkdir -p $@
-
-$(RELEASE_BUILD_DIR):
-	mkdir -p $@
-
-$(COVERAGE_BUILD_DIR):
+$(BUILD_DIR) $(DEBUG_BUILD_DIR) $(RELEASE_BUILD_DIR) $(COVERAGE_BUILD_DIR):
 	mkdir -p $@
 
 $(DEBUG_BUILD_DIR)/%.o : $(SRC_DIR)/%.c
