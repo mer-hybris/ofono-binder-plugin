@@ -75,6 +75,7 @@ typedef struct binder_slot_config {
     gboolean replace_strange_oper;
     gboolean force_gsm_when_radio_off;
     gboolean prefer_lte_signal_strength;
+    gboolean use_start_stop_dtmf;
     BinderDataProfileConfig data_profile_config;
     GUtilInts* local_hangup_reasons;
     GUtilInts* remote_hangup_reasons;
