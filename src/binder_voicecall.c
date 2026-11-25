@@ -41,6 +41,7 @@
 #include <gutil_intarray.h>
 #include <gutil_ints.h>
 #include <gutil_macros.h>
+#include <gutil_misc.h>
 #include <gutil_ring.h>
 #include <gutil_strv.h>
 
@@ -88,6 +89,8 @@ typedef struct binder_voicecall {
     RadioRequest* send_dtmf_req;
     RadioRequest* clcc_poll_req;
     guint ext_send_dtmf_id;
+    gboolean use_start_stop_dtmf;
+    guint dtmf_timer_id;
     guint ext_req_id;
     GSList* ext_hangups;
     gulong ext_event[VOICECALL_EXT_EVENT_COUNT];
@@ -125,6 +128,10 @@ typedef struct binder_voicecall_info {
 
 #define ANSWER_FLAGS BINDER_EXT_CALL_ANSWER_NO_FLAGS
 
+/* Timings for startDtmf/stopDtmf (useStartStopDtmf) */
+#define DTMF_TONE_DURATION_MS (200)
+#define DTMF_TONE_GAP_MS (100)
+
 #define DBG_(self,fmt,args...) DBG("%s" fmt, (self)->log_prefix, ##args)
 #define REQ_NAME_(self,req) radio_client_req_name((self)->voice_g->client, req)
 
@@ -156,6 +163,8 @@ struct binder_voicecall_api {
     RADIO_REQ voice_hangup_foreground_resume_background_req;
     RADIO_REQ voice_hangup_waiting_or_background_req;
     RADIO_REQ voice_send_dtmf_req;
+    RADIO_REQ voice_start_dtmf_req;
+    RADIO_REQ voice_stop_dtmf_req;
     RADIO_REQ voice_get_last_call_fail_cause_req;
     guint (*read_last_call_fail_cause)(
         GBinderReader* reader);
@@ -223,6 +232,17 @@ binder_voicecall_clear_dtmf_queue(
     BinderVoiceCall* self)
 {
     gutil_ring_clear(self->dtmf_queue);
+    if (self->use_start_stop_dtmf &&
+        (self->dtmf_timer_id || self->send_dtmf_req)) {
+        /*
+         * A tone may be playing (or about to start, if startDtmf is
+         * still pending). Don't leave it on, fire and forget stopDtmf.
+         * If the tone has already been stopped, it's redundant but
+         * harmless.
+         */
+        binder_submit_request(self->voice_g, self->api->voice_stop_dtmf_req);
+    }
+    gutil_source_clear(&self->dtmf_timer_id);
     if (self->ext_send_dtmf_id) {
         binder_ext_call_cancel(self->ext, self->ext_send_dtmf_id);
         self->ext_send_dtmf_id = 0;
@@ -1537,11 +1557,112 @@ binder_voicecall_send_dtmf_ext_cb(
 }
 
 static
+gboolean
+binder_voicecall_dtmf_gap_done(
+    gpointer user_data)
+{
+    BinderVoiceCall* self = user_data;
+
+    self->dtmf_timer_id = 0;
+    binder_voicecall_send_one_dtmf(self);
+    return G_SOURCE_REMOVE;
+}
+
+static
+void
+binder_voicecall_stop_dtmf_cb(
+    RadioRequest* req,
+    RADIO_TX_STATUS status,
+    RADIO_RESP resp,
+    RADIO_ERROR error,
+    const GBinderReader* args,
+    gpointer user_data)
+{
+    BinderVoiceCall* self = user_data;
+
+    GASSERT(self->send_dtmf_req == req);
+    radio_request_unref(self->send_dtmf_req);
+    self->send_dtmf_req = NULL;
+
+    if (status != RADIO_TX_STATUS_OK) {
+        DBG_(self, "stopDtmf tx failed");
+    } else if (error != RADIO_ERROR_NONE) {
+        ofono_error("failed to stop dtmf: %s",
+            binder_radio_error_string(error));
+    } else {
+        /* Leave a short pause before the next tone */
+        GASSERT(!self->dtmf_timer_id);
+        self->dtmf_timer_id = g_timeout_add(DTMF_TONE_GAP_MS,
+            binder_voicecall_dtmf_gap_done, self);
+        return;
+    }
+
+    binder_voicecall_clear_dtmf_queue(self);
+}
+
+static
+gboolean
+binder_voicecall_dtmf_tone_done(
+    gpointer user_data)
+{
+    BinderVoiceCall* self = user_data;
+    RadioRequest* req = radio_request_new2(self->voice_g,
+        self->api->voice_stop_dtmf_req, NULL,
+        binder_voicecall_stop_dtmf_cb, NULL, self);
+
+    /*
+     * IRadio.hal:
+     * oneway stopDtmf(int32_t serial);
+     *
+     * IRadioVoice.aidl
+     * void stopDtmf(in int serial);
+     */
+    self->dtmf_timer_id = 0;
+    if (!(self->send_dtmf_req = radio_request_try_submit(req))) {
+        binder_voicecall_clear_dtmf_queue(self);
+    }
+    return G_SOURCE_REMOVE;
+}
+
+static
+void
+binder_voicecall_start_dtmf_cb(
+    RadioRequest* req,
+    RADIO_TX_STATUS status,
+    RADIO_RESP resp,
+    RADIO_ERROR error,
+    const GBinderReader* args,
+    gpointer user_data)
+{
+    BinderVoiceCall* self = user_data;
+
+    GASSERT(self->send_dtmf_req == req);
+    radio_request_unref(self->send_dtmf_req);
+    self->send_dtmf_req = NULL;
+
+    if (status != RADIO_TX_STATUS_OK) {
+        DBG_(self, "startDtmf tx failed");
+    } else if (error != RADIO_ERROR_NONE) {
+        ofono_error("failed to start dtmf: %s",
+            binder_radio_error_string(error));
+    } else {
+        /* The tone is playing, stop it after a while */
+        GASSERT(!self->dtmf_timer_id);
+        self->dtmf_timer_id = g_timeout_add(DTMF_TONE_DURATION_MS,
+            binder_voicecall_dtmf_tone_done, self);
+        return;
+    }
+
+    binder_voicecall_clear_dtmf_queue(self);
+}
+
+static
 void
 binder_voicecall_send_one_dtmf(
     BinderVoiceCall* self)
 {
     if (!self->send_dtmf_req &&
+        !self->dtmf_timer_id &&
         !self->ext_send_dtmf_id &&
         gutil_ring_size(self->dtmf_queue) > 0) {
         char tone[2];
@@ -1558,16 +1679,22 @@ binder_voicecall_send_one_dtmf(
         if (!self->ext_send_dtmf_id) {
             const BinderVoiceCallApi* api = self->api;
             GBinderWriter args;
-            RadioRequest* req = radio_request_new2(self->voice_g,
-                api->voice_send_dtmf_req, &args,
-                binder_voicecall_send_dtmf_cb, NULL, self);
+            RadioRequest* req = self->use_start_stop_dtmf ?
+                radio_request_new2(self->voice_g,
+                    api->voice_start_dtmf_req, &args,
+                    binder_voicecall_start_dtmf_cb, NULL, self) :
+                radio_request_new2(self->voice_g,
+                    api->voice_send_dtmf_req, &args,
+                    binder_voicecall_send_dtmf_cb, NULL, self);
 
             /*
              * IRadio.hal:
              * oneway sendDtmf(int32_t serial, string s);
+             * oneway startDtmf(int32_t serial, string s);
              *
              * IRadioVoice.aidl
              * void sendDtmf(in int serial, in String s);
+             * void startDtmf(in int serial, in String s);
              */
             api->write_string_arg(&args, tone);
             if (!(self->send_dtmf_req = radio_request_try_submit(req))) {
@@ -2150,6 +2277,7 @@ binder_voicecall_probe(
     self->vc = vc;
     self->api = api;
     self->dtmf_queue = gutil_ring_new();
+    self->use_start_stop_dtmf = cfg->use_start_stop_dtmf;
     self->voice_g = radio_request_group_new(voice_client);
     self->network_g = radio_request_group_new(modem->clients.network_client);
     self->local_hangup_reasons = gutil_ints_ref(cfg->local_hangup_reasons);
@@ -2181,6 +2309,7 @@ binder_voicecall_remove(
     DBG_(self, "");
     g_slist_free_full(self->calls, binder_voicecall_info_free);
 
+    gutil_source_remove(self->dtmf_timer_id);
     radio_request_drop(self->send_dtmf_req);
     radio_request_drop(self->clcc_poll_req);
 
@@ -2420,6 +2549,8 @@ static const BinderVoiceCallApi binder_voicecall_api_hidl = {
     RADIO_REQ_HANGUP_FOREGROUND_RESUME_BACKGROUND,
     RADIO_REQ_HANGUP_WAITING_OR_BACKGROUND,
     RADIO_REQ_SEND_DTMF,
+    RADIO_REQ_START_DTMF,
+    RADIO_REQ_STOP_DTMF,
     RADIO_REQ_GET_LAST_CALL_FAIL_CAUSE,
     binder_voicecall_api_read_last_call_fail_cause_hidl,
     RADIO_REQ_GET_CURRENT_CALLS,
@@ -2696,6 +2827,8 @@ static const BinderVoiceCallApi binder_voicecall_api_aidl = {
     RADIO_VOICE_REQ_HANGUP_FOREGROUND_RESUME_BACKGROUND,
     RADIO_VOICE_REQ_HANGUP_WAITING_OR_BACKGROUND,
     RADIO_VOICE_REQ_SEND_DTMF,
+    RADIO_VOICE_REQ_START_DTMF,
+    RADIO_VOICE_REQ_STOP_DTMF,
     RADIO_VOICE_REQ_GET_LAST_CALL_FAIL_CAUSE,
     binder_voicecall_api_read_last_call_fail_cause_aidl,
     RADIO_VOICE_REQ_GET_CURRENT_CALLS,

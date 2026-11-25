@@ -168,6 +168,7 @@
 #define BINDER_CONF_SLOT_ALLOW_DATA_REQ       "allowDataReq"
 #define BINDER_CONF_SLOT_USE_NETWORK_SCAN     "useNetworkScan"
 #define BINDER_CONF_SLOT_REPLACE_STRANGE_OPER "replaceStrangeOperatorNames"
+#define BINDER_CONF_SLOT_USE_START_STOP_DTMF  "useStartStopDtmf"
 #define BINDER_CONF_SLOT_PREFER_LTE_SIGNAL_STRENGTH "preferLteSignalStrength"
 #define BINDER_CONF_SLOT_LTE_MODE             "lteNetworkMode"
 #define BINDER_CONF_SLOT_UMTS_MODE            "umtsNetworkMode"
@@ -192,6 +193,7 @@
 #define BINDER_DEFAULT_SLOT_CONFIRM_RADIO_POWER_ON FALSE
 #define BINDER_DEFAULT_SLOT_QUERY_AVAILABLE_BAND_MODE TRUE
 #define BINDER_DEFAULT_SLOT_REPLACE_STRANGE_OPER FALSE
+#define BINDER_DEFAULT_SLOT_USE_START_STOP_DTMF FALSE
 #define BINDER_DEFAULT_SLOT_FORCE_GSM_WHEN_RADIO_OFF FALSE
 #define BINDER_DEFAULT_SLOT_USE_DATA_PROFILES TRUE
 #define BINDER_DEFAULT_SLOT_MMS_DATA_PROFILE_ID RADIO_DATA_PROFILE_DEFAULT
@@ -1744,6 +1746,7 @@ binder_plugin_create_slot(
     config->query_available_band_mode =
         BINDER_DEFAULT_SLOT_QUERY_AVAILABLE_BAND_MODE;
     config->replace_strange_oper = BINDER_DEFAULT_SLOT_REPLACE_STRANGE_OPER;
+    config->use_start_stop_dtmf = BINDER_DEFAULT_SLOT_USE_START_STOP_DTMF;
     config->force_gsm_when_radio_off =
         BINDER_DEFAULT_SLOT_FORCE_GSM_WHEN_RADIO_OFF;
     config->cell_info_interval_short_ms =
@@ -1998,6 +2001,14 @@ binder_plugin_create_slot(
         &config->replace_strange_oper)) {
         DBG("%s: " BINDER_CONF_SLOT_REPLACE_STRANGE_OPER " %s", group,
             config->replace_strange_oper ? "yes" : "no");
+    }
+
+    /* useStartStopDtmf */
+    if (ofono_conf_get_boolean(file, group,
+        BINDER_CONF_SLOT_USE_START_STOP_DTMF,
+        &config->use_start_stop_dtmf)) {
+        DBG("%s: " BINDER_CONF_SLOT_USE_START_STOP_DTMF " %s", group,
+            config->use_start_stop_dtmf ? "yes" : "no");
     }
 
     /* preferLteSignalStrength */
