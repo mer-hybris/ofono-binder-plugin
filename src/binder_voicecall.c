@@ -86,7 +86,7 @@ typedef struct binder_voicecall {
     GUtilRing* dtmf_queue;
     GUtilInts* local_hangup_reasons;
     GUtilInts* remote_hangup_reasons;
-    RadioRequest* send_dtmf_req;
+    RadioRequest* dtmf_req;
     RadioRequest* clcc_poll_req;
     guint ext_send_dtmf_id;
     gboolean use_start_stop_dtmf;
@@ -232,8 +232,7 @@ binder_voicecall_clear_dtmf_queue(
     BinderVoiceCall* self)
 {
     gutil_ring_clear(self->dtmf_queue);
-    if (self->use_start_stop_dtmf &&
-        (self->dtmf_timer_id || self->send_dtmf_req)) {
+    if (self->use_start_stop_dtmf && (self->dtmf_timer_id || self->dtmf_req)) {
         /*
          * A tone may be playing (or about to start, if startDtmf is
          * still pending). Don't leave it on, fire and forget stopDtmf.
@@ -247,9 +246,9 @@ binder_voicecall_clear_dtmf_queue(
         binder_ext_call_cancel(self->ext, self->ext_send_dtmf_id);
         self->ext_send_dtmf_id = 0;
     }
-    if (self->send_dtmf_req) {
-        radio_request_drop(self->send_dtmf_req);
-        self->send_dtmf_req = NULL;
+    if (self->dtmf_req) {
+        radio_request_drop(self->dtmf_req);
+        self->dtmf_req = NULL;
     }
 }
 
@@ -1519,9 +1518,9 @@ binder_voicecall_send_dtmf_cb(
 {
     BinderVoiceCall* self = user_data;
 
-    GASSERT(self->send_dtmf_req == req);
-    radio_request_unref(self->send_dtmf_req);
-    self->send_dtmf_req = NULL;
+    GASSERT(self->dtmf_req == req);
+    radio_request_unref(self->dtmf_req);
+    self->dtmf_req = NULL;
 
     if (status != RADIO_TX_STATUS_OK) {
         DBG_(self, "sendDtmf tx failed");
@@ -1580,9 +1579,9 @@ binder_voicecall_stop_dtmf_cb(
 {
     BinderVoiceCall* self = user_data;
 
-    GASSERT(self->send_dtmf_req == req);
-    radio_request_unref(self->send_dtmf_req);
-    self->send_dtmf_req = NULL;
+    GASSERT(self->dtmf_req == req);
+    radio_request_unref(self->dtmf_req);
+    self->dtmf_req = NULL;
 
     if (status != RADIO_TX_STATUS_OK) {
         DBG_(self, "stopDtmf tx failed");
@@ -1618,7 +1617,7 @@ binder_voicecall_dtmf_tone_done(
      * void stopDtmf(in int serial);
      */
     self->dtmf_timer_id = 0;
-    if (!(self->send_dtmf_req = radio_request_try_submit(req))) {
+    if (!(self->dtmf_req = radio_request_try_submit(req))) {
         binder_voicecall_clear_dtmf_queue(self);
     }
     return G_SOURCE_REMOVE;
@@ -1636,9 +1635,9 @@ binder_voicecall_start_dtmf_cb(
 {
     BinderVoiceCall* self = user_data;
 
-    GASSERT(self->send_dtmf_req == req);
-    radio_request_unref(self->send_dtmf_req);
-    self->send_dtmf_req = NULL;
+    GASSERT(self->dtmf_req == req);
+    radio_request_unref(self->dtmf_req);
+    self->dtmf_req = NULL;
 
     if (status != RADIO_TX_STATUS_OK) {
         DBG_(self, "startDtmf tx failed");
@@ -1661,7 +1660,7 @@ void
 binder_voicecall_send_one_dtmf(
     BinderVoiceCall* self)
 {
-    if (!self->send_dtmf_req &&
+    if (!self->dtmf_req &&
         !self->dtmf_timer_id &&
         !self->ext_send_dtmf_id &&
         gutil_ring_size(self->dtmf_queue) > 0) {
@@ -1697,7 +1696,7 @@ binder_voicecall_send_one_dtmf(
              * void startDtmf(in int serial, in String s);
              */
             api->write_string_arg(&args, tone);
-            if (!(self->send_dtmf_req = radio_request_try_submit(req))) {
+            if (!(self->dtmf_req = radio_request_try_submit(req))) {
                 binder_voicecall_clear_dtmf_queue(self);
             }
         }
@@ -2310,7 +2309,7 @@ binder_voicecall_remove(
     g_slist_free_full(self->calls, binder_voicecall_info_free);
 
     gutil_source_remove(self->dtmf_timer_id);
-    radio_request_drop(self->send_dtmf_req);
+    radio_request_drop(self->dtmf_req);
     radio_request_drop(self->clcc_poll_req);
 
     radio_client_remove_all_handlers(self->voice_g->client,
