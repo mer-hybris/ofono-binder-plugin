@@ -217,6 +217,18 @@ binder_data_call_release(
     void* cookie)
     BINDER_INTERNAL;
 
+guint
+binder_data_call_grab_count(
+    BinderData* data,
+    int cid)
+    BINDER_INTERNAL;
+
+const BinderDataCall*
+binder_data_find_sharable_call(
+    BinderData* data,
+    const struct ofono_gprs_primary_context* ctx)
+    BINDER_INTERNAL;
+
 void
 binder_data_call_free(
     BinderDataCall* call)

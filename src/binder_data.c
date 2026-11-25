@@ -136,6 +136,7 @@ typedef struct binder_data_object {
     gulong settings_event_id[SETTINGS_EVENT_COUNT];
     gulong network_client_restricted_state_change_id;
     GHashTable* grab;
+    GHashTable* call_params; /* cid -> APN and credentials from setup */
     gboolean downgraded_tech; /* Status 55 workaround */
 } BinderDataObject;
 
@@ -184,6 +185,12 @@ typedef struct binder_data_request_setup {
     guint retry_count;
     guint retry_delay_id;
 } BinderDataRequestSetup;
+
+typedef struct binder_data_call_params {
+    char* apn;
+    char* username;
+    char* password;
+} BinderDataCallParams;
 
 typedef struct binder_data_request_deact {
     BinderDataRequest req;
@@ -599,6 +606,15 @@ binder_data_set_calls(
 
     /* Clean up the grab table */
     g_hash_table_iter_init(&it, self->grab);
+    while (g_hash_table_iter_next(&it, &key, NULL)) {
+        const int cid = GPOINTER_TO_INT(key);
+
+        if (!binder_data_call_find(data->calls, cid)) {
+            g_hash_table_iter_remove(&it);
+        }
+    }
+
+    g_hash_table_iter_init(&it, self->call_params);
     while (g_hash_table_iter_next(&it, &key, NULL)) {
         const int cid = GPOINTER_TO_INT(key);
 
@@ -1084,6 +1100,72 @@ binder_data_call_retry(
 
 static
 void
+binder_data_call_params_free(
+    gpointer user_data)
+{
+    BinderDataCallParams* params = user_data;
+
+    g_free(params->apn);
+    g_free(params->username);
+    g_free(params->password);
+    g_free(params);
+}
+
+static
+void
+binder_data_remember_setup(
+    BinderDataObject* self,
+    int cid,
+    const BinderDataRequestSetup* setup)
+{
+    BinderDataCallParams* params;
+
+    if (!setup->apn[0]) {
+        return;
+    }
+
+    params = g_new0(BinderDataCallParams, 1);
+    params->apn = g_strdup(setup->apn);
+    params->username = g_strdup(setup->username);
+    params->password = g_strdup(setup->password);
+    g_hash_table_insert(self->call_params, GINT_TO_POINTER(cid), params);
+}
+
+static
+gboolean
+binder_data_proto_serves(
+    enum ofono_gprs_proto have,
+    enum ofono_gprs_proto need)
+{
+    if (have == need) {
+        return TRUE;
+    }
+
+    return have == OFONO_GPRS_PROTO_IPV4V6 &&
+        (need == OFONO_GPRS_PROTO_IP || need == OFONO_GPRS_PROTO_IPV6);
+}
+
+static
+gboolean
+binder_data_call_matches_context(
+    const BinderDataCallParams* params,
+    const BinderDataCall* call,
+    const struct ofono_gprs_primary_context* ctx)
+{
+    if (!params || call->active == RADIO_DATA_CALL_INACTIVE ||
+        call->status != RADIO_DATA_CALL_FAIL_NONE ||
+        !call->ifname || !call->ifname[0]) {
+        return FALSE;
+    }
+
+    return !g_ascii_strcasecmp(params->apn, ctx->apn) &&
+        !g_strcmp0(params->username, ctx->username) &&
+        !g_strcmp0(params->password, ctx->password) &&
+        binder_data_proto_serves(call->prot, ctx->proto);
+}
+
+static
+void
 binder_data_call_setup_cb(
     RadioRequest* req,
     RADIO_TX_STATUS status,
@@ -1155,6 +1237,8 @@ binder_data_call_setup_cb(
     free_call = call;
 
     if (call && call->status == RADIO_DATA_CALL_FAIL_NONE) {
+        binder_data_remember_setup(self, call->cid, setup);
+
         if (self->downgraded_tech) {
             DBG("done with status 55 workaround");
             self->downgraded_tech = FALSE;
@@ -3030,14 +3114,17 @@ binder_data_call_grab(
 
     if (self && cookie && binder_data_call_find(data->calls, cid)) {
         gpointer key = GINT_TO_POINTER(cid);
-        void* prev = g_hash_table_lookup(self->grab, key);
+        GSList* holders = g_hash_table_lookup(self->grab, key);
 
-        if (!prev) {
-            g_hash_table_insert(self->grab, key, cookie);
+        if (g_slist_find(holders, cookie)) {
             return TRUE;
-        } else {
-            return (prev == cookie);
         }
+
+        /* Steal the list so the destroy notify doesn't free it */
+        g_hash_table_steal(self->grab, key);
+        g_hash_table_insert(self->grab, key,
+            g_slist_prepend(holders, cookie));
+        return TRUE;
     }
     return FALSE;
 }
@@ -3051,8 +3138,57 @@ binder_data_call_release(
     BinderDataObject* self = binder_data_cast(data);
 
     if (self && cookie) {
-        g_hash_table_remove(self->grab, GUINT_TO_POINTER(cid));
+        gpointer key = GINT_TO_POINTER(cid);
+        GSList* holders = g_hash_table_lookup(self->grab, key);
+
+        if (!g_slist_find(holders, cookie)) {
+            return;
+        }
+
+        g_hash_table_steal(self->grab, key);
+        holders = g_slist_remove(holders, cookie);
+        if (holders) {
+            g_hash_table_insert(self->grab, key, holders);
+        }
     }
+}
+
+guint
+binder_data_call_grab_count(
+    BinderData* data,
+    int cid)
+{
+    BinderDataObject* self = binder_data_cast(data);
+
+    if (self) {
+        return g_slist_length(g_hash_table_lookup(self->grab,
+            GINT_TO_POINTER(cid)));
+    }
+    return 0;
+}
+
+const BinderDataCall*
+binder_data_find_sharable_call(
+    BinderData* data,
+    const struct ofono_gprs_primary_context* ctx)
+{
+    BinderDataObject* self = binder_data_cast(data);
+    GSList* l;
+
+    if (!self || !ctx) {
+        return NULL;
+    }
+
+    for (l = data->calls; l; l = l->next) {
+        const BinderDataCall* call = l->data;
+        const BinderDataCallParams* params = g_hash_table_lookup(
+            self->call_params, GINT_TO_POINTER(call->cid));
+
+        if (binder_data_call_matches_context(params, call, ctx)) {
+            return call;
+        }
+    }
+    return NULL;
 }
 
 static
@@ -3061,7 +3197,10 @@ binder_data_object_init(
     BinderDataObject* self)
 {
     self->api = &binder_data_api_hidl;
-    self->grab = g_hash_table_new(g_direct_hash, g_direct_equal);
+    self->grab = g_hash_table_new_full(g_direct_hash, g_direct_equal,
+        NULL, (GDestroyNotify) g_slist_free);
+    self->call_params = g_hash_table_new_full(g_direct_hash, g_direct_equal,
+        NULL, binder_data_call_params_free);
 }
 
 static
@@ -3097,6 +3236,7 @@ binder_data_object_finalize(
     binder_data_call_list_free(data->calls);
 
     g_hash_table_destroy(self->grab);
+    g_hash_table_destroy(self->call_params);
     g_free(self->log_prefix);
 
     G_OBJECT_CLASS(PARENT_CLASS)->finalize(object);
