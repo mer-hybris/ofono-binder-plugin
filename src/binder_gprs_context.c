@@ -478,6 +478,44 @@ binder_gprs_context_call_list_changed(
 
 static
 void
+binder_gprs_context_activate_finish(
+    BinderGprsContext* self,
+    const struct ofono_error* error)
+{
+    ofono_gprs_context_cb_t cb = self->activate.cb;
+    gpointer cb_data = self->activate.data;
+
+    memset(&self->activate, 0, sizeof(self->activate));
+    if (cb) {
+        cb(error, cb_data);
+    }
+}
+
+static
+void
+binder_gprs_context_setup_call(
+    BinderGprsContext* self,
+    const BinderDataCall* call)
+{
+    struct ofono_gprs_context* gc = self->gc;
+
+    GASSERT(!self->calls_changed_id);
+    binder_data_remove_handler(self->data, self->calls_changed_id);
+    self->calls_changed_id = binder_data_add_property_handler(self->data,
+        BINDER_DATA_PROPERTY_CALLS, binder_gprs_context_call_list_changed,
+        self);
+
+    self->active_ctx_cid = self->activate.cid;
+    binder_gprs_context_set_active_call(self, call);
+    ofono_gprs_context_set_interface(gc, call->ifname);
+    binder_gprs_context_set_address(gc, call);
+    binder_gprs_context_set_gateway(gc, call);
+    binder_gprs_context_set_dns_servers(gc, call);
+    binder_gprs_context_set_proxy_cscf(gc, call);
+}
+
+static
+void
 binder_gprs_context_activate_primary_cb(
     BinderData* data,
     RADIO_ERROR radio_error,
@@ -485,11 +523,9 @@ binder_gprs_context_activate_primary_cb(
     void* user_data)
 {
     BinderGprsContext* self = user_data;
-    struct ofono_gprs_context* gc = self->gc;
     struct ofono_error error;
-    ofono_gprs_context_cb_t cb;
-    gpointer cb_data;
 
+    GASSERT(self->activate.req);
     binder_error_init_failure(&error);
     if (radio_error != RADIO_ERROR_NONE) {
         ofono_error("GPRS context: Reply failure: %s",
@@ -505,31 +541,11 @@ binder_gprs_context_activate_primary_cb(
         ofono_error("GPRS context: No interface");
     } else {
         ofono_info("setting up data call");
-
-        GASSERT(!self->calls_changed_id);
-        binder_data_remove_handler(self->data, self->calls_changed_id);
-        self->calls_changed_id = binder_data_add_property_handler(self->data,
-            BINDER_DATA_PROPERTY_CALLS, binder_gprs_context_call_list_changed,
-            self);
-
-        self->active_ctx_cid = self->activate.cid;
-        binder_gprs_context_set_active_call(self, call);
-        ofono_gprs_context_set_interface(gc, call->ifname);
-        binder_gprs_context_set_address(gc, call);
-        binder_gprs_context_set_gateway(gc, call);
-        binder_gprs_context_set_dns_servers(gc, call);
-        binder_gprs_context_set_proxy_cscf(gc, call);
+        binder_gprs_context_setup_call(self, call);
         binder_error_init_ok(&error);
     }
 
-    cb = self->activate.cb;
-    cb_data = self->activate.data;
-    GASSERT(self->activate.req);
-    memset(&self->activate, 0, sizeof(self->activate));
-
-    if (cb) {
-        cb(&error, cb_data);
-    }
+    binder_gprs_context_activate_finish(self, &error);
 }
 
 static
@@ -541,6 +557,7 @@ binder_gprs_context_activate_primary(
     void* data)
 {
     BinderGprsContext* self = binder_gprs_context_get_data(gc);
+    const BinderDataCall* existing;
     struct ofono_watch* watch = self->watch;
     struct ofono_netreg* netreg = watch->netreg;
     const enum ofono_netreg_status rs = ofono_netreg_get_status(netreg);
@@ -567,6 +584,22 @@ binder_gprs_context_activate_primary(
     self->activate.cb = cb;
     self->activate.data = data;
     self->activate.cid = ctx->cid;
+
+    /*
+     * The modem rejects a second PDN for an access point that is already
+     * up and reports that as an unspecified failure. Use the existing
+     * call instead of sending setupDataCall.
+     */
+    existing = binder_data_find_sharable_call(self->data, ctx);
+    if (existing) {
+        struct ofono_error error;
+
+        ofono_info("Context %u shares data call %d", ctx->cid, existing->cid);
+        binder_gprs_context_setup_call(self, existing);
+        binder_gprs_context_activate_finish(self, binder_error_ok(&error));
+        return;
+    }
+
     self->activate.req = binder_data_call_setup(self->data, ctx,
         ofono_gprs_context_get_assigned_type(gc),
         binder_gprs_context_activate_primary_cb, self);
@@ -624,6 +657,18 @@ binder_gprs_context_deactivate_primary(
 
     GASSERT(self->active_ctx_cid == id);
     ofono_info("Deactivating context: %u", id);
+
+    if (self->active_call && self->active_ctx_cid == id &&
+        binder_data_call_grab_count(self->data, self->active_call->cid) > 1) {
+        /*
+         * Another context still holds this PDN. Drop our reference and
+         * leave the modem call up.
+         */
+        ofono_info("Context %u released shared data call %d", id,
+            self->active_call->cid);
+        binder_gprs_context_free_active_call(self);
+        self->active_ctx_cid = CTX_ID_NONE;
+    }
 
     if (self->active_call && self->active_ctx_cid == id) {
         self->deactivate.cb = cb;
@@ -692,8 +737,13 @@ binder_gprs_context_remove(
         /* Let it complete but we won't be around to be notified. */
         binder_data_request_detach(self->deactivate.req);
     } else if (self->active_call) {
-        binder_data_call_deactivate(self->data, self->active_call->cid,
-            NULL, NULL);
+        const int cid = self->active_call->cid;
+
+        if (binder_data_call_grab_count(self->data, cid) > 1) {
+            binder_data_call_release(self->data, cid, self);
+        } else {
+            binder_data_call_deactivate(self->data, cid, NULL, NULL);
+        }
     }
 
     binder_data_remove_handler(self->data, self->calls_changed_id);
