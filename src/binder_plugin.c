@@ -400,7 +400,7 @@ static const BinderApi binder_api_hidl = {
     binder_read_string_arg_hidl,
     RADIO_REQ_GET_DEVICE_IDENTITY,
     RADIO_IND_RADIO_STATE_CHANGED,
-    RADIO_CONFIG_1_1,
+    RADIO_CONFIG_1_0,
     RADIO_CONFIG_INTERFACE_1_1
 };
 
