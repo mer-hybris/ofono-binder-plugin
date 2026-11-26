@@ -31,6 +31,7 @@ struct binder_sim_settings {
     const char* imsi;
     enum ofono_radio_access_mode techs; /* Mask */
     enum ofono_radio_access_mode pref;  /* Mask */
+    gboolean pref_set; /* One set_pref(), including the stored mode */
 };
 
 typedef
